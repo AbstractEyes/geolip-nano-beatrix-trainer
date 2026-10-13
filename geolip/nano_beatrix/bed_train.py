@@ -14,7 +14,7 @@ dispatch form (the library's flags):
 Gauges: the online value-byte loss by distance band during training; at the end on held-out documents: bits a byte by byte class,
 the planted fetch at 64 / 256 / 512 / 896 bytes (teacher-forced value NLL, greedy first byte, all five), the dispatch census by byte
 class (block 0 / middle / last), the dispatch-off toggle. Pure Adam. Progress lines carry the job size, the time spent and the time left.
-Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1]
+Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1 --prefetch=0]
 Data: DIR/bed/bed_corpus.bin + bed_corpus_offsets.npy (bed_corpus.py); held-out heldout_fineweb_edu_head2048.jsonl in DIR or DIR/bed (the reserved head).
 Output: DIR/bed/bed_<arm>_s<seed>[_smoke].json; the weights DIR/bed/<arm>_s<seed>/model.safetensors + config.json"""
 import json
@@ -72,6 +72,8 @@ FR_TAG = ("" if not FRAMES else f"_fr{FRAMES}_{REGISTER[:3]}_{TAGS}"
           + (f"_M{N_FACTS}" if N_FACTS else "") + f"_ask{ASK}"
           + (f"_p{int(round(P_PLANT * 100))}" if P_PLANT != 1.0 else ""))   # the diet, when not every row is framed
 LOG_EVERY = int(ARGS.get("log_every", "5" if SMOKE else "50"))
+PREFETCH = ARGS.get("prefetch", "1") == "1"   # the next step's rows compose in a worker thread while this step runs on the card;
+                                              # the batches are identical either way (every step seeds its own rng from [SEED, step])
 DEV = os.environ.get("BATTERY_DEV", "cuda")
 BED = os.path.join(OUT, "bed")
 os.makedirs(BED, exist_ok=True)
@@ -433,10 +435,18 @@ curve, online = [], {k: [0.0, 0] for k in range(N_BANDS)}
 ema = None
 t_train = time.time()
 model.train()
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+_pool = ThreadPoolExecutor(max_workers=1) if PREFETCH else None       # one worker, submitted in order: the planted census stays exact
+_next = _pool.submit(batch, 0) if PREFETCH else None
 for step in range(STEPS):
     for g in opt.param_groups:
         g["lr"] = lr_at(step)
-    x, y, vm = batch(step)
+    if PREFETCH:
+        x, y, vm = _next.result()
+        if step + 1 < STEPS:
+            _next = _pool.submit(batch, step + 1)
+    else:
+        x, y, vm = batch(step)
     x, y, vm = x.to(DEV, non_blocking=True), y.to(DEV, non_blocking=True), vm.to(DEV, non_blocking=True)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         logits = model(x)[0]
@@ -465,6 +475,8 @@ for step in range(STEPS):
         if step % (LOG_EVERY * 4) == LOG_EVERY * 4 - 1:
             online = {k: [0.0, 0] for k in range(N_BANDS)}
 train_s = time.time() - t_train
+if _pool is not None:
+    _pool.shutdown()
 log(f"training done in {train_s / 60:.1f} min")
 
 # ------------------------------------------------------------------ the gauges
