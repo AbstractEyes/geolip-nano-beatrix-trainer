@@ -21,6 +21,10 @@ The arms: an attention form (softmax with a learned position table, softmax with
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
 alone, an installed byte-class expert table, or both).
 
+The nano twin pair has names: **Castor** is the rotary softmax body (`--arm=castor-<bank>`, the same craft as `smr`), the mortal
+twin whose memory grows with the window; **Pollux** is the all-rotary alternating body (`--arm=pollux-<bank>`, the same as `altn`),
+the immortal twin whose hub half keeps a constant decode memory.
+
 ## Install
 
 ```bash

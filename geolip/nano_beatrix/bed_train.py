@@ -7,6 +7,8 @@ dispatch form (the library's flags):
              hubr  hubs with the address rotary (RoPE on the oriented codes)   alt   hub / softmax+rotary alternating
              hubrn hubs with the address rotary, no position table             hubd  hubs with two address masses a block
              altn  alternating, both rotaries
+             castor = smr and pollux = altn: the names of the nano twin pair (Castor the mortal twin whose memory grows with the
+             window, Pollux the immortal whose hub half keeps a constant decode memory)
   bank       free  the aleph address alone (the current form)   fixed  an installed byte-class table REPLACES the amplitudes (one
              expert per class)                                   both   the address PLUS the installed table (learned)
 Gauges: the online value-byte loss by distance band during training; at the end on held-out documents: bits a byte by byte class,
@@ -98,6 +100,8 @@ def craft_cfg(arm: str) -> AlephLMConfig:
          "hubd": dict(hub_layers=tuple(range(L)), hub_dual=True),
          "alt": dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True),
          "altn": dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_rotary=True)}
+    A["castor"] = A["smr"]            # the twins' names: Castor = the rotary softmax body (the mortal twin, the growing memory)
+    A["pollux"] = A["altn"]           # Pollux = the all-rotary alternating body (the immortal twin, the constant decode memory)
     Bk = {"free": "", "fixed": "fixed", "both": "add"}
     assert attn in A and bank in Bk, f"unknown arm {arm!r}: attention in {sorted(A)}, bank in {sorted(Bk)}"
     extra = {}
