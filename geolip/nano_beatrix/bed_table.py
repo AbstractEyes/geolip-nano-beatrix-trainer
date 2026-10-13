@@ -22,6 +22,8 @@ for p in sorted(glob.glob(os.path.join(D, "bed_*_s[0-9]*.json"))):
         continue
     rows.append(r)
 rows.sort(key=lambda r: (r.get("ctx", 1024), r.get("records", 1), r["steps"], r["arm"], r["seed"]))
+framed = [r for r in rows if r.get("frames")]          # framed rows: their own table at the end (the planted fetch does not apply)
+rows = [r for r in rows if not r.get("frames")]
 
 
 def dist_key(r):
@@ -144,3 +146,26 @@ for tp in sorted(glob.glob(os.path.join(D, "bed_timing*.json"))):
         print(f"| sm-free + last-block {a} | {v['params'] / 1e6:.2f}M | {v['train_ms_per_step']:.1f}{rel} | {v['train_tok_per_s'] / 1e3:.0f} | {v['train_peak_gb']:.2f} | {v['infer_ms_per_row']:.2f}{reli} | {v['infer_tok_per_s'] / 1e3:.0f} |")
     for a, v in t["teachers"].items():
         print(f"| {a} (inference at {v['ctx']:,}, 2 rows) | {v['params'] / 1e6:.1f}M | | | | {v['infer_ms_per_row']:.1f} | {v['infer_tok_per_s'] / 1e3:.1f} |")
+
+
+if framed:
+    print("\nFRAMED ROWS (every training row framed; text = the plain held-out bits a byte; outside = the bits between the frames inside framed held-out rows; "
+          "the data frames' body bits by frame size; the whole value fetched from a data frame by its size at depth 0, with the first byte and the trials in brackets; "
+          "the nested whole = every data frame at depth 1 or deeper, trial-weighted):")
+    sizes = sorted({int(k.split("/")[1]) for r in framed for k in r["heldout_bits_by_frame"]["by_kind_size_segment"] if k.startswith("data/")}
+                   | {int(k.split("/")[1]) for r in framed for k in r["fetch_by_frame"] if k.startswith("data/")})
+    print("| arm | seed | ctx | steps | register | tags | sizes | nest | overlap | ask | facts | text | outside | "
+          + " | ".join(f"data {s} body" for s in sizes) + " | " + " | ".join(f"whole value {s}" for s in sizes) + " | nested whole | tok/s | min |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|" + "---|" * (2 * len(sizes)) + "---|---|---|")
+    for r in framed:
+        fr, bf, ff = r["frames"], r["heldout_bits_by_frame"], r["fetch_by_frame"]
+        seg = bf["by_kind_size_segment"]
+        body = " | ".join(f"{seg['data/%d/body' % s]['bits']:.2f}" if "data/%d/body" % s in seg else "-" for s in sizes)
+        fetch = " | ".join(f"{ff['data/%d/depth0' % s]['full_value']:.2f} ({ff['data/%d/depth0' % s]['first_byte']:.2f}, n {ff['data/%d/depth0' % s]['n']})"
+                           if "data/%d/depth0" % s in ff else "-" for s in sizes)
+        nested = [v for k, v in ff.items() if k.startswith("data/") and not k.endswith("depth0")]
+        n_nest = sum(v["n"] for v in nested)
+        nest_s = f"{sum(v['full_value'] * v['n'] for v in nested) / n_nest:.2f} (n {n_nest})" if n_nest else "-"
+        print(f"| {r['arm']} | {r['seed']} | {r.get('ctx', 1024):,} | {r['steps']:,} | {fr.get('register')} | {fr.get('tags')} | {'/'.join(map(str, fr.get('sizes', [])))} | "
+              f"{fr.get('nest')} | {fr.get('overlap')} | {fr.get('ask')} | {fr.get('facts')} | {r['heldout_bpb']:.4f} | {bf['outside']['bits']:.3f} | {body} | {fetch} | {nest_s} | "
+              f"{r['tok_per_s'] / 1e3:.0f} | {r['train_minutes']:.1f} |")
