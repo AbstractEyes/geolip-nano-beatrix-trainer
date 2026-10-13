@@ -75,6 +75,10 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.14 (2026-10-13): the composer works one step ahead of the card (`--prefetch=1` by default, `--prefetch=0` the serial loop): the
+batches are identical by construction (every step seeds its own rng) and were proven bit-for-bit on the CPU; on the 4090 at 1,024 x 32
+under the mixed diet the framed step went from 369k to 399k tok/s (+8%). Both notebooks pin v0.1.14.
+
 0.1.11 (2026-10-13): the bed as it ran the first night, the frame composer and its wiring, the runner with its Python entry point and bars,
 the corpus and table tools callable, the Colab notebook in the house format; the twins named and their bank of record set. 92 to 100 tests on the CPU.
 
