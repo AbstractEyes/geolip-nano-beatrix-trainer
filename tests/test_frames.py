@@ -55,7 +55,8 @@ def test_layout_a_frames_and_bits_by_frame(src):
         metas.append(m)
     res = bf.finish_frame_bits(bf.bits_by_frame(np.ones((2, 1024)), metas))
     assert sum(v["n"] for v in res["by_kind_depth"].values()) + res["outside"]["n"] == 2 * 1024
-    assert "think/320/body" in res["by_kind_size_segment"] and "data/73/open" in res["by_kind_size_segment"]
+    assert "think/512/body" in res["by_kind_size_segment"] and "data/128/open" in res["by_kind_size_segment"]
+    assert bf.size_bucket(73) == 128 and bf.size_bucket(32) == 32 and bf.size_bucket(5000) == 4096
     row, m = bf.compose(rng, src, 1024, "A", "mode", "caption", 2, 0, bf.fact_table(64, "caption"), "weights")
     assert m["truth_frame"] is None and len(m["frames"]) == 2
 

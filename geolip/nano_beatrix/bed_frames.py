@@ -189,6 +189,13 @@ FRAME_SIZES = (32, 128, 256, 512, 1024)
 KIND_TAG = {"data": DATA, "think": THINK}
 KIND_ID = {"none": 0, "data": 1, "think": 2}
 SEG_ID = {"outside": 0, "open": 1, "head": 2, "body": 3, "close": 4}
+SIZE_BUCKETS = (32, 64, 128, 256, 512, 1024, 2048, 4096)
+
+
+def size_bucket(size: int) -> int:
+    """The smallest generic size at or above a frame's byte size: the gauges group by it (a layout-A bulk frame of 121-123 bytes
+    reads as 128; the dynamic frames keep their generic sizes)."""
+    return next((b for b in SIZE_BUCKETS if b >= size), SIZE_BUCKETS[-1])
 
 
 class Filler:
@@ -324,13 +331,13 @@ def overlap_specs(rng, register: str, size1: int, size2: int, k: int, mode: str 
 
 
 def frame_masks(meta: dict, ctx: int) -> dict:
-    """Per position of the row (length ctx + 1): the innermost frame's kind id, its size, its depth + 1 (0 outside), and the segment
+    """Per position of the row (length ctx + 1): the innermost frame's kind id, its size bucket, its depth + 1 (0 outside), and the segment
     (1 the open tag, 2 the first eight body bytes, 3 the body, 4 the close tag, 0 outside)."""
     n = ctx + 1
     kind, size, depth, seg = (np.zeros(n, dtype=np.int64) for _ in range(4))
     for f in sorted(meta["frames"], key=lambda f: f["depth"]):
         s, e = f["start"], f["end"]
-        kind[s:e], size[s:e], depth[s:e] = KIND_ID[f["kind"]], f["size"], f["depth"] + 1
+        kind[s:e], size[s:e], depth[s:e] = KIND_ID[f["kind"]], size_bucket(f["size"]), f["depth"] + 1
         seg[s:e] = SEG_ID["body"]
         seg[s] = SEG_ID["open"]
         seg[s + 1:min(s + 9, e - 1)] = SEG_ID["head"]

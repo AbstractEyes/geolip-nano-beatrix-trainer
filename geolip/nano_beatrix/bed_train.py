@@ -624,7 +624,7 @@ def frame_gauges():
             g = "weights"
         elif "frames" in m:
             f = m["frames"][m["truth_frame"]]
-            g = f"{f['kind']}/{f['size']}/depth{f['depth']}"
+            g = f"{f['kind']}/{bf.size_bucket(f['size'])}/depth{f['depth']}"
         else:
             g = m["source"]
         a = groups.setdefault(g, dict(n=0, value_bits=0.0, first_byte=0, full_value=0, dist=0.0))
