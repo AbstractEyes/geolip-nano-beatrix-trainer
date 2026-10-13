@@ -46,6 +46,10 @@ The bed reads its corpus (`<out>/bed/bed_corpus.bin` + offsets) and a held-out f
 sequence in the house format: C1 pins and the decision block, C2 the preflight (the data, the plan, a short run for the price line, the
 push probe), C3 the session with its bars, C4 the results table (`bed_table.render`). Open it in Colab straight from GitHub:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_frame_grid.ipynb)
+The second pass, `colab/nano_frame_pass2.ipynb`, runs the in-window capacity axis (4 / 8 / 16 records a lookup frame, frames to
+1,024 bytes) and the scrutiny set (nesting 0.6, conflicting definitions 0.3, the question on a nested frame or a conflicted key) at
+4,096 on both twins, two seeds, one row in four a plain document: two grids in one decision block, run in sequence by C3:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_frame_pass2.ipynb)
 
 Then:
 
