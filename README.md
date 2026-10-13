@@ -15,7 +15,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_table.py` | the results index: one table per context from a folder of run records, the seed means, the bits by position |
 | `geolip/nano_beatrix/bed_timing.py` | the back-to-back timing of the arms on one card (train step and inference row) |
 | `geolip/nano_beatrix/bed_corpus.py` | builds the bed's corpus and held-out file from fineweb-edu |
-| `geolip/nano_beatrix/bed_runner.py` | runs a grid of arms in sequence on one card (the launch point for a rented card): the grid expands from comma lists, finished runs are remembered so a restart resumes, a stop file ends the grid between runs, each finished run can ship its record and weights to the Hub repo |
+| `geolip/nano_beatrix/bed_runner.py` | runs a grid of arms in sequence on one card (the launch point for a rented card): the grid expands from comma lists, finished runs are remembered so a restart resumes, a stop file ends the grid between runs, each finished run can ship its record and weights to the Hub repo. From Python, `run(spec, out, push)` streams every run with a grid bar and a step bar fed by the trainer's own progress lines |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
@@ -43,7 +43,8 @@ gauge). The pin moves to a tagged release when that branch merges.
 The bed reads its corpus (`<out>/bed/bed_corpus.bin` + offsets) and a held-out file (`heldout_fineweb_edu_head2048.jsonl` in `<out>` or
 `<out>/bed`) from an output folder; `python -m geolip.nano_beatrix.bed_corpus <out>/bed` builds all three from fineweb-edu (needs the
 `corpus` extra: `pip install "geolip-nano-beatrix-trainer[corpus]"`). On a rented card, `colab/nano_frame_grid.ipynb` does the whole
-sequence: install at a tag, the token, the corpus, a grid through the runner with every finished run shipped to the Hub. Then:
+sequence in the house format: C1 pins and the decision block, C2 the preflight (the data, the plan, a short run for the price line, the
+push probe), C3 the session with its bars, C4 the results table (`bed_table.render`). Then:
 
 ```bash
 python -m geolip.nano_beatrix.bed_train --out=<out> --arm=smr-fixed --seed=1 --ctx=4096 --mb=8 --steps=12000 --plant=1.0 --records=8 --dists=64,512,1024,2048,3072
@@ -67,8 +68,8 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
-0.1.2 (2026-10-12): the bed as it ran the first night, moved here from the research tree, with the frame composer and its wiring;
-the framed trainer smoked on the card from this repo (the dynamic frames, the weights source, the fixed layout).
+0.1.11 (2026-10-13): the bed as it ran the first night, the frame composer and its wiring, the runner with its Python entry point and bars,
+the corpus and table tools callable, the Colab notebook in the house format; the twins named and their bank of record set. 92 to 100 tests on the CPU.
 
 ## Licence
 

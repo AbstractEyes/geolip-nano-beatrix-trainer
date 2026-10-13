@@ -3,6 +3,7 @@ torch==2.11.0
 numpy==2.5.3
 safetensors==0.8.0
 huggingface_hub==1.31.0
+tqdm==4.70.1
 geolip-alephllm @ git+https://github.com/AbstractEyes/alephllm@d3c7eda
 pytest==8.4.2
 datasets==5.0.1
