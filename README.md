@@ -44,7 +44,10 @@ The bed reads its corpus (`<out>/bed/bed_corpus.bin` + offsets) and a held-out f
 `<out>/bed`) from an output folder; `python -m geolip.nano_beatrix.bed_corpus <out>/bed` builds all three from fineweb-edu (needs the
 `corpus` extra: `pip install "geolip-nano-beatrix-trainer[corpus]"`). On a rented card, `colab/nano_frame_grid.ipynb` does the whole
 sequence in the house format: C1 pins and the decision block, C2 the preflight (the data, the plan, a short run for the price line, the
-push probe), C3 the session with its bars, C4 the results table (`bed_table.render`). Then:
+push probe), C3 the session with its bars, C4 the results table (`bed_table.render`). Open it in Colab straight from GitHub:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_frame_grid.ipynb)
+
+Then:
 
 ```bash
 python -m geolip.nano_beatrix.bed_train --out=<out> --arm=smr-fixed --seed=1 --ctx=4096 --mb=8 --steps=12000 --plant=1.0 --records=8 --dists=64,512,1024,2048,3072
