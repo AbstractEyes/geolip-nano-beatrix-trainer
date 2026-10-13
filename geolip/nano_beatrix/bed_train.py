@@ -600,7 +600,7 @@ log("dispatch census (last block): " + " ".join(f"{c}:e{v['dominant']}/{v['home_
 
 
 @torch.no_grad()
-def frame_gauges():
+def frame_gauges(disable_bank=False):
     """Held-out framed rows (the eval and fetch documents as the filler, the plan drawn as in training, the ask strict): bits by frame
     (kind x size x segment, by depth, outside the frames) and the fetch grouped by the truth's source / frame size / depth (teacher-forced
     value bits, the greedy first byte, the whole value, the mean distance)."""
@@ -614,7 +614,7 @@ def frame_gauges():
     for i in range(0, len(rows), 16):
         x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rows[i:i + 16]]).astype(np.int64), device=DEV)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            lg = model(x[:, :-1])[0].float()
+            lg = model(x[:, :-1], disable_bank=disable_bank)[0].float()
         nll = F.cross_entropy(lg.reshape(-1, 256), x[:, 1:].reshape(-1), reduction="none").view(x.shape[0], CTX).cpu().numpy()
         acc = bf.bits_by_frame(nll, metas[i:i + 16], acc)
         nll_rows.append(nll)
@@ -629,7 +629,7 @@ def frame_gauges():
             xb[i, :len(p)] = np.frombuffer(p, dtype=np.uint8)
         for i0 in range(0, len(rows), 16):
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                lg = model(torch.tensor(xb[i0:i0 + 16].astype(np.int64), device=DEV))[0].float()
+                lg = model(torch.tensor(xb[i0:i0 + 16].astype(np.int64), device=DEV), disable_bank=disable_bank)[0].float()
             last = torch.tensor([len(p) - 1 for p in prompts[i0:i0 + 16]], device=DEV)
             nxt = lg[torch.arange(lg.shape[0], device=DEV), last].argmax(-1).cpu().numpy()
             for j, i in enumerate(range(i0, min(i0 + 16, len(rows)))):
@@ -659,10 +659,12 @@ def frame_gauges():
 
 
 frame_bits, frame_fetch = frame_gauges() if FRAMES else (None, None)
+frame_fetch_bank_off = frame_gauges(disable_bank=True)[1] if FRAMES else None     # the same rows with the bank off: does the address carry the lookup?
 if FRAMES:
     log("held-out bits by frame (kind / size / segment; by depth; outside):\n" + bf.fmt_frame_bits(frame_bits))
     log("fetch by frame: " + " | ".join(f"{g}: n {a['n']} bits {a['value_bits']:.2f} first {a['first_byte']:.2f} full {a['full_value']:.2f} dist {a['dist']:.0f}"
                                         for g, a in sorted(frame_fetch.items())))
+    log("fetch by frame, bank off: " + " | ".join(f"{g}: full {a['full_value']:.2f} bits {a['value_bits']:.2f}" for g, a in sorted(frame_fetch_bank_off.items())))
 
 
 @torch.no_grad()
@@ -706,7 +708,7 @@ R = dict(arm=ARM, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, 
          final_loss_ema=ema, final_bpb_ema=ema / LN2, heldout_bpb=bits, heldout_bpb_by_class=by_cls, heldout_bpb_by_position=by_pos, dispatch_off_bpb=bits_off,
          records_planted_mean=planted_mean, cues=len(ROW_CUES),
          dispatch_off_by_class=by_cls_off, fetch=fetch_res, dispatch_census=census, curve=curve, wall_s=time.time() - T0,
-         frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch, canary=canary, formation=formation, plain_collapse=collapse,
+         frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch, fetch_by_frame_bank_off=frame_fetch_bank_off, canary=canary, formation=formation, plain_collapse=collapse,
          weights=os.path.relpath(os.path.join(wdir, "model.safetensors"), OUT))
 path = os.path.join(BED, f"bed_{TAG}.json")
 json.dump(R, open(path, "w", encoding="utf-8"), indent=1)

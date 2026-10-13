@@ -75,6 +75,10 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.19 (2026-10-13): the formation verdict reads the whole value (a failure when every lookup group of eight trials or more writes the
+value whole at or under 0.05; the near band's bits are reported, not required: a copy can form misaligned), and every framed record
+carries the fetch with the bank off (`fetch_by_frame_bank_off`): whether the address or attention carries the lookup. Both notebooks pin v0.1.19.
+
 0.1.18 (2026-10-13): only runs finished under a push are ever pending. The 0.1.17 resume shipped a notebook's 200-step price-line run
 (run without a push) to the Hub as an unshipped record from before. Now a run finished under a push is listed in runner_pushlist.txt
 before its ship; pending = listed and not shipped; `ship_pending(REPO, OUT, all_records=True)` is the by-hand salvage of a whole folder.

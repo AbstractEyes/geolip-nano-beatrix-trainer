@@ -137,14 +137,20 @@ def test_canary_rows_shapes_and_grammar(src, register):
 
 def test_formation_rule():
     u = bf.uniform_bits("math")
+    g = lambda *vals: {f"data/{s}/depth0": dict(full_value=v, n=35) for s, v in zip((32, 128, 256, 512), vals)}
     formed = [dict(step=s, value_bits={"0": (u if s < 6000 else 0.3), "w": None}) for s in range(500, 12001, 500)]
-    r = bf.formation(formed, "math", {"data/32/depth0": dict(full_value=0.9), "data/128/depth0": dict(full_value=0.5)})
+    r = bf.formation(formed, "math", g(0.9, 0.5, 0.4, 0.3))
     assert r["formed"] and not r["failure"] and r["first_step_under"] == 6000 and abs(r["near_band_value_bits_at_end"] - 0.3) < 1e-9
     stuck = [dict(step=s, value_bits={"0": u - 0.05, "w": None}) for s in range(500, 12001, 500)]
-    r = bf.formation(stuck, "math", {"data/32/depth0": dict(full_value=0.0), "data/128/depth0": dict(full_value=0.0), "weights": dict(full_value=0.0)})
-    assert r["failure"] and not r["formed"] and r["first_step_under"] is None and r["whole_value_zero_everywhere"] and r["at_the_rate"]
-    r = bf.formation(stuck, "math", {"data/32/depth0": dict(full_value=0.1)})     # at the rate but a group reads: no failure call
-    assert not r["failure"] and r["at_the_rate"] and not r["whole_value_zero_everywhere"]
+    r = bf.formation(stuck, "math", g(0.0, 0.0, 0.0, 0.0))                     # never formed: at the rate, nothing read
+    assert r["failure"] and not r["formed"] and r["first_step_under"] is None and r["at_the_rate"] and r["groups_judged"] == 4
+    misaligned = [dict(step=s, value_bits={"0": (u if s < 4000 else 2.26), "w": None}) for s in range(500, 12001, 500)]
+    r = bf.formation(misaligned, "math", g(0.0, 0.03, 0.0, 0.03))             # the bits fell, the copy is wrong everywhere: a failure
+    assert r["failure"] and not r["at_the_rate"] and r["first_step_under"] == 4000
+    r = bf.formation(stuck, "math", g(0.1, 0.0, 0.0, 0.0))                     # one group reads above the floor: no failure call
+    assert not r["failure"] and r["at_the_rate"]
+    r = bf.formation(stuck, "math", {"data/32/depth0": dict(full_value=0.0, n=4)})   # too few trials: no verdict
+    assert not r["failure"] and r["groups_judged"] == 0
     r = bf.formation([], "math", None)                                            # nothing logged, nothing gauged: no verdict
     assert r["near_band_value_bits_at_end"] is None and not r["failure"] and r["first_step_under"] is None
 

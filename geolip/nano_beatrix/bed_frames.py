@@ -426,22 +426,23 @@ def canary_rows(docs: list, ctx: int, register: str = "caption", scheme: str = "
     return rows, dict(prefix_bytes=len(prefix), frame_bytes=len(frame), frame_records=1, register=register, scheme=scheme)
 
 
-def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2) -> dict:
-    """Did the copy form? The near band's online value bits (the value's bytes at the question when the frame sits within 128 bytes; the
-    last logged read) against the register's uniform rate: a formation FAILURE when they sit within `margin` of the rate at the end AND
-    the whole value reads 0 in every gauged lookup group (the curriculum plan's rule; one Castor seed in three never formed the math copy
-    at 4,096 while its text and frame grammar were normal, 2026-10-13). Also the first logged step under the rate by the margin. A
-    verdict in the record, never a halt."""
+def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2, floor: float = 0.05, min_trials: int = 8) -> dict:
+    """Did the copy form? A formation FAILURE when every gauged lookup group of `min_trials` trials or more reads the whole value at or
+    under `floor` (a 6-letter value written whole from its frame). The near band's online value bits (the value's bytes at the question
+    when the frame sits within 128 bytes; the last logged read) are reported against the register's uniform rate with the first logged
+    step under it by `margin`, and are NOT required for the verdict: a copy can form misaligned (near band 2.26 bits, the greedy first byte
+    wrong in every trial, 2026-10-13) or never form (near band at the rate). A verdict in the record, never a halt."""
     u = uniform_bits(register)
     near = [(c["step"], c["value_bits"]["0"]) for c in curve if (c.get("value_bits") or {}).get("0") is not None]
     last = near[-1][1] if near else None
     first_under = next((s for s, v in near if v < u - margin), None)
     at_rate = last is None or last > u - margin
-    lookup = {g: a["full_value"] for g, a in (fetch_groups or {}).items() if g.startswith("data/")}
-    whole_zero = bool(lookup) and all(v == 0 for v in lookup.values())
-    failure = bool(at_rate and whole_zero)
+    lookup = {g: a["full_value"] for g, a in (fetch_groups or {}).items() if g.startswith("data/") and a.get("n", 0) >= min_trials}
+    whole_zero = bool(lookup) and all(v <= floor for v in lookup.values())
+    failure = bool(whole_zero)
     return dict(register=register, uniform_bits=u, margin=margin, near_band_value_bits_at_end=last, first_step_under=first_under,
-                at_the_rate=bool(at_rate), whole_value_zero_everywhere=whole_zero, failure=failure, formed=not failure)
+                at_the_rate=bool(at_rate), whole_value_zero_everywhere=whole_zero, failure=failure, formed=not failure, floor=floor,
+                min_trials=min_trials, groups_judged=len(lookup))
 
 
 def plain_collapse(by_position_row: dict, threshold: float = 2.5, head: str = "0-64") -> dict:
