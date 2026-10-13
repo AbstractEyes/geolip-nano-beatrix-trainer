@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-"""bed_frames.py - THE FRAMED ROW for the v4 nano program (Phil 2026-10-12 18:3x: "measure exactly what she can hold ... using a framed
-system"; "CTX 8-80 [frame of lookup], CTX 81-400 [thinking space], and so on for bulk lookup"; plans/2026-10-12_v4_nano_program.md).
+"""bed_frames.py - THE FRAMED ROW for the nano bed: rows built from frames, to measure what a small craft holds and how it reads
+compartments of its window (a lookup frame, a thinking space, bulk lookup after; sectors of generic sizes rather than fixed ranges).
 A composer the bed imports when --frames=<layout> is given (bed_train.py; the default rows stay bit-identical). The registry's specials
 carry the structure (geolip/alephllm/data/special_tokens.py; all thirteen invalid-UTF-8 bytes are allocated there, so NO new byte):
     DOC opens the row | a register tag names the kind of content | DATA ... END is a lookup frame of records CUE key SEP value |
     THINK ... END is the thinking space (filler text in the capacity bed) | the question is CUE key SEP, the answer the value, then END.
 Layouts (byte ranges in the window; the last compartment runs to the window end):
-    A: head 0-8 | lookup 8-81 | think 81-401 | bulk 401-end   (his example laid onto the registry)
-Register tags (his caption / math / code / identity): scheme "mode" = MODE + one ASCII byte (c m k i; no registry change) or
+    A: head 0-8 | lookup 8-81 | think 81-401 | bulk 401-end   (the first example, kept as a fixed reference)
+Register tags (caption / math / code / identity): scheme "mode" = MODE + one ASCII byte (c m k i; no registry change) or
 scheme "esc" = ESC + a slot (0x02 CAPTION, 0x03 MATH, 0x04 CODE, 0x05 IDENT; an append-only grant if chosen). Identity is also the
-SYS block already, so the identity register is optional (his words).
+SYS block already, so the identity register is optional.
 Three sources of the asked record: "lookup" (the small frame), "bulk" (the big frame), "weights" (a fact table recurring across
-training rows; at the question the fact is ABSENT from the window: recall from the weights = what she can hold).
+training rows; at the question the fact is ABSENT from the window: recall from the weights = what the craft holds).
 Self-test (pure numpy, no model, no card):  python bed_frames.py --selftest
 """
 from __future__ import annotations
@@ -184,7 +184,7 @@ def bands_for(ctx: int, layout: str = "A") -> tuple:
     return tuple(edges)
 
 
-# ------------------------------------------------------------------ the dynamic mode (Phil 19:0x: sectors of generic sizes, not locked spaces)
+# ------------------------------------------------------------------ the dynamic mode: sectors of generic sizes, not locked spaces
 FRAME_SIZES = (32, 128, 256, 512, 1024)
 KIND_TAG = {"data": DATA, "think": THINK}
 KIND_ID = {"none": 0, "data": 1, "think": 2}

@@ -56,8 +56,8 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
-0.1.0 (2026-10-12): the bed as it ran the first night, moved here from the research tree, with the frame composer and its wiring.
-The comments still carry working notes from that tree and are being cleaned.
+0.1.2 (2026-10-12): the bed as it ran the first night, moved here from the research tree, with the frame composer and its wiring;
+the framed trainer smoked on the card from this repo (the dynamic frames, the weights source, the fixed layout).
 
 ## Licence
 

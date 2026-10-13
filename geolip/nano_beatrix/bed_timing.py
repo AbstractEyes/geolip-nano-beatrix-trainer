@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""bed_timing.py - THE TIME COST OF EVERY PROTOTYPE (2026-10-12; Phil 01:2x "Make sure the prototypes have a time consumption cost as
-well"). Under identical conditions on the same card, back to back: every arm of experiment 3's bed (the attention form x the bank form),
-the last-block fix modes on the bed craft, and the two 2s teachers' forms (the splat and the softmax twin, random weights: the cost is the
-architecture's). For each: params, the training step (forward + backward + the optimizer step; bf16 autocast; pure Adam) in ms and
+"""bed_timing.py - THE TIME COST OF EVERY PROTOTYPE. Under identical conditions on the same card, back to back: every arm of the nano
+bed (the attention form x the bank form), the last-block fix modes on the bed craft, and the two teacher forms at their full size
+(the splat and the softmax twin, random weights: the cost is the architecture's). For each: params, the training step (forward + backward + the optimizer step; bf16 autocast; pure Adam) in ms and
 tokens/s, the inference forward (no grad, bf16) in ms per row and tokens/s, the peak memory of each.
 Usage (through card_gate / run_cf): bed_timing.py --out=DIR [--mb=32 --ctx=1024 --steps=10 --teachers=1 --fixes=1 --smoke=1
                                                            --arms=sm-free,hubr-free,hubd-free,hub-free --big=1]

@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-"""bed_train.py - EXPERIMENT 3's SMALL BED (2026-10-12; plans/2026-10-11_night_program_2s.md Q3; Phil 23:0x: "byte experts ... experts
-dedicated to the bytes with global attention ... global positioning superimposing the aleph address's anchored behavior ... small
-experiments without the model viable"). A small byte craft trained from birth on fineweb-edu text with planted records; one ARM per
-run = the attention form x the bank's dispatch form (the library's 0.10.18 flags, branch feat/night-rigs):
-  attention  sm    softmax + the learned position table (the twin's form)      smr   softmax + rotary (the table kept)
-             smrn  softmax + rotary, no table                                  hub   every block a splat hub (the splat's form)
+"""bed_train.py - THE NANO BED: a small byte craft trained from birth on fineweb-edu text with planted records (or framed rows,
+bed_frames.py), to measure what a craft this small holds and how fast it trains. One ARM per run = the attention form x the bank's
+dispatch form (the library's flags):
+  attention  sm    softmax + the learned position table                       smr   softmax + rotary (the table kept)
+             smrn  softmax + rotary, no table                                  hub   every block a splat hub (the chunked scan with an aleph address)
              hubr  hubs with the address rotary (RoPE on the oriented codes)   alt   hub / softmax+rotary alternating
-             hubrn hubs with the address rotary, no position table (Phil 01:5x: rotary with a splat-only model, its recon)
+             hubrn hubs with the address rotary, no position table             hubd  hubs with two address masses a block
              altn  alternating, both rotaries
   bank       free  the aleph address alone (the current form)   fixed  an installed byte-class table REPLACES the amplitudes (one
              expert per class)                                   both   the address PLUS the installed table (learned)
@@ -48,7 +47,7 @@ P_PLANT = float(ARGS.get("plant", "0.25"))
 N_EVAL = int(ARGS.get("eval_docs", "16" if SMOKE else "128"))
 N_TRIALS = int(ARGS.get("trials", "8" if SMOKE else "64"))
 DISTS = [int(x) for x in ARGS.get("dists", "64,256,512,896").split(",")]
-# the framed rows (the v4 nano program, 2026-10-12): "" = the planted rows as before (bit-identical); "A" = the fixed reference layout;
+# the framed rows: "" = the planted rows as before (bit-identical); "A" = the fixed reference layout;
 # "dyn" = dynamic sectors of generic sizes (bed_frames.py)
 FRAMES = ARGS.get("frames", "")
 assert FRAMES in ("", "A", "dyn"), FRAMES
@@ -112,9 +111,9 @@ def craft_cfg(arm: str) -> AlephLMConfig:
     return AlephLMConfig(**{**base, **A[attn], **extra}, bank_byte_table=Bk[bank])
 
 
-# ------------------------------------------------------------------ the planted record (the trained frame of the arm program)
+# ------------------------------------------------------------------ the planted record
 CUES = [("code", "digits", 5), ("word", "letters", 6), ("key", "hex", 8), ("number", "digits", 7), ("token", "alnum", 6)]
-# the dense composer's extra cue words (2026-10-12 13:0x): compose_row drew its cues from CUES, so --records above 5 planted FIVE records
+# the dense composer's extra cue words: compose_row draws its cues from CUES, so --records above 5 plants five records
 # a row; with --cues=16 it draws from CUES + EXTRA_CUES (plant() and the fetch keep the five, so every fetch stays comparable)
 EXTRA_CUES = [("phrase", "letters", 6), ("label", "alnum", 6), ("serial", "digits", 6), ("pin", "digits", 5), ("badge", "hex", 6),
               ("ticket", "digits", 7), ("slot", "alnum", 5), ("tag", "letters", 5), ("mark", "hex", 7), ("sign", "letters", 7), ("note", "alnum", 7)]
@@ -210,8 +209,7 @@ def plant(w: bytes, rng, dist=None, form=None):
 
 
 def compose_row(rng, K):
-    """THE DENSE RECON ROW (synthetic cultivation; Phil 2026-10-11 "Would it be through synthetic cultivation?" and 01:5x the splat's
-    recon): K single-form records planted in web text, each recurring d bytes later (d drawn as plant() draws it), the cues distinct within
+    """THE DENSE ROW: K single-form records planted in web text, each recurring d bytes later (d drawn as plant() draws it), the cues distinct within
     the row so the records are distinguishable; the filler is corpus text. -> (bytes of CTX + 1, [meta...]) with meta as plant() gives."""
     cues = [ROW_CUES[i] for i in rng.permutation(len(ROW_CUES))[:K]]      # at most len(ROW_CUES) records a row (5 or 16)
     recs = []
@@ -470,7 +468,7 @@ def logprobs(x):
 @torch.no_grad()
 def heldout_bits(disable_bank=False):
     """Held-out bits a byte: the mean, by byte class, and BY POSITION in the window (the row frame of eval/position_bits.py; the
-    eval rows are single documents behind a DOC byte, so the row frame is the document frame; Phil 2026-10-12 12:0x)."""
+    eval rows are single documents behind a DOC byte, so the row frame is the document frame)."""
     from geolip.alephllm.eval import position_bits as pb
     tot, n = 0.0, 0
     cls = {c: [0.0, 0] for c in BYTE_CLASSES}

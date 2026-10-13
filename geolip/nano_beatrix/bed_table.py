@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""bed_table.py - the small bed's results as tables (2026-10-12; experiment 3). Reads every bed_<arm>_s<seed>[_L<steps>][_dense<K>][_<variant>]
+"""bed_table.py - the nano bed's results as tables. Reads every bed_<arm>_s<seed>[_L<steps>][_dense<K>][_<variant>]
 [_ctx<N>][_from].json in DIR (bed_train.py outputs; smokes excluded) and prints markdown: the main table per context and fetch-distance set
 (one row per run: steps, records a row, continued from, held-out bits a byte, the dispatch-off delta, digit and upper bits, the planted fetch
 first byte / all five at every distance, the online value bits in the last window by band, the last block's census home share and entropy,
