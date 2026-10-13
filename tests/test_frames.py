@@ -42,6 +42,24 @@ def test_compose_layout_a(src, ctx, scheme, register, nl, nb, ask):
         assert m["source"] == ask and m["dist"] > 0
 
 
+def test_layout_a_frames_and_bits_by_frame(src):
+    """Layout A's compartments are frames too (the trainer's bits by frame and fetch by frame read both modes alike)."""
+    rng = np.random.default_rng(17)
+    metas = []
+    for ask in ("lookup", "bulk"):
+        row, m = bf.compose(rng, src, 1024, "A", "mode", "caption", 2, 4, None, ask)
+        assert [f["kind"] for f in m["frames"]] == ["data", "think", "data"]
+        for f in m["frames"]:
+            assert row[f["start"]] == bf.KIND_TAG[f["kind"]] and row[f["end"] - 1] == END
+        assert m["truth_frame"] == (0 if ask == "lookup" else 2) and m["truth_depth"] == 0 and m["n_defs"] == 1
+        metas.append(m)
+    res = bf.finish_frame_bits(bf.bits_by_frame(np.ones((2, 1024)), metas))
+    assert sum(v["n"] for v in res["by_kind_depth"].values()) + res["outside"]["n"] == 2 * 1024
+    assert "think/320/body" in res["by_kind_size_segment"] and "data/73/open" in res["by_kind_size_segment"]
+    row, m = bf.compose(rng, src, 1024, "A", "mode", "caption", 2, 0, bf.fact_table(64, "caption"), "weights")
+    assert m["truth_frame"] is None and len(m["frames"]) == 2
+
+
 def test_fact_table_is_seed_stable():
     assert bf.fact_table(64, "math") == bf.fact_table(64, "math")
     assert bf.fact_table(64, "math") != bf.fact_table(64, "caption")

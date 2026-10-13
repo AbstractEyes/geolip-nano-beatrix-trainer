@@ -163,8 +163,15 @@ def compose(rng, src: bytes, ctx: int, layout: str = "A", scheme: str = "mode", 
     assert len(row) == ctx + 1 and row[v0:v0 + len(asked[1])] == asked[1], "the framed value is not where the arithmetic says"
     src_name = "weights" if ask == "weights" else ("lookup" if asked[0] in dict(look) else "bulk")
     dist = None if src_name == "weights" else v0 - rec_pos[asked[0]]
+    # the layout's compartments as frames too, so the frame masks and bits by frame read layout A like a dynamic row
+    frames = [dict(kind="data", size=l1 - l0, start=l0, end=l1, depth=0, n_records=len(look), keys=[k.decode() for k, _ in look], children=0),
+              dict(kind="think", size=t1 - t0, start=t0, end=t1, depth=0, n_records=0, keys=[], children=0)]
+    if bulk:
+        frames.append(dict(kind="data", size=q0 - b0, start=b0, end=q0, depth=0, n_records=len(bulk), keys=[k.decode() for k, _ in bulk], children=0))
+    truth_frame = None if src_name == "weights" else (0 if src_name == "lookup" else 2)
     meta = dict(v0=v0, vlen=len(asked[1]), dist=dist, source=src_name, key=asked[0].decode(), register=register, scheme=scheme,
-                n_lookup=n_lookup, n_bulk=n_bulk, q0=q0, comps=comps, bands=bands_for(ctx, layout))
+                n_lookup=n_lookup, n_bulk=n_bulk, q0=q0, comps=comps, bands=bands_for(ctx, layout), frames=frames, truth_frame=truth_frame,
+                truth_depth=None if truth_frame is None else 0, n_defs=0 if truth_frame is None else 1)
     return row, meta
 
 
