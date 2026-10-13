@@ -67,11 +67,22 @@ def run_key(run: list) -> str:
 
 
 def run_label(run: list) -> str:
-    """A short name for a run's bar: its arm, seed and register (when framed)."""
+    """A short name for a run's bar: its arm, seed and register (when framed), then the grid axes that move a run away from the
+    first pass (records a frame, a strict ask, nesting or conflicts moved, facts in the weights) so runs of one grid never share a name."""
     kv = dict(a.lstrip("-").split("=", 1) for a in run)
     parts = [kv.get("arm", "?"), f"s{kv.get('seed', '?')}"]
     if kv.get("frames"):
         parts.append(kv.get("register", "caption"))
+        if kv.get("frame_records"):
+            parts.append(f"r{kv['frame_records']}")
+        if kv.get("ask", "any") != "any":
+            parts.append(kv["ask"])
+        if kv.get("nest") not in (None, "0.3"):
+            parts.append(f"n{kv['nest']}")
+        if kv.get("overlap") not in (None, "0.0", "0"):
+            parts.append(f"o{kv['overlap']}")
+        if kv.get("facts"):
+            parts.append(f"f{kv['facts']}")
     return " ".join(parts)
 
 
@@ -125,7 +136,8 @@ class _Child:
     def __init__(self, run_args: list, cmd: list, slot: int, tqdm, logf: str, gbar) -> None:
         self.run, self.label, self.slot, self.lines, self.t0 = run_args, run_label(run_args), slot, [], time.time()
         self.tqdm, self.logf, self.gbar, self.bar = tqdm, logf, gbar, None
-        self.p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+        quiet = dict(os.environ, TF_CPP_MIN_LOG_LEVEL="3", TF_ENABLE_ONEDNN_OPTS="0", USE_TF="0", USE_TORCH="1")   # no TensorFlow noise on a rented image
+        self.p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=quiet)
         self.th = threading.Thread(target=self._read, daemon=True)
         self.th.start()
 

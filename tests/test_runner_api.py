@@ -21,6 +21,9 @@ def test_parse_step_ignores_other_lines():
 def test_run_label_names_arm_seed_and_register():
     assert run_label(["--arm=castor-both", "--seed=1", "--frames=dyn", "--register=math"]) == "castor-both s1 math"
     assert run_label(["--arm=smr-fixed", "--seed=2", "--ctx=4096"]) == "smr-fixed s2"
+    assert run_label(["--arm=castor-both", "--seed=1", "--frames=dyn", "--register=caption", "--frame_records=8"]) == "castor-both s1 caption r8"
+    assert run_label(["--arm=pollux-both", "--seed=2", "--frames=dyn", "--nest=0.6", "--overlap=0.3", "--ask=nested"]) == "pollux-both s2 caption nested n0.6 o0.3"
+    assert run_label(["--arm=castor-both", "--seed=1", "--frames=dyn", "--facts=64", "--ask=weights"]) == "castor-both s1 caption weights f64"
 
 
 def test_dry_run_from_a_dict_spec(tmp_path):

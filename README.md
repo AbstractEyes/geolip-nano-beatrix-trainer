@@ -75,6 +75,11 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.15 (2026-10-13): the runner's bar labels carry the grid axes that vary (records a frame, a strict ask, nesting and conflicts, facts);
+its child processes run with TensorFlow's logging off (the noise seen on a Colab image); both notebooks default to ONE run at a time,
+because four at once only divided the RTX PRO 6000 (4 x ~214k tok/s = one run's 863k): parallel runs pay only when a single run leaves
+the card idle, which the step bars' summed tok/s shows. Both notebooks pin v0.1.15.
+
 0.1.14 (2026-10-13): the composer works one step ahead of the card (`--prefetch=1` by default, `--prefetch=0` the serial loop): the
 batches are identical by construction (every step seeds its own rng) and were proven bit-for-bit on the CPU; on the 4090 at 1,024 x 32
 under the mixed diet the framed step went from 369k to 399k tok/s (+8%). Both notebooks pin v0.1.14.
