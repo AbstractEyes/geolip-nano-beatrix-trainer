@@ -75,6 +75,13 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.17 (2026-10-13): a Hub fault never stops a grid. A 504 from the Hub's commit API during a ship killed a twelve-run grid on a rented
+card and lost three finished runs' ships (the ship ran in the main thread with no retry, and the done mark came after it). Now the done
+mark is written the moment a run finishes; ships run in a background thread and retry a Hub fault with a doubling wait (15 s to 10 min,
+eight attempts); shipped tags are remembered in runner_shipped.txt and anything left unshipped is re-shipped at the next start and at
+the end (the result carries `unshipped`; `bed_runner.ship_pending(REPO, OUT)` ships by hand); the run's tag is one function
+(names.run_tag) for the trainer and the runner, so a resume treats a run whose record exists on disk as done. Both notebooks pin v0.1.17.
+
 0.1.16 (2026-10-13): three gauges for the nano train's curriculum, pure functions in bed_frames and keys in every record: the canary
 rows (a bare document; the register tag and a question cue before it; one flat 32-byte frame before it; bits a byte whole and by
 window), the formation verdict (the near band's online value bits at the end against the register's uniform rate, log2 of its

@@ -25,11 +25,18 @@ from __future__ import annotations
 
 import itertools
 import os
+import queue
 import re
 import subprocess
 import sys
 import threading
 import time
+
+try:
+    from .names import run_tag  # noqa: E402  (the package)
+except ImportError:                                      # run as a file: the folder on the path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from names import run_tag  # noqa: E402
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
              "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues")
@@ -101,17 +108,93 @@ def wrote_path(stdout: str) -> str | None:
     return m[-1] if m else None
 
 
-def ship(repo: str, record: str, out: str, log) -> None:
-    """Ship one finished run: its record to bed/reports/ and its weights folder to bed/weights/<tag>/ on the Hub (HF_TOKEN set)."""
+SHIP_ATTEMPTS, SHIP_WAIT = 8, 15          # a Hub fault is retried: 15 s doubling to 10 min between attempts (about 26 min in all)
+
+
+def _shipped(out: str) -> set:
+    p = os.path.join(out, "runner_shipped.txt")
+    return set(open(p, encoding="utf-8").read().splitlines()) if os.path.exists(p) else set()
+
+
+def pending_records(out: str) -> list:
+    """The records under <out>/bed that never shipped (not in runner_shipped.txt; the short smoke runs stay local), oldest first."""
+    bed = os.path.join(out, "bed")
+    if not os.path.isdir(bed):
+        return []
+    done = _shipped(out)
+    recs = [os.path.join(bed, n) for n in os.listdir(bed) if n.startswith("bed_") and n.endswith(".json") and "_smoke" not in n and n[4:-5] not in done]
+    return sorted(recs, key=os.path.getmtime)
+
+
+def ship(repo: str, record: str, out: str, log, attempts: int = SHIP_ATTEMPTS, wait: float = SHIP_WAIT) -> bool:
+    """Ship one finished run: its record to bed/reports/ and its weights folder to bed/weights/<tag>/ on the Hub (HF_TOKEN set). A Hub
+    fault (a 504 from the commit API, a dropped connection) is retried with a doubling wait; after `attempts` the run is reported
+    UNSHIPPED and stays on disk for the next ship_pending(). Never raises; -> shipped or not. A shipped tag is remembered in
+    <out>/runner_shipped.txt (the 2026-10-13 fault: one 504 killed a twelve-run grid and lost three finished runs' ships)."""
     from huggingface_hub import HfApi
-    api = HfApi(token=os.environ["HF_TOKEN"])
     name = os.path.basename(record)
     tag = name[4:-5]
-    api.upload_file(path_or_fileobj=record, path_in_repo=f"bed/reports/{name}", repo_id=repo, commit_message=f"bed: {tag} record")
     wdir = os.path.join(out, "bed", tag)
-    if os.path.isdir(wdir):
-        api.upload_folder(folder_path=wdir, path_in_repo=f"bed/weights/{tag}", repo_id=repo, commit_message=f"bed: {tag} weights")
-    log(f"shipped {tag} to {repo}")
+    for k in range(1, attempts + 1):
+        try:
+            api = HfApi(token=os.environ["HF_TOKEN"])
+            api.upload_file(path_or_fileobj=record, path_in_repo=f"bed/reports/{name}", repo_id=repo, commit_message=f"bed: {tag} record")
+            if os.path.isdir(wdir):
+                api.upload_folder(folder_path=wdir, path_in_repo=f"bed/weights/{tag}", repo_id=repo, commit_message=f"bed: {tag} weights")
+            with open(os.path.join(out, "runner_shipped.txt"), "a", encoding="utf-8") as f:
+                f.write(tag + "\n")
+            log(f"shipped {tag} to {repo}" + (f" (attempt {k})" if k > 1 else ""))
+            return True
+        except Exception as e:  # noqa: BLE001  (a Hub fault of any kind: the grid never dies of it)
+            if k == attempts:
+                log(f"UNSHIPPED {tag}: {type(e).__name__}: {str(e)[:160]}; after {attempts} attempts the record and weights stay in {out}/bed, retried at the next ship")
+                return False
+            w = min(wait * 2 ** (k - 1), 600)
+            log(f"ship of {tag} failed (attempt {k}/{attempts}): {type(e).__name__}: {str(e)[:120]}; retry in {w:.0f} s")
+            time.sleep(w)
+    return False
+
+
+def ship_pending(repo: str, out: str, log=print, attempts: int = SHIP_ATTEMPTS) -> list:
+    """Ship every record under <out>/bed not yet in runner_shipped.txt (smokes excepted); -> the tags still unshipped. The by-hand
+    call after a grid that reported unshipped runs: bed_runner.ship_pending(REPO, OUT)."""
+    left = []
+    for rec in pending_records(out):
+        if not ship(repo, rec, out, log, attempts=attempts):
+            left.append(os.path.basename(rec)[4:-5])
+    return left
+
+
+class _Shipper(threading.Thread):
+    """Ships finished runs in the background, one at a time, with the retries of ship(): the card never waits on the Hub."""
+
+    def __init__(self, repo: str, out: str, log) -> None:
+        super().__init__(daemon=True)
+        self.repo, self.out, self.log, self.q = repo, out, log, queue.Queue()
+        self.start()
+
+    def submit(self, record: str) -> None:
+        self.q.put(record)
+
+    def run(self) -> None:
+        while True:
+            rec = self.q.get()
+            try:
+                ship(self.repo, rec, self.out, self.log)
+            except Exception as e:  # noqa: BLE001  (ship() never raises; a belt for the braces)
+                self.log(f"ship thread: {e!r}")
+            finally:
+                self.q.task_done()
+
+    def drain(self, log, timeout: float = 1800.0) -> bool:
+        """Wait for the queued ships (up to `timeout` s); -> True when none is left in flight."""
+        t0 = time.time()
+        while self.q.unfinished_tasks and time.time() - t0 < timeout:
+            time.sleep(1.0)
+        if self.q.unfinished_tasks:
+            log(f"{self.q.unfinished_tasks} ship(s) still retrying in the background after {timeout:.0f} s")
+            return False
+        return True
 
 
 def _tqdm():
@@ -172,8 +255,10 @@ class _Child:
 def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bool = False, parallel: int = 1) -> dict:
     """Run the grid `spec` (the command-line keys; values as strings or numbers; comma lists expand into the product) under `out`, up to
     `parallel` runs at once on the card. Resumes from <out>/runner_done.txt; <out>/STOP starts no new run and lets the running ones finish;
-    ships each finished run when `push` names a Hub repo and HF_TOKEN is set. Returns {"runs", "done_before", "ran": [records],
-    "failed": rc or None, "stopped": bool}."""
+    ships each finished run in the background when `push` names a Hub repo and HF_TOKEN is set (a Hub fault retries and never stops the
+    grid; records left unshipped are re-shipped at the next start and at the end). A run whose record exists on disk counts as done
+    whatever the done list says. Returns {"runs", "done_before", "ran": [records], "failed": rc or None, "stopped": bool,
+    "unshipped": [tags]}."""
     py = python or sys.executable
     parallel = max(1, int(parallel))
     os.makedirs(out, exist_ok=True)
@@ -190,7 +275,17 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
         with open(logf, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    result = {"runs": len(runs), "done_before": len(runs) - len(todo), "ran": [], "failed": None, "stopped": False}
+    found = []
+    for r in list(todo):                                 # finished on disk but not in the done list (a crash between the record and the mark)
+        kv = dict(a.lstrip("-").split("=", 1) for a in r)
+        if os.path.exists(os.path.join(out, "bed", f"bed_{run_tag(kv)}.json")):
+            found.append(r)
+            todo.remove(r)
+            with open(done_f, "a", encoding="utf-8") as f:
+                f.write(run_key(r) + "\n")
+    result = {"runs": len(runs), "done_before": len(runs) - len(todo), "ran": [], "failed": None, "stopped": False, "unshipped": []}
+    if found:
+        log(f"{len(found)} run(s) found finished on disk (their records exist) and marked done")
     log(f"grid: {len(runs)} runs, {len(runs) - len(todo)} done before, {len(todo)} to run, {parallel} at a time; out {out}; push {push or 'no'}")
     for i, r in enumerate(todo):
         log(f"  {i + 1}/{len(todo)}: {' '.join(r)}")
@@ -201,6 +296,11 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
         result["failed"] = 2
         return result
     gbar = tqdm(total=len(todo), unit="run", dynamic_ncols=True, desc="grid", position=0) if tqdm else None
+    shipper = _Shipper(push, out, lambda m: log(m, gbar)) if push else None
+    if shipper:
+        for rec in pending_records(out):
+            log(f"unshipped record from before: {os.path.basename(rec)}; shipping in the background", gbar)
+            shipper.submit(rec)
     pending, active, took, halt = list(todo), [], [], False
     try:
         while pending or active:
@@ -226,10 +326,10 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
                     continue
                 took.append(time.time() - c.t0)
                 rec = wrote_path("\n".join(c.lines))
-                if push and rec:
-                    ship(push, rec, out, lambda m: log(m, gbar))
-                with open(done_f, "a", encoding="utf-8") as f:
+                with open(done_f, "a", encoding="utf-8") as f:          # done the moment the run is: a Hub fault never costs the run
                     f.write(run_key(c.run) + "\n")
+                if shipper and rec:
+                    shipper.submit(rec)                                   # the ship runs beside the next run; its retries never hold the card
                 result["ran"].append(rec or run_key(c.run))
                 if gbar is not None:
                     gbar.update(1)
@@ -247,6 +347,13 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
     finally:
         if gbar is not None:
             gbar.close()
+    if shipper:
+        idle = shipper.drain(lambda m: log(m))
+        result["unshipped"] = [os.path.basename(p)[4:-5] for p in pending_records(out)]
+        if result["unshipped"] and idle:
+            result["unshipped"] = ship_pending(push, out, log, attempts=3)
+        if result["unshipped"]:
+            log(f"UNSHIPPED after the grid: {result['unshipped']}; the records and weights stay in {out}/bed; bed_runner.ship_pending(REPO, OUT) ships them by hand")
     if result["failed"] is None and not result["stopped"]:
         try:
             from .bed_table import render

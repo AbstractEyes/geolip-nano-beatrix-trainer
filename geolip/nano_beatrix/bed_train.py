@@ -37,9 +37,9 @@ except ImportError:                                      # run as a file (run_cf
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import bed_frames as bf  # noqa: E402
 try:
-    from .names import init_suffix  # noqa: E402  (the package)
+    from .names import run_tag  # noqa: E402  (the package)
 except ImportError:                                      # run as a file: the folder is on the path (above)
-    from names import init_suffix  # noqa: E402
+    from names import run_tag  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -67,22 +67,13 @@ SIZES = [int(x) for x in ARGS.get("sizes", "32,128,256").split(",")]
 N_REC_FRAME = int(ARGS.get("frame_records", "4"))         # the most records a dynamic lookup frame carries
 NEST_P = float(ARGS.get("nest", "0.3"))
 OVERLAP_P = float(ARGS.get("overlap", "0.0"))
-FR_TAG = ("" if not FRAMES else f"_fr{FRAMES}_{REGISTER[:3]}_{TAGS}"
-          + (f"_nl{N_LOOKUP}_nb{N_BULK}" if FRAMES == "A" else f"_sz{'-'.join(map(str, SIZES))}_r{N_REC_FRAME}_n{int(NEST_P * 100)}_o{int(OVERLAP_P * 100)}")
-          + (f"_M{N_FACTS}" if N_FACTS else "") + f"_ask{ASK}"
-          + (f"_p{int(round(P_PLANT * 100))}" if P_PLANT != 1.0 else ""))   # the diet, when not every row is framed
 LOG_EVERY = int(ARGS.get("log_every", "5" if SMOKE else "50"))
 PREFETCH = ARGS.get("prefetch", "1") == "1"   # the next step's rows compose in a worker thread while this step runs on the card;
                                               # the batches are identical either way (every step seeds its own rng from [SEED, step])
 DEV = os.environ.get("BATTERY_DEV", "cuda")
 BED = os.path.join(OUT, "bed")
 os.makedirs(BED, exist_ok=True)
-TAG = (f"{ARM}_s{SEED}" + ("_smoke" if SMOKE else "") + (f"_L{STEPS}" if STEPS > 2500 and not SMOKE else "")   # the short grid keeps its bare names
-       + (f"_dense{ARGS.get("records")}" if int(ARGS.get("records", "1")) > 1 else "")
-       + (f"_b{ARGS["rotary_base"]}" if "rotary_base" in ARGS else "") + (f"_f{ARGS["hub_rotary_frac"]}" if "hub_rotary_frac" in ARGS else "")
-       + (f"_K{ARGS["hub_K"]}D{ARGS["hub_D"]}c{ARGS.get("hub_const", "1")}" if "hub_K" in ARGS else "")
-       + (f"_ctx{CTX}" if CTX != 1024 else "") + (f"_c{ARGS['cues']}" if ARGS.get("cues", "5") != "5" else "") + FR_TAG
-       + (f"_from_{init_suffix(ARGS['init'], ARM, SEED)}" if "init" in ARGS else ""))   # a continued run names its starting craft
+TAG = run_tag(ARGS)        # the record and weights names: one function with the runner's resume (names.run_tag)
 INIT = ARGS.get("init", "")        # a previous run's weights folder under DIR/bed: its config.json sets the craft, the context may change
 T0 = time.time()
 LN2 = math.log(2.0)
