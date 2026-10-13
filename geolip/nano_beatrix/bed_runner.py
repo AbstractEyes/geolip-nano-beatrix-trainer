@@ -39,9 +39,10 @@ except ImportError:                                      # run as a file: the fo
     from names import run_tag  # noqa: E402
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
-             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues")
+             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues", "init")
 SINGULAR = {"arms": "arm", "seeds": "seed"}
-RUNNER_KEYS = ("out", "dry", "push", "python", "parallel")
+RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
+DEFAULT_REPO = "AbstractPhil/alephllm-nano-beatrix-training"       # where a starting craft is fetched from when it is not in <out>/bed
 STEP_RE = re.compile(r"step (\d+)/(\d+) loss [\d.]+ ema [\d.]+ \(([\d.]+) bpb\).*?\| (\d+)k tok/s \| spent ([\d.]+) min, left ([\d.]+) min")
 
 
@@ -65,6 +66,8 @@ def expand(args: dict) -> list:
     for combo in itertools.product(*axes) if axes else [()]:
         kv = dict(fixed)
         kv.update(dict(combo))
+        if "init" in kv and "{" in str(kv["init"]):             # a continuation family: the starting craft named from the run's own values
+            kv["init"] = str(kv["init"]).format(**kv)
         runs.append([f"--{k}={v}" for k, v in kv.items()])
     return runs
 
@@ -90,6 +93,8 @@ def run_label(run: list) -> str:
             parts.append(f"o{kv['overlap']}")
         if kv.get("facts"):
             parts.append(f"f{kv['facts']}")
+    if kv.get("init"):
+        parts.append("cont")
     return " ".join(parts)
 
 
@@ -100,6 +105,24 @@ def parse_step(line: str) -> dict | None:
         return None
     return {"step": int(m.group(1)), "total": int(m.group(2)), "bpb": float(m.group(3)), "tok_s": int(m.group(4)),
             "spent": float(m.group(5)), "left": float(m.group(6))}
+
+
+def fetch_init(repo: str, out: str, tag: str, log) -> bool:
+    """A starting craft for --init that is not in <out>/bed: its model.safetensors and config.json from the Hub's bed/weights/<tag>/
+    (tokenless, the repo is public) into <out>/bed/<tag>/. -> fetched or not (a missing craft is reported, never raised)."""
+    import shutil
+    from huggingface_hub import hf_hub_download
+    dst = os.path.join(out, "bed", tag)
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for f in ("config.json", "model.safetensors"):
+            p = hf_hub_download(repo, f"bed/weights/{tag}/{f}", local_dir=os.path.join(out, "_hub"), token=False)
+            shutil.copy2(p, os.path.join(dst, f))
+        log(f"starting craft {tag} fetched from {repo}")
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"starting craft {tag} not fetched from {repo}: {type(e).__name__}: {str(e)[:120]}")
+        return False
 
 
 def wrote_path(stdout: str) -> str | None:
@@ -261,7 +284,7 @@ class _Child:
             self.bar.close()
 
 
-def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bool = False, parallel: int = 1) -> dict:
+def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bool = False, parallel: int = 1, init_repo: str = "") -> dict:
     """Run the grid `spec` (the command-line keys; values as strings or numbers; comma lists expand into the product) under `out`, up to
     `parallel` runs at once on the card. Resumes from <out>/runner_done.txt; <out>/STOP starts no new run and lets the running ones finish;
     ships each finished run in the background when `push` names a Hub repo and HF_TOKEN is set (a Hub fault retries and never stops the
@@ -319,6 +342,11 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
                     result["stopped"] = halt = True
                     break
                 r = pending.pop(0)
+                init = next((a.split("=", 1)[1] for a in r if a.startswith("--init=")), None)
+                if init and not os.path.isdir(os.path.join(out, "bed", init)) and not fetch_init(init_repo or push or DEFAULT_REPO, out, init, lambda m: log(m, gbar)):
+                    log(f"the starting craft {init} is neither in {out}/bed nor on the Hub: no new run starts", gbar)
+                    result["failed"] = halt = 4
+                    break
                 slot = min(set(range(parallel)) - {c.slot for c in active})
                 log(f"run {len(todo) - len(pending)}/{len(todo)} starts: {' '.join(r)}", gbar)
                 active.append(_Child(r, [py, "-X", "utf8", "-m", "geolip.nano_beatrix.bed_train", f"--out={out}", *r], slot, tqdm, logf, gbar))
@@ -381,7 +409,7 @@ def main(argv=None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     spec = {k: v for k, v in args.items() if k not in RUNNER_KEYS}
     res = run(spec, args["out"], push=args.get("push", ""), python=args.get("python"), dry=args.get("dry", "0") == "1",
-              parallel=int(args.get("parallel", "1")))
+              parallel=int(args.get("parallel", "1")), init_repo=args.get("init_repo", ""))
     if res["failed"]:
         return int(res["failed"])
     return 3 if res["stopped"] else 0

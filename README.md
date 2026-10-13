@@ -50,6 +50,7 @@ The second pass, `colab/nano_frame_pass2.ipynb`, runs the in-window capacity axi
 1,024 bytes) and the scrutiny set (nesting 0.6, conflicting definitions 0.3, the question on a nested frame or a conflicted key) at
 4,096 on both twins, two seeds, one row in four a plain document: two grids in one decision block, run in sequence by C3:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_frame_pass2.ipynb)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pass3.ipynb) (the third pass: the scrutiny reads by continuation, the sixteen-record second seeds, Pollux's hub address axis)
 
 Then:
 
@@ -74,6 +75,12 @@ pytest -q
 The frame composer's tests run on the CPU without a model.
 
 ## Status
+
+0.1.20 (2026-10-13): continuation stages as grids. `init` is a grid key and an init written with {arm} {seed} {ask} {hub_K} {hub_D}
+is filled from each run's own values; a starting craft missing from the output folder is fetched from the Hub's bed/weights/ before
+the run (tokenless; the push repo or --init_repo); the bar marks a continuation. colab/nano_pass3.ipynb runs the third pass: the
+scrutiny reads by continuation, sixteen records on the second seeds, Pollux's hub address axis at 1,024 continued at 4,096. All
+notebooks pin v0.1.20.
 
 0.1.19 (2026-10-13): the formation verdict reads the whole value (a failure when every lookup group of eight trials or more writes the
 value whole at or under 0.05; the near band's bits are reported, not required: a copy can form misaligned), and every framed record

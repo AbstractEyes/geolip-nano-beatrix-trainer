@@ -134,3 +134,32 @@ def test_resume_treats_a_record_on_disk_as_done(tmp_path):
     res = br.run({"arms": "smr-fixed,altn-fixed", "seeds": "1", "ctx": "4096", "steps": "3000"}, out=str(tmp_path), dry=True)
     assert res["runs"] == 2 and res["done_before"] == 1 and res["unshipped"] == []
     assert br.run_key(runs[0]) in (tmp_path / "runner_done.txt").read_text(encoding="utf-8")
+
+
+def test_init_is_a_grid_key_filled_from_the_run():
+    runs = expand({"arms": "castor-both,pollux-both", "seeds": "1,2", "ask": "nested,overlap", "steps": "4000",
+                   "init": "{arm}_s{seed}_L12000_frdyn_cap_mode_sz32-128-256_r4_n60_o30_ask{ask}_p75"})
+    assert len(runs) == 8
+    kv = dict(a.lstrip("-").split("=", 1) for a in runs[0])
+    assert kv["init"] == f"{kv['arm']}_s{kv['seed']}_L12000_frdyn_cap_mode_sz32-128-256_r4_n60_o30_ask{kv['ask']}_p75"
+    assert all(dict(a.lstrip("-").split("=", 1) for a in r)["init"].startswith(dict(a.lstrip("-").split("=", 1) for a in r)["arm"]) for r in runs)
+    assert run_label(runs[0]).endswith(" cont")
+
+
+def test_fetch_init_pulls_the_craft_into_the_bed(monkeypatch, tmp_path):
+    import types
+    mod = types.ModuleType("huggingface_hub")
+
+    def fake_download(repo, path, local_dir=None, token=None):
+        p = tmp_path / "_hub" / path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+        return str(p)
+    mod.hf_hub_download = fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
+    lines = []
+    assert br.fetch_init("org/repo", str(tmp_path), "castor-both_s1_L12000", lines.append)
+    assert (tmp_path / "bed" / "castor-both_s1_L12000" / "model.safetensors").exists() and (tmp_path / "bed" / "castor-both_s1_L12000" / "config.json").exists()
+    assert any("fetched" in l for l in lines)
+    mod.hf_hub_download = lambda *a, **k: (_ for _ in ()).throw(OSError("404"))
+    assert not br.fetch_init("org/repo", str(tmp_path), "nobody_s9", lines.append) and any("not fetched" in l for l in lines)
