@@ -1,0 +1,13 @@
+.idea/
+.venv/
+__pycache__/
+*.pyc
+*.safetensors
+*.bin
+*.npy
+*.log
+out/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
