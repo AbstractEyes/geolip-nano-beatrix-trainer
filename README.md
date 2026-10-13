@@ -75,6 +75,11 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.18 (2026-10-13): only runs finished under a push are ever pending. The 0.1.17 resume shipped a notebook's 200-step price-line run
+(run without a push) to the Hub as an unshipped record from before. Now a run finished under a push is listed in runner_pushlist.txt
+before its ship; pending = listed and not shipped; `ship_pending(REPO, OUT, all_records=True)` is the by-hand salvage of a whole folder.
+Both notebooks pin v0.1.18.
+
 0.1.17 (2026-10-13): a Hub fault never stops a grid. A 504 from the Hub's commit API during a ship killed a twelve-run grid on a rented
 card and lost three finished runs' ships (the ship ran in the main thread with no retry, and the done mark came after it). Now the done
 mark is written the moment a run finishes; ships run in a background thread and retry a Hub fault with a doubling wait (15 s to 10 min,

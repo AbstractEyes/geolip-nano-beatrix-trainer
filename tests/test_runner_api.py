@@ -85,10 +85,13 @@ def _fake_hub(monkeypatch, fails):
     return waits
 
 
-def _record(tmp_path, tag):
+def _record(tmp_path, tag, listed=True):
     bed = tmp_path / "bed"
     bed.mkdir(exist_ok=True)
     (bed / f"bed_{tag}.json").write_text("{}", encoding="utf-8")
+    if listed:                                                        # finished under a push: the runner lists it before the ship
+        with (tmp_path / "runner_pushlist.txt").open("a", encoding="utf-8") as f:
+            f.write(f"bed_{tag}.json\n")
     (bed / tag).mkdir(exist_ok=True)
     (bed / tag / "model.safetensors").write_bytes(b"0")
     return str(bed / f"bed_{tag}.json")
@@ -115,11 +118,13 @@ def test_ship_gives_up_without_raising_and_leaves_the_record_pending(monkeypatch
     assert br.ship_pending("org/repo", str(tmp_path), lines.append, attempts=1) == [] and br.pending_records(str(tmp_path)) == []
 
 
-def test_pending_records_skips_shipped_and_smokes(tmp_path):
+def test_pending_records_skips_shipped_smokes_and_unlisted(tmp_path):
     a, b = _record(tmp_path, "a_s1"), _record(tmp_path, "b_s1")
     _record(tmp_path, "c_s1_smoke_frdyn")
+    d = _record(tmp_path, "d_s1_ctx4096", listed=False)                 # a run finished without a push (a price-line run): never pending
     (tmp_path / "runner_shipped.txt").write_text("a_s1\n", encoding="utf-8")
     assert br.pending_records(str(tmp_path)) == [b]
+    assert set(br.pending_records(str(tmp_path), all_records=True)) == {b, d}
 
 
 def test_resume_treats_a_record_on_disk_as_done(tmp_path):

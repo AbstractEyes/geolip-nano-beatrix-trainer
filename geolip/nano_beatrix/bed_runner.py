@@ -116,13 +116,21 @@ def _shipped(out: str) -> set:
     return set(open(p, encoding="utf-8").read().splitlines()) if os.path.exists(p) else set()
 
 
-def pending_records(out: str) -> list:
-    """The records under <out>/bed that never shipped (not in runner_shipped.txt; the short smoke runs stay local), oldest first."""
+def _listed(out: str) -> set:
+    p = os.path.join(out, "runner_pushlist.txt")
+    return set(open(p, encoding="utf-8").read().splitlines()) if os.path.exists(p) else set()
+
+
+def pending_records(out: str, all_records: bool = False) -> list:
+    """The records the runner finished under a push and never shipped (listed in runner_pushlist.txt, not in runner_shipped.txt),
+    oldest first. all_records=True takes every non-smoke record under <out>/bed instead (the by-hand salvage of a folder from before
+    0.1.18). A run without a push (a notebook's price-line run) is never pending: 0.1.17 shipped one such 200-step record as a result."""
     bed = os.path.join(out, "bed")
     if not os.path.isdir(bed):
         return []
-    done = _shipped(out)
-    recs = [os.path.join(bed, n) for n in os.listdir(bed) if n.startswith("bed_") and n.endswith(".json") and "_smoke" not in n and n[4:-5] not in done]
+    done, listed = _shipped(out), _listed(out)
+    recs = [os.path.join(bed, n) for n in os.listdir(bed) if n.startswith("bed_") and n.endswith(".json") and "_smoke" not in n
+            and n[4:-5] not in done and (all_records or n in listed)]
     return sorted(recs, key=os.path.getmtime)
 
 
@@ -155,11 +163,12 @@ def ship(repo: str, record: str, out: str, log, attempts: int = SHIP_ATTEMPTS, w
     return False
 
 
-def ship_pending(repo: str, out: str, log=print, attempts: int = SHIP_ATTEMPTS) -> list:
-    """Ship every record under <out>/bed not yet in runner_shipped.txt (smokes excepted); -> the tags still unshipped. The by-hand
-    call after a grid that reported unshipped runs: bed_runner.ship_pending(REPO, OUT)."""
+def ship_pending(repo: str, out: str, log=print, attempts: int = SHIP_ATTEMPTS, all_records: bool = False) -> list:
+    """Ship every record the runner finished under a push and never shipped (smokes excepted); -> the tags still unshipped. The by-hand
+    call after a grid that reported unshipped runs: bed_runner.ship_pending(REPO, OUT); all_records=True ships every non-smoke record
+    of the folder (a salvage of a folder from before 0.1.18)."""
     left = []
-    for rec in pending_records(out):
+    for rec in pending_records(out, all_records):
         if not ship(repo, rec, out, log, attempts=attempts):
             left.append(os.path.basename(rec)[4:-5])
     return left
@@ -329,6 +338,8 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
                 with open(done_f, "a", encoding="utf-8") as f:          # done the moment the run is: a Hub fault never costs the run
                     f.write(run_key(c.run) + "\n")
                 if shipper and rec:
+                    with open(os.path.join(out, "runner_pushlist.txt"), "a", encoding="utf-8") as f:   # listed before the ship: a crash leaves it pending
+                        f.write(os.path.basename(rec) + "\n")
                     shipper.submit(rec)                                   # the ship runs beside the next run; its retries never hold the card
                 result["ran"].append(rec or run_key(c.run))
                 if gbar is not None:
