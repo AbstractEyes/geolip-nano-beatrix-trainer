@@ -52,7 +52,8 @@ Framed rows: add `--frames=dyn` (dynamic sectors of generic sizes; `--sizes=32,1
 layout; `--n_lookup --n_bulk --ask=lookup|bulk|weights`). Without `--frames` the rows are the planted rows, bit for bit.
 
 Every run prints its job size, the time spent and the time left, and ends with the gauges. The record lands at `<out>/bed/bed_<tag>.json`
-and the weights at `<out>/bed/<tag>/`. `python -m geolip.nano_beatrix.bed_table <out>/bed --pairs` builds the results index.
+and the weights at `<out>/bed/<tag>/`. A continued run (`--init=<a previous tag>`) carries its starting craft in its own tag
+(`..._from_<init>`), so two continuations of one recipe from different crafts never share a name. `python -m geolip.nano_beatrix.bed_table <out>/bed --pairs` builds the results index.
 
 ## Tests
 

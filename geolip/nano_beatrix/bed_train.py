@@ -31,6 +31,7 @@ from geolip.alephllm.presets import AlephLMConfig  # noqa: E402
 from geolip.alephllm.model.alephlm import AlephLM  # noqa: E402
 from geolip.alephllm.model.bank import BYTE_CLASSES, byte_class_table  # noqa: E402
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
+from geolip.nano_beatrix.names import init_suffix  # noqa: E402
 try:
     from . import bed_frames as bf  # noqa: E402  (the package)
 except ImportError:                                      # run as a file (run_cf.py): the script's own folder on the path
@@ -74,7 +75,8 @@ TAG = (f"{ARM}_s{SEED}" + ("_smoke" if SMOKE else "") + (f"_L{STEPS}" if STEPS >
        + (f"_dense{ARGS.get("records")}" if int(ARGS.get("records", "1")) > 1 else "")
        + (f"_b{ARGS["rotary_base"]}" if "rotary_base" in ARGS else "") + (f"_f{ARGS["hub_rotary_frac"]}" if "hub_rotary_frac" in ARGS else "")
        + (f"_K{ARGS["hub_K"]}D{ARGS["hub_D"]}c{ARGS.get("hub_const", "1")}" if "hub_K" in ARGS else "")
-       + (f"_ctx{CTX}" if CTX != 1024 else "") + (f"_c{ARGS['cues']}" if ARGS.get("cues", "5") != "5" else "") + FR_TAG + ("_from" if "init" in ARGS else ""))
+       + (f"_ctx{CTX}" if CTX != 1024 else "") + (f"_c{ARGS['cues']}" if ARGS.get("cues", "5") != "5" else "") + FR_TAG
+       + (f"_from_{init_suffix(ARGS['init'], ARM, SEED)}" if "init" in ARGS else ""))   # a continued run names its starting craft
 INIT = ARGS.get("init", "")        # a previous run's weights folder under DIR/bed: its config.json sets the craft, the context may change
 T0 = time.time()
 LN2 = math.log(2.0)
