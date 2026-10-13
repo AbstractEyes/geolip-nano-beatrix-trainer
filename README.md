@@ -23,7 +23,9 @@ alone, an installed byte-class expert table, or both).
 
 The nano twin pair has names: **Castor** is the rotary softmax body (`--arm=castor-<bank>`, the same craft as `smr`), the mortal
 twin whose memory grows with the window; **Pollux** is the all-rotary alternating body (`--arm=pollux-<bank>`, the same as `altn`),
-the immortal twin whose hub half keeps a constant decode memory. The two full-size teacher forms the timing tool measures beside
+the immortal twin whose hub half keeps a constant decode memory. The twins' bank form of record is the byte-class table beside
+the aleph address (`--arm=castor-both`, `--arm=pollux-both`): on two seeds at 4,096 it read the best text on both bodies and the
+steadiest far copy on Pollux, at +9% (Pollux) and +23% (Castor) of a step over the table alone. The two full-size teacher forms the timing tool measures beside
 them are **Virgil** (the splat hub body, 237M) and **Matelda** (the softmax control, 257M), the pair trained in the mini-beatrix repo.
 
 ## Install
