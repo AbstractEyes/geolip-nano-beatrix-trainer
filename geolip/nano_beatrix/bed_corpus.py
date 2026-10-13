@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """bed_corpus.py - the small bed's training text (2026-10-12): fineweb-edu sample-10BT (public, tokenless), the reserved head of
 2,048 rows SKIPPED (that head is the held-out file heldout_fineweb_edu_head2048.jsonl), documents of 400..24,000 UTF-8 bytes taken
-in stream order until TARGET bytes. Writes OUT/bed_corpus.bin (uint8, the documents back to back) and OUT/bed_corpus_offsets.npy
-(int64, len = docs + 1). Progress lines carry the job size, the time spent and the time left.
+in stream order until TARGET bytes. Writes OUT/bed_corpus.bin (uint8, the documents back to back), OUT/bed_corpus_offsets.npy
+(int64, len = docs + 1) and, when absent, OUT/heldout_fineweb_edu_head2048.jsonl (the reserved head, one {"text"} a line). Progress lines carry the job size, the time spent and the time left.
 Usage: bed_corpus.py OUT [TARGET_BYTES]"""
 import os
 import sys
@@ -27,6 +27,13 @@ from datasets import load_dataset  # noqa: E402
 
 log(f"opening fineweb-edu sample-10BT (streaming), skipping the reserved head of {SKIP:,} rows; target {TARGET / 1e6:.0f} MB")
 ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+HELD = os.path.join(OUT, "heldout_fineweb_edu_head2048.jsonl")
+if not os.path.exists(HELD):                       # the reserved head, written once beside the corpus (the trainer looks in OUT and OUT/bed)
+    import json
+    with open(HELD, "w", encoding="utf-8") as f:
+        for row in ds.select_columns(["text"]).take(SKIP):
+            f.write(json.dumps({"text": row["text"]}) + "\n")
+    log(f"held-out head written: {SKIP:,} rows -> {HELD}")
 ds = ds.select_columns(["text"]).skip(SKIP)
 chunks, offs, total, n_docs, n_seen = [], [0], 0, 0, 0
 next_mark = 10_000_000

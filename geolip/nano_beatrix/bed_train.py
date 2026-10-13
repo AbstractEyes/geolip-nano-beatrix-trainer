@@ -15,7 +15,7 @@ Gauges: the online value-byte loss by distance band during training; at the end 
 the planted fetch at 64 / 256 / 512 / 896 bytes (teacher-forced value NLL, greedy first byte, all five), the dispatch census by byte
 class (block 0 / middle / last), the dispatch-off toggle. Pure Adam. Progress lines carry the job size, the time spent and the time left.
 Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1]
-Data: DIR/bed/bed_corpus.bin + bed_corpus_offsets.npy (bed_corpus.py); held-out DIR/heldout_fineweb_edu_head2048.jsonl (the reserved head).
+Data: DIR/bed/bed_corpus.bin + bed_corpus_offsets.npy (bed_corpus.py); held-out heldout_fineweb_edu_head2048.jsonl in DIR or DIR/bed (the reserved head).
 Output: DIR/bed/bed_<arm>_s<seed>[_smoke].json; the weights DIR/bed/<arm>_s<seed>/model.safetensors + config.json"""
 import json
 import math
@@ -31,12 +31,15 @@ from geolip.alephllm.presets import AlephLMConfig  # noqa: E402
 from geolip.alephllm.model.alephlm import AlephLM  # noqa: E402
 from geolip.alephllm.model.bank import BYTE_CLASSES, byte_class_table  # noqa: E402
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
-from geolip.nano_beatrix.names import init_suffix  # noqa: E402
 try:
     from . import bed_frames as bf  # noqa: E402  (the package)
 except ImportError:                                      # run as a file (run_cf.py): the script's own folder on the path
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import bed_frames as bf  # noqa: E402
+try:
+    from .names import init_suffix  # noqa: E402  (the package)
+except ImportError:                                      # run as a file: the folder is on the path (above)
+    from names import init_suffix  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -339,7 +342,9 @@ offs = np.load(os.path.join(BED, "bed_corpus_offsets.npy"))
 packed = np.insert(corpus, offs[1:], np.uint8(DOC))           # DOC after every document, as the packer does
 log(f"corpus {len(corpus) / 1e6:.1f} MB, {len(offs) - 1:,} documents; packed {len(packed) / 1e6:.1f} MB")
 heldout = []
-with open(os.path.join(OUT, "heldout_fineweb_edu_head2048.jsonl"), encoding="utf-8") as f:
+HELD = [p for p in (os.path.join(OUT, "heldout_fineweb_edu_head2048.jsonl"), os.path.join(BED, "heldout_fineweb_edu_head2048.jsonl")) if os.path.exists(p)]
+assert HELD, f"no heldout_fineweb_edu_head2048.jsonl in {OUT} or {BED} (bed_corpus.py writes it beside the corpus)"
+with open(HELD[0], encoding="utf-8") as f:
     for line in f:
         b = json.loads(line)["text"].encode("utf-8")
         if len(b) >= CTX + 64:

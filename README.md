@@ -40,8 +40,10 @@ gauge). The pin moves to a tagged release when that branch merges.
 
 ## Run
 
-The bed reads its corpus (`<out>/bed/bed_corpus.bin` + offsets) and a held-out file (`<out>/heldout_fineweb_edu_head2048.jsonl`)
-from an output folder (`bed_corpus.py` builds them), then:
+The bed reads its corpus (`<out>/bed/bed_corpus.bin` + offsets) and a held-out file (`heldout_fineweb_edu_head2048.jsonl` in `<out>` or
+`<out>/bed`) from an output folder; `python -m geolip.nano_beatrix.bed_corpus <out>/bed` builds all three from fineweb-edu (needs the
+`corpus` extra: `pip install "geolip-nano-beatrix-trainer[corpus]"`). On a rented card, `colab/nano_frame_grid.ipynb` does the whole
+sequence: install at a tag, the token, the corpus, a grid through the runner with every finished run shipped to the Hub. Then:
 
 ```bash
 python -m geolip.nano_beatrix.bed_train --out=<out> --arm=smr-fixed --seed=1 --ctx=4096 --mb=8 --steps=12000 --plant=1.0 --records=8 --dists=64,512,1024,2048,3072
