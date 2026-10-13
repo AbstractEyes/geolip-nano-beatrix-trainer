@@ -40,3 +40,11 @@ def test_resume_skips_the_finished_runs(tmp_path):
         f.write(run_key(runs[0]) + "\n")
     res = run(spec, str(tmp_path), dry=True)
     assert res["runs"] == 2 and res["done_before"] == 1
+
+
+def test_parallel_is_a_runner_key_and_the_dry_plan_ignores_it(tmp_path):
+    spec = {"arms": "castor-both,pollux-both", "seeds": "1,2", "ctx": 4096, "steps": 12000, "parallel": 4}
+    assert len(expand(spec)) == 4 and all("--parallel" not in a for r in expand(spec) for a in r)
+    res = run(spec, str(tmp_path), dry=True, parallel=4)
+    assert res["runs"] == 4 and res["failed"] is None
+    assert "4 at a time" in open(os.path.join(tmp_path, "runner.log"), encoding="utf-8").read()
