@@ -6,7 +6,8 @@ tokens/s, the inference forward (no grad, bf16) in ms per row and tokens/s, the 
 Usage (through card_gate / run_cf): bed_timing.py --out=DIR [--mb=32 --ctx=1024 --steps=10 --teachers=1 --fixes=1 --smoke=1
                                                            --arms=sm-free,hubr-free,hubd-free,hub-free --big=1]
   --arms = a filter (default every arm); --big=1 also times the big-address variant (2 books of 64 @ 32) of every hub arm.
-Output: DIR/bed/bed_timing[_smoke][_ctx<N>][_mb<M>].json (+ the table printed); the name carries ctx / mb when not 1,024 / 32."""
+Output: DIR/bed/bed_timing[_smoke][_ctx<N>][_mb<M>][_arms<K>][_<tag>].json (+ the table printed); the name carries ctx / mb when not
+1,024 / 32, the number of arms when --arms filters, and --tag=<word> verbatim."""
 import json
 import math
 import os
@@ -163,6 +164,8 @@ if TEACHERS:
         del m
         torch.cuda.empty_cache()
 R["wall_s"] = time.time() - T0
-path = os.path.join(BED, "bed_timing" + ("_smoke" if SMOKE else "") + (f"_ctx{CTX}" if CTX != 1024 else "") + (f"_mb{MB}" if MB != 32 and not SMOKE else "") + ".json")
+path = os.path.join(BED, "bed_timing" + ("_smoke" if SMOKE else "") + (f"_ctx{CTX}" if CTX != 1024 else "") + (f"_mb{MB}" if MB != 32 and not SMOKE else "")
+                    + (f"_arms{len([a for a in ARGS['arms'].split(',') if a])}" if ARGS.get("arms") else "")      # a filtered timing keeps its own name
+                    + (f"_{ARGS['tag']}" if ARGS.get("tag") else "") + ".json")
 json.dump(R, open(path, "w", encoding="utf-8"), indent=1)
 log(f"wrote {path}")
