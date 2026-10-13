@@ -69,7 +69,8 @@ NEST_P = float(ARGS.get("nest", "0.3"))
 OVERLAP_P = float(ARGS.get("overlap", "0.0"))
 FR_TAG = ("" if not FRAMES else f"_fr{FRAMES}_{REGISTER[:3]}_{TAGS}"
           + (f"_nl{N_LOOKUP}_nb{N_BULK}" if FRAMES == "A" else f"_sz{'-'.join(map(str, SIZES))}_r{N_REC_FRAME}_n{int(NEST_P * 100)}_o{int(OVERLAP_P * 100)}")
-          + (f"_M{N_FACTS}" if N_FACTS else "") + f"_ask{ASK}")
+          + (f"_M{N_FACTS}" if N_FACTS else "") + f"_ask{ASK}"
+          + (f"_p{int(round(P_PLANT * 100))}" if P_PLANT != 1.0 else ""))   # the diet, when not every row is framed
 LOG_EVERY = int(ARGS.get("log_every", "5" if SMOKE else "50"))
 DEV = os.environ.get("BATTERY_DEV", "cuda")
 BED = os.path.join(OUT, "bed")
