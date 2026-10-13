@@ -592,6 +592,10 @@ planted_mean = PLANTED[0] / max(PLANTED[1], 1)
 log(f"records planted a row (census of the training rows): {planted_mean:.2f} mean over {PLANTED[1]:,} rows (asked {N_REC}; the cue list holds {len(ROW_CUES)})")
 bits, by_cls = heldout_bits()
 by_pos = heldout_bits.by_position
+collapse = bf.plain_collapse(by_pos["row"]) if by_pos and "row" in by_pos else None
+if collapse and collapse["flag"]:
+    log(f"FLAG plain collapse: the windows {collapse['windows_over']} read above {collapse['threshold']} bits a byte (worst {collapse['worst_window']}"
+        f" {collapse['worst_bits']:.2f}); the record carries it, the run ends normally")
 log("held-out bits by position (row): " + " ".join(f"{b} {v:.3f} (n {by_pos['row_n'][b]})" for b, v in by_pos["row"].items() if v is not None))
 bits_off, by_cls_off = heldout_bits(disable_bank=True)
 log(f"held-out {bits:.4f} bits a byte (dispatch off {bits_off:.4f}); by class " + " ".join(f"{c} {v:.3f}" for c, v in by_cls.items() if v is not None))
@@ -669,6 +673,37 @@ if FRAMES:
     log("fetch by frame: " + " | ".join(f"{g}: n {a['n']} bits {a['value_bits']:.2f} first {a['first_byte']:.2f} full {a['full_value']:.2f} dist {a['dist']:.0f}"
                                         for g, a in sorted(frame_fetch.items())))
 
+
+@torch.no_grad()
+def canary_gauge():
+    """The canary rows (bed_frames.canary_rows) under the model: bits a byte, whole and by position, for the plain, tag and frame rows."""
+    from geolip.alephllm.eval import position_bits as pb
+    rows, meta = bf.canary_rows(eval_docs, CTX, REGISTER, TAGS, SEED)
+    out = dict(meta)
+    for kind, rs in rows.items():
+        acc, tot, n = None, 0.0, 0
+        for i in range(0, len(rs), 16):
+            x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rs[i:i + 16]]).astype(np.int64), device=DEV)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                lg = model(x[:, :-1])[0].float()
+            nll = F.cross_entropy(lg.reshape(-1, 256), x[:, 1:].reshape(-1), reduction="none").view(x.shape[0], CTX)
+            acc = pb.merge(acc, pb.bits_by_position(nll))
+            tot += float(nll.sum())
+            n += nll.numel()
+        out[kind] = dict(bits=tot / n / LN2, by_position=pb.finish(acc)["row"])
+    return out
+
+
+canary, formation = (canary_gauge(), bf.formation(curve, REGISTER, frame_fetch)) if FRAMES else (None, None)
+if FRAMES:
+    nb = formation["near_band_value_bits_at_end"]
+    log("canary rows (bits a byte): " + " | ".join(f"{k} {canary[k]['bits']:.3f}" for k in ("plain", "tag", "frame"))
+        + f" | formation: {'FAILURE' if formation['failure'] else 'formed'} (near band {'-' if nb is None else f'{nb:.2f}'} against the uniform"
+        + f" {formation['uniform_bits']:.2f}; first step under {formation['first_step_under']}; whole value zero everywhere {formation['whole_value_zero_everywhere']})")
+    if formation["failure"]:
+        log(f"FLAG formation failure: the near band sits at {'-' if nb is None else f'{nb:.2f}'} bits against the uniform {formation['uniform_bits']:.2f}"
+            f" ({REGISTER}) and the whole value reads 0 in every lookup group; the record carries it, the run ends normally")
+
 # ------------------------------------------------------------------ the weights + the record
 wdir = os.path.join(BED, TAG)
 os.makedirs(wdir, exist_ok=True)
@@ -680,7 +715,7 @@ R = dict(arm=ARM, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, 
          final_loss_ema=ema, final_bpb_ema=ema / LN2, heldout_bpb=bits, heldout_bpb_by_class=by_cls, heldout_bpb_by_position=by_pos, dispatch_off_bpb=bits_off,
          records_planted_mean=planted_mean, cues=len(ROW_CUES),
          dispatch_off_by_class=by_cls_off, fetch=fetch_res, dispatch_census=census, curve=curve, wall_s=time.time() - T0,
-         frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch,
+         frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch, canary=canary, formation=formation, plain_collapse=collapse,
          weights=os.path.relpath(os.path.join(wdir, "model.safetensors"), OUT))
 path = os.path.join(BED, f"bed_{TAG}.json")
 json.dump(R, open(path, "w", encoding="utf-8"), indent=1)

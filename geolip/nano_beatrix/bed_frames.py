@@ -400,6 +400,60 @@ def fmt_frame_bits(res: dict) -> str:
     return "\n".join(rows)
 
 
+def uniform_bits(register: str) -> float:
+    """The register's uniform rate: log2 of its value alphabet (letters 4.70, digits 3.32, hex 4.00 bits a byte). A copy that never
+    formed sits at it; the formation verdict reads the near band's online value bits against it."""
+    return float(np.log2(len(ALPH[REGISTERS[register][2]])))
+
+
+def canary_rows(docs: list, ctx: int, register: str = "caption", scheme: str = "mode", seed: int = 1) -> tuple:
+    """The plain-document canary rows (ctx + 1 bytes each) for every document, three kinds: plain = DOC + text (the only row a diet
+    composes); tag = DOC + the register tag + SEP q SEP + text (a question cue before any frame); frame = the same with one flat 32-byte
+    lookup frame of one record before the text (the same frame in every row). -> ({kind: [row bytes]}, meta). A craft that reads the
+    plain row and breaks on the others learned its opening grammar strictly; one that breaks on the plain row lost the bare document."""
+    rng = np.random.default_rng([seed, 4343])
+    prefix = tag_bytes(register, scheme) + bytes([SEP]) + b"q" + bytes([SEP])
+    state = dict(frames=[], defs={}, facts=None, key_iter=iter(rng.permutation(16000).tolist()), fact_iter=None)
+    frame = build_frame(rng, spec("data", 32, records=1), 1 + len(prefix), Filler(docs[-1], 0), register, state)
+    assert len(frame) == 32 and frame[0] == DATA and frame[-1] == END, (len(frame), frame[:1], frame[-1:])
+    rows = {"plain": [], "tag": [], "frame": []}
+    for d in docs:
+        rows["plain"].append(bytes([DOC]) + d[:ctx])
+        rows["tag"].append(bytes([DOC]) + prefix + d[:ctx - len(prefix)])
+        rows["frame"].append(bytes([DOC]) + prefix + frame + d[:ctx - len(prefix) - len(frame)])
+    for kind, rs in rows.items():
+        assert all(len(r) == ctx + 1 for r in rs), (kind, [len(r) for r in rs if len(r) != ctx + 1][:3])
+    return rows, dict(prefix_bytes=len(prefix), frame_bytes=len(frame), frame_records=1, register=register, scheme=scheme)
+
+
+def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2) -> dict:
+    """Did the copy form? The near band's online value bits (the value's bytes at the question when the frame sits within 128 bytes; the
+    last logged read) against the register's uniform rate: a formation FAILURE when they sit within `margin` of the rate at the end AND
+    the whole value reads 0 in every gauged lookup group (the curriculum plan's rule; one Castor seed in three never formed the math copy
+    at 4,096 while its text and frame grammar were normal, 2026-10-13). Also the first logged step under the rate by the margin. A
+    verdict in the record, never a halt."""
+    u = uniform_bits(register)
+    near = [(c["step"], c["value_bits"]["0"]) for c in curve if (c.get("value_bits") or {}).get("0") is not None]
+    last = near[-1][1] if near else None
+    first_under = next((s for s, v in near if v < u - margin), None)
+    at_rate = last is None or last > u - margin
+    lookup = {g: a["full_value"] for g, a in (fetch_groups or {}).items() if g.startswith("data/")}
+    whole_zero = bool(lookup) and all(v == 0 for v in lookup.values())
+    failure = bool(at_rate and whole_zero)
+    return dict(register=register, uniform_bits=u, margin=margin, near_band_value_bits_at_end=last, first_step_under=first_under,
+                at_the_rate=bool(at_rate), whole_value_zero_everywhere=whole_zero, failure=failure, formed=not failure)
+
+
+def plain_collapse(by_position_row: dict, threshold: float = 2.5, head: str = "0-64") -> dict:
+    """The plain-collapse flag of the curriculum plan: the held-out bits a byte by window of the target position; a collapse when any
+    window past the head reads above the threshold (a Pollux seed-1 math craft at 4,096 read 4.3 / 3.4 in its middle windows while its
+    head and its frames were normal, 2026-10-13). -> flag, the windows over, the worst window past the head."""
+    past = {w: b for w, b in by_position_row.items() if w != head and b is not None}
+    over = [w for w, b in past.items() if b > threshold]
+    worst = max(past, key=past.get) if past else None
+    return dict(flag=bool(over), threshold=threshold, windows_over=over, worst_window=worst, worst_bits=(past[worst] if worst else None))
+
+
 def _check_dynamic(row, m, ctx):
     assert len(row) == ctx + 1 and row[0] == DOC
     for f in m["frames"]:

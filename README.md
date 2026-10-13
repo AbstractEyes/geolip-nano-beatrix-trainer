@@ -75,6 +75,12 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.16 (2026-10-13): three gauges for the nano train's curriculum, pure functions in bed_frames and keys in every record: the canary
+rows (a bare document; the register tag and a question cue before it; one flat 32-byte frame before it; bits a byte whole and by
+window), the formation verdict (the near band's online value bits at the end against the register's uniform rate, log2 of its
+alphabet, with the whole value in every lookup group; the first step under the rate) and the plain-collapse flag (any window past
+the head above 2.5 bits a byte). Flags are log lines and record fields, never a halt.
+
 0.1.15 (2026-10-13): the runner's bar labels carry the grid axes that vary (records a frame, a strict ask, nesting and conflicts, facts);
 its child processes run with TensorFlow's logging off (the noise seen on a Colab image); both notebooks default to ONE run at a time,
 because four at once only divided the RTX PRO 6000 (4 x ~214k tok/s = one run's 863k): parallel runs pay only when a single run leaves

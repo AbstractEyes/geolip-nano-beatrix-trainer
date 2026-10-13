@@ -112,6 +112,53 @@ def test_overlap_truth_is_the_latest(src):
     assert row[i1 + len(k) + 2:i1 + len(k) + 2 + m["vlen"]] != row[m["v0"]:m["v0"] + m["vlen"]]
 
 
+
+def test_uniform_bits_per_register():
+    assert abs(bf.uniform_bits("caption") - 4.70) < 0.01
+    assert abs(bf.uniform_bits("math") - 3.32) < 0.01
+    assert abs(bf.uniform_bits("code") - 4.0) < 1e-9
+
+
+@pytest.mark.parametrize("register", ["caption", "math", "code"])
+def test_canary_rows_shapes_and_grammar(src, register):
+    docs = [src[i:i + 1200] for i in range(0, 4800, 1200)]
+    rows, meta = bf.canary_rows(docs, 1024, register, "mode", seed=1)
+    assert set(rows) == {"plain", "tag", "frame"} and all(len(r) == 1025 for rs in rows.values() for r in rs)
+    plain, tag, frame = rows["plain"][0], rows["tag"][0], rows["frame"][0]
+    p = 1 + meta["prefix_bytes"]
+    assert plain[0] == DOC and plain[1:] == docs[0][:1024]
+    assert tag[:p] == bytes([DOC]) + bf.tag_bytes(register, "mode") + bytes([SEP]) + b"q" + bytes([SEP]) and tag[p:] == docs[0][:1025 - p]
+    f = frame[p:p + 32]
+    assert f[0] == DATA and f[-1] == END and f.count(bytes([CUE])) == 1 and meta["frame_records"] == 1 and meta["frame_bytes"] == 32
+    assert frame[p + 32:] == docs[0][:1025 - p - 32]
+    assert rows["frame"][1][p:p + 32] == f                      # one frame, shared by every row
+    assert bf.canary_rows(docs, 1024, register, "mode", seed=1)[0]["frame"][0] == frame      # seed-stable
+
+
+def test_formation_rule():
+    u = bf.uniform_bits("math")
+    formed = [dict(step=s, value_bits={"0": (u if s < 6000 else 0.3), "w": None}) for s in range(500, 12001, 500)]
+    r = bf.formation(formed, "math", {"data/32/depth0": dict(full_value=0.9), "data/128/depth0": dict(full_value=0.5)})
+    assert r["formed"] and not r["failure"] and r["first_step_under"] == 6000 and abs(r["near_band_value_bits_at_end"] - 0.3) < 1e-9
+    stuck = [dict(step=s, value_bits={"0": u - 0.05, "w": None}) for s in range(500, 12001, 500)]
+    r = bf.formation(stuck, "math", {"data/32/depth0": dict(full_value=0.0), "data/128/depth0": dict(full_value=0.0), "weights": dict(full_value=0.0)})
+    assert r["failure"] and not r["formed"] and r["first_step_under"] is None and r["whole_value_zero_everywhere"] and r["at_the_rate"]
+    r = bf.formation(stuck, "math", {"data/32/depth0": dict(full_value=0.1)})     # at the rate but a group reads: no failure call
+    assert not r["failure"] and r["at_the_rate"] and not r["whole_value_zero_everywhere"]
+    r = bf.formation([], "math", None)                                            # nothing logged, nothing gauged: no verdict
+    assert r["near_band_value_bits_at_end"] is None and not r["failure"] and r["first_step_under"] is None
+
+
+def test_plain_collapse_flag():
+    ok = {"0-64": 3.1, "64-256": 1.9, "256-1024": 1.6, "1024-2048": 1.5, "2048-4096": 1.5, "4096+": None}
+    r = bf.plain_collapse(ok)
+    assert not r["flag"] and r["worst_window"] == "64-256" and r["windows_over"] == []
+    bad = dict(ok, **{"1024-2048": 4.3, "2048-4096": 3.4})
+    r = bf.plain_collapse(bad)
+    assert r["flag"] and r["worst_window"] == "1024-2048" and r["worst_bits"] == 4.3 and r["windows_over"] == ["1024-2048", "2048-4096"]
+    assert not bf.plain_collapse({"0-64": 9.0, "64-256": 2.4})["flag"]          # the head never counts
+
+
 def test_bits_by_frame_sums_to_the_window(src):
     rng = np.random.default_rng(13)
     specs = [bf.spec("data", 32, records=1), bf.spec("think", 256, children=[bf.spec("data", 64, records=2)])]
