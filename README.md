@@ -51,6 +51,7 @@ The second pass, `colab/nano_frame_pass2.ipynb`, runs the in-window capacity axi
 4,096 on both twins, two seeds, one row in four a plain document: two grids in one decision block, run in sequence by C3:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_frame_pass2.ipynb)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pass3.ipynb) (the third pass: the scrutiny reads by continuation, the sixteen-record second seeds, Pollux's hub address axis)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pass4.ipynb) (the fourth pass: the plain, sized and sliced frames side by side, stage A at 1,024 then the 4,096 continuation, both twins, seeds 3 and 4)
 
 Then:
 
@@ -61,6 +62,9 @@ python -m geolip.nano_beatrix.bed_train --out=<out> --arm=smr-fixed --seed=1 --c
 Framed rows: add `--frames=dyn` (dynamic sectors of generic sizes; `--sizes=32,128,256 --frame_records=4 --nest=0.3 --overlap=0.0
 --ask=any|nested|overlap|weights --facts=M --register=caption|math|code --tags=mode|esc`) or `--frames=A` (the fixed reference
 layout; `--n_lookup --n_bulk --ask=lookup|bulk|weights`). Without `--frames` the rows are the planted rows, bit for bit.
+With dynamic frames, `--sized=1` gives every open tag one byte naming its frame's generic size (a = 32, b = 64, c = 128, d = 256,
+e = 512, f = 1,024, g = 2,048), so the close is countable; `--sliced=32` (with `--sized=1`) builds every frame larger than 32 bytes as
+closed 32-byte slices back to back between its own open tag and END. Both are off by default, and the rows are then those of 0.1.20.
 
 Every run prints its job size, the time spent and the time left, and ends with the gauges. The record lands at `<out>/bed/bed_<tag>.json`
 and the weights at `<out>/bed/<tag>/`. A continued run (`--init=<a previous tag>`) carries its starting craft in its own tag
@@ -75,6 +79,15 @@ pytest -q
 The frame composer's tests run on the CPU without a model.
 
 ## Status
+
+0.1.21 (2026-10-13): the sized and the sliced frames. The open tag of a frame costs 6.4-6.7 bits at every size, but the close tag
+costs 0.04 bits at 32 bytes (the records fill the frame) and 2.3-3.8 bits at 128-1,024 bytes, where the size is unannounced. `--sized=1`
+puts the frame's generic size in its open tag (the frame tag and one letter, as the register tag is MODE and one letter: no new special
+byte); `--sliced=32` builds every larger frame as closed 32-byte slices between its own open tag and END (size + 3 bytes): a lookup
+frame's records fill its first slices, a nested lookup frame becomes a run of lookup slices, and the fetch groups a record by the frame
+it belongs to. The defaults are bit-identical to 0.1.20 (the composer's rows and metadata, and a CPU smoke's weights and record); the
+composer costs the same in all three forms. The results table names each run's form and whether it continued. colab/nano_pass4.ipynb
+runs the three forms side by side. pyproject's version follows the package's again (it had stayed at 0.1.13).
 
 0.1.20 (2026-10-13): continuation stages as grids. `init` is a grid key and an init written with {arm} {seed} {ask} {hub_K} {hub_D}
 is filled from each run's own values; a starting craft missing from the output folder is fetched from the Hub's bed/weights/ before

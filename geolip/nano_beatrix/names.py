@@ -26,7 +26,8 @@ def run_tag(args: dict) -> str:
     sizes = [int(x) for x in args.get("sizes", "32,128,256").split(",")]
     n_rec_frame = int(args.get("frame_records", "4"))
     nest_p, overlap_p = float(args.get("nest", "0.3")), float(args.get("overlap", "0.0"))
-    fr = ("" if not frames else f"_fr{frames}_{register[:3]}_{tags}"
+    sized, sliced = args.get("sized", "0") == "1", int(args.get("sliced", "0"))     # 0.1.21: size-typed frames, sliced frames
+    fr = ("" if not frames else f"_fr{frames}_{register[:3]}_{tags}" + ("_sized" if sized else "") + (f"_sl{sliced}" if sliced else "")
           + (f"_nl{n_lookup}_nb{n_bulk}" if frames == "A" else f"_sz{'-'.join(map(str, sizes))}_r{n_rec_frame}_n{int(nest_p * 100)}_o{int(overlap_p * 100)}")
           + (f"_M{n_facts}" if n_facts else "") + f"_ask{ask}"
           + (f"_p{int(round(p_plant * 100))}" if p_plant != 1.0 else ""))   # the diet, when not every row is framed

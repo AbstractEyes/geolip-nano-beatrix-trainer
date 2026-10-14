@@ -15,6 +15,8 @@ Gauges: the online value-byte loss by distance band during training; at the end 
 the planted fetch at 64 / 256 / 512 / 896 bytes (teacher-forced value NLL, greedy first byte, all five), the dispatch census by byte
 class (block 0 / middle / last), the dispatch-off toggle. Pure Adam. Progress lines carry the job size, the time spent and the time left.
 Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1 --prefetch=0]
+Framed rows: --frames=dyn [--sizes=32,128,256 --frame_records=4 --nest=0.3 --overlap=0.0 --ask=any --sized=1 --sliced=32] (bed_frames.py;
+--sized=1 names every frame's size in its open tag, --sliced=32 builds every larger frame as closed 32-byte slices; both off by default)
 Data: DIR/bed/bed_corpus.bin + bed_corpus_offsets.npy (bed_corpus.py); held-out heldout_fineweb_edu_head2048.jsonl in DIR or DIR/bed (the reserved head).
 Output: DIR/bed/bed_<arm>_s<seed>[_smoke].json; the weights DIR/bed/<arm>_s<seed>/model.safetensors + config.json"""
 import json
@@ -67,6 +69,17 @@ SIZES = [int(x) for x in ARGS.get("sizes", "32,128,256").split(",")]
 N_REC_FRAME = int(ARGS.get("frame_records", "4"))         # the most records a dynamic lookup frame carries
 NEST_P = float(ARGS.get("nest", "0.3"))
 OVERLAP_P = float(ARGS.get("overlap", "0.0"))
+# 0.1.21: the sized frame (every open tag names its frame's generic size in one payload byte) and the sliced frame (every frame larger
+# than the slice size built as closed slices of that size; a sliced frame is a sized frame); both off by default (the rows bit-identical)
+SIZED = ARGS.get("sized", "0") == "1"
+SLICED = int(ARGS.get("sliced", "0"))
+if SIZED or SLICED:
+    assert FRAMES == "dyn", "--sized and --sliced shape the dynamic frames (--frames=dyn)"
+    assert SIZED or not SLICED, "--sliced needs --sized=1 (a slice is a size-typed frame)"
+    _gen = set(SIZES) | {max(32, s // 4) for s in SIZES}                      # the plan's frame sizes and its nested child sizes
+    assert _gen <= set(bf.SIZE_LETTER), f"a sized frame's size must be one of {sorted(bf.SIZE_LETTER)}: {sorted(_gen)}"
+    assert not SLICED or (SLICED in bf.SIZE_LETTER and all(s % SLICED == 0 for s in _gen)), \
+        f"--sliced={SLICED}: every frame size must be a whole number of slices: {sorted(_gen)}"
 LOG_EVERY = int(ARGS.get("log_every", "5" if SMOKE else "50"))
 PREFETCH = ARGS.get("prefetch", "1") == "1"   # the next step's rows compose in a worker thread while this step runs on the card;
                                               # the batches are identical either way (every step seeds its own rng from [SEED, step])
@@ -270,38 +283,46 @@ def compose_row(rng, K):
 FACTS = bf.fact_table(N_FACTS, REGISTER) if (FRAMES and N_FACTS) else None
 FRAME_CFG = (dict(mode=FRAMES, register=REGISTER, tags=TAGS, n_lookup=N_LOOKUP, n_bulk=N_BULK, facts=N_FACTS, ask=ASK, sizes=SIZES,
                   frame_records=N_REC_FRAME, nest=NEST_P, overlap=OVERLAP_P) if FRAMES else None)
+if SIZED:
+    FRAME_CFG.update(sized=True, sliced=SLICED)
 REC_BYTES = bf.capacity(CTX, "A", REGISTER)["record_bytes"] if FRAMES else 0
+
+
+def cap(size: int) -> int:
+    """The records a lookup frame of this size holds in the run's form (plain, sized or sliced; bed_frames.frame_capacity)."""
+    return bf.frame_capacity(size, REC_BYTES, SIZED, SLICED)
 
 
 def draw_plan(rng):
     """One row's dynamic plan: frames of the generic sizes while they fit the window (a gap and the question reserved), lookup frames
     with as many records as fit up to N_REC_FRAME, a thinking frame nesting a smaller lookup frame with probability NEST_P, an
-    overlapping pair of lookup frames in conflict with probability OVERLAP_P. -> (specs, has_nested, has_overlap)."""
+    overlapping pair of lookup frames in conflict with probability OVERLAP_P. -> (specs, has_nested, has_overlap). A frame's room and
+    length follow the run's form (a sized open tag has two bytes; a sliced frame is its slices plus three tag bytes)."""
     budget = CTX + 1 - 6 - 64 - (REC_BYTES + 2)
     specs, used, nested, overlap = [], 0, False, False
     if OVERLAP_P and rng.random() < OVERLAP_P:
         sz = SIZES[0]
-        specs += bf.overlap_specs(rng, REGISTER, sz, sz, max(1, min(2, (sz - 2) // REC_BYTES)), "conflict")
-        used += 2 * (sz + 64)
+        specs += bf.overlap_specs(rng, REGISTER, sz, sz, max(1, min(2, cap(sz))), "conflict")
+        used += 2 * (bf.frame_bytes(sz, SLICED) + 64)
         overlap = True
     for _ in range(int(rng.integers(1, 4))):
         size = int(SIZES[int(rng.integers(len(SIZES)))])
-        if used + size + 64 > budget:
+        if used + bf.frame_bytes(size, SLICED) + 64 > budget:
             continue
         if rng.random() < 0.7:
-            n = min(N_REC_FRAME, (size - 2) // REC_BYTES)
+            n = min(N_REC_FRAME, cap(size))
             specs.append(bf.spec("data", size, records=n) if n >= 1 else bf.spec("think", size))
         else:
             kids = []
             csize = max(32, size // 4)
-            if rng.random() < NEST_P and (csize - 2) // REC_BYTES >= 1 and csize <= size - 4:
-                kids = [bf.spec("data", csize, records=min(N_REC_FRAME, (csize - 2) // REC_BYTES))]
+            if rng.random() < NEST_P and cap(csize) >= 1 and csize <= size - 4:
+                kids = [bf.spec("data", csize, records=min(N_REC_FRAME, cap(csize)))]
                 nested = True
             specs.append(bf.spec("think", size, children=kids))
-        used += size + 64
+        used += bf.frame_bytes(size, SLICED) + 64
     if not any(sp["kind"] == "data" or sp["children"] for sp in specs):     # nothing to ask: the smallest lookup frame
         sz = SIZES[0]
-        specs.append(bf.spec("data", sz, records=max(1, min(N_REC_FRAME, (sz - 2) // REC_BYTES))))
+        specs.append(bf.spec("data", sz, records=max(1, min(N_REC_FRAME, cap(sz)))))
     return specs, nested, overlap
 
 
@@ -324,7 +345,7 @@ def frame_row(rng, src, strict=False):
             ask = "any"
         if strict and ask != ASK:
             continue
-        row, m = bf.compose_dynamic(rng, src, CTX, specs, REGISTER, TAGS, ask, FACTS)
+        row, m = bf.compose_dynamic(rng, src, CTX, specs, REGISTER, TAGS, ask, FACTS, sized=SIZED, sliced=SLICED)
         return row, [m]
     raise RuntimeError(f"no plan with the feature for ask={ASK!r} in 64 draws")
 
@@ -642,8 +663,7 @@ def frame_gauges(disable_bank=False):
         if m["source"] == "weights":
             g = "weights"
         elif "frames" in m:
-            f = m["frames"][m["truth_frame"]]
-            g = f"{f['kind']}/{bf.size_bucket(f['size'])}/depth{f['depth']}"
+            g = bf.frame_group(m["frames"][m["truth_frame"]])      # kind / generic size / depth of the frame the record belongs to
         else:
             g = m["source"]
         a = groups.setdefault(g, dict(n=0, value_bits=0.0, first_byte=0, full_value=0, dist=0.0))
@@ -671,7 +691,7 @@ if FRAMES:
 def canary_gauge():
     """The canary rows (bed_frames.canary_rows) under the model: bits a byte, whole and by position, for the plain, tag and frame rows."""
     from geolip.alephllm.eval import position_bits as pb
-    rows, meta = bf.canary_rows(eval_docs, CTX, REGISTER, TAGS, SEED)
+    rows, meta = bf.canary_rows(eval_docs, CTX, REGISTER, TAGS, SEED, sized=SIZED)     # the frame row in the craft's own grammar
     out = dict(meta)
     for kind, rs in rows.items():
         acc, tot, n = None, 0.0, 0

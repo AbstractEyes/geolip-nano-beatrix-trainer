@@ -190,12 +190,51 @@ KIND_TAG = {"data": DATA, "think": THINK}
 KIND_ID = {"none": 0, "data": 1, "think": 2}
 SEG_ID = {"outside": 0, "open": 1, "head": 2, "body": 3, "close": 4}
 SIZE_BUCKETS = (32, 64, 128, 256, 512, 1024, 2048, 4096)
+# THE SIZED FRAME (0.1.21): the open tag carries one payload byte naming the frame's generic size, as the register tag is MODE + one
+# letter (no new special byte; all thirteen are allocated). The craft can then count to the close: END becomes predictable at every
+# size the way it already is at 32 bytes, where the records fill the frame.
+SIZE_LETTER = {32: b"a", 64: b"b", 128: b"c", 256: b"d", 512: b"e", 1024: b"f", 2048: b"g"}
 
 
 def size_bucket(size: int) -> int:
     """The smallest generic size at or above a frame's byte size: the gauges group by it (a layout-A bulk frame of 121-123 bytes
     reads as 128; the dynamic frames keep their generic sizes)."""
     return next((b for b in SIZE_BUCKETS if b >= size), SIZE_BUCKETS[-1])
+
+
+def frame_generic(f: dict) -> int:
+    """A frame's generic size: the one its sized open tag names (a sliced frame is its slices plus three tag bytes, so its byte size
+    is above the class it names), else the size bucket of its byte size."""
+    return f.get("generic") or size_bucket(f["size"])
+
+
+def frame_group(f: dict) -> str:
+    """The fetch's group for a truth frame: kind / generic size / nesting depth of the frame the record belongs to. A slice reads as
+    the frame it cuts (its 'unit' and 'ldepth'); every other frame as itself, so the plain and sized forms keep their 0.1.20 groups."""
+    return f"{f['kind']}/{f.get('unit') or frame_generic(f)}/depth{f.get('ldepth', f['depth'])}"
+
+
+def open_tag(kind: str, generic: int, sized: bool = False) -> bytes:
+    """A frame's open tag: the kind's special (DATA or THINK), and when sized one payload byte naming the generic size (a = 32,
+    b = 64, c = 128, d = 256, e = 512, f = 1,024, g = 2,048)."""
+    if not sized:
+        return bytes([KIND_TAG[kind]])
+    assert generic in SIZE_LETTER, f"a sized frame needs a generic size in {sorted(SIZE_LETTER)}, not {generic}"
+    return bytes([KIND_TAG[kind]]) + SIZE_LETTER[generic]
+
+
+def frame_capacity(size: int, rec_bytes: int, sized: bool = False, sliced: int = 0) -> int:
+    """The records a lookup frame of `size` holds at `rec_bytes` a record: (size - 2) // rec plain, (size - 3) // rec sized (the open
+    tag has two bytes); sliced into slices of `sliced` bytes, (size // sliced) x (sliced - 3) // rec (a frame no larger than a slice
+    is one slice)."""
+    if sliced and size > sliced:
+        return (size // sliced) * ((sliced - 3) // rec_bytes)
+    return (size - (3 if (sized or sliced) else 2)) // rec_bytes
+
+
+def frame_bytes(size: int, sliced: int = 0) -> int:
+    """A frame's length in the row: its size, or for a sliced frame its slices plus the open tag and END around them (size + 3)."""
+    return size + 3 if (sliced and size > sliced) else size
 
 
 class Filler:
@@ -236,9 +275,15 @@ def _records_for(rng, sp, register, state):
 
 def build_frame(rng, sp, base, fill, register, state, depth=0) -> bytes:
     """The frame's bytes (len == sp['size']): the open tag, the records, the children after random gaps, filler, END. Appends the
-    frame's meta to state['frames'] and every record's definition to state['defs'] (key -> [(position, value, frame index, depth)])."""
+    frame's meta to state['frames'] and every record's definition to state['defs'] (key -> [(position, value, frame index, depth,
+    owner)]; the owner is the frame whose own records these are). state['sized'] gives the open tag its size byte (the meta then
+    carries 'generic' and 'open', the tag's length); state['sliced'] = s builds a frame larger than s bytes as slices (build_sliced)."""
+    sized, sliced = state.get("sized", False), state.get("sliced", 0)
+    if sliced and sp["size"] > sliced:
+        return build_sliced(rng, sp, base, fill, register, state, depth)
     size = sp["size"]
-    room = size - 2
+    tag = open_tag(sp["kind"], size, sized)
+    room = size - len(tag) - 1
     body = bytearray()
     recs = _records_for(rng, sp, register, state)
     fi = len(state["frames"])
@@ -246,32 +291,107 @@ def build_frame(rng, sp, base, fill, register, state, depth=0) -> bytes:
     for k, v in recs:
         rb = record_bytes(k, v)
         assert len(body) + len(rb) <= room, f"a {sp['kind']} frame of {size} cannot hold {len(recs)} records"
-        state["defs"].setdefault(k, []).append((base + 1 + len(body), v, fi, depth))
+        state["defs"].setdefault(k, []).append((base + len(tag) + len(body), v, fi, depth, fi))
         body += rb
     kids = sp["children"]
-    need = sum(c["size"] for c in kids)
+    need = sum(frame_bytes(c["size"], sliced) for c in kids)
     assert len(body) + need <= room, f"the children ({need} bytes) do not fit a {sp['kind']} frame of {size} after {len(body)} bytes of records"
     for c in kids:
         slack = room - len(body) - need
         gap = int(rng.integers(0, slack + 1)) if slack > 0 else 0
         body += fill.take(gap)
-        body += build_frame(rng, c, base + 1 + len(body), fill, register, state, depth + 1)
-        need -= c["size"]
+        body += build_frame(rng, c, base + len(tag) + len(body), fill, register, state, depth + 1)
+        need -= frame_bytes(c["size"], sliced)
     body += fill.take(room - len(body))
-    state["frames"][fi] = dict(kind=sp["kind"], size=size, start=base, end=base + size, depth=depth, n_records=len(recs),
-                               keys=[k.decode() for k, _ in recs], children=len(kids))
-    return bytes([KIND_TAG[sp["kind"]]]) + bytes(body) + bytes([END])
+    meta = dict(kind=sp["kind"], size=size, start=base, end=base + size, depth=depth, n_records=len(recs),
+                keys=[k.decode() for k, _ in recs], children=len(kids))
+    if sized:
+        meta.update(generic=size, open=len(tag))
+    state["frames"][fi] = meta
+    return tag + bytes(body) + bytes([END])
+
+
+def build_sliced(rng, sp, base, fill, register, state, depth=0) -> bytes:
+    """A frame larger than the slice size s, built as slices (Phil 2026-10-13: one tag for a larger size, sliced into smaller sizes
+    that carry the closures): its sized open tag, then size / s closed slices of s bytes back to back with no filler between them,
+    then END (size + 3 bytes in all; the letter names the size of the slices it holds). A lookup frame's own records fill its first
+    slices in order, as many a slice as fit; its other slices carry filler, a thinking frame's slices always. A child frame becomes a
+    run of child-size / s slices of the child's kind at a slice-aligned place after the parent's record slices (the gap drawn in whole
+    slices; the child's records in the run's first slices). Records are defined at the depth of the frame they belong to (a slice is a
+    cut of its frame, not a frame inside it); the slices are frames of their own one level down for the masks and the bits by frame,
+    each carrying the generic size ('unit') and nesting depth ('ldepth') of the frame it cuts, so the fetch groups a record by the
+    frame it belongs to (frame_group)."""
+    s, S = state["sliced"], sp["size"]
+    assert S % s == 0, f"a sliced frame of {S} bytes is not a whole number of {s}-byte slices"
+    k, room = S // s, s - 3                                         # a slice's body: its two-byte open tag and END around it
+    tag = open_tag(sp["kind"], S, True)
+    fi = len(state["frames"])
+    state["frames"].append(None)                                   # the slot; the slices append after the parent's index
+
+    def pack(recs):
+        """The records in slice order, as many a slice as fit."""
+        out, cur, used = [], [], 0
+        for kk, vv in recs:
+            n = len(record_bytes(kk, vv))
+            assert n <= room, f"a record of {n} bytes does not fit a {s}-byte slice"
+            if used + n > room:
+                out.append(cur)
+                cur, used = [], 0
+            cur.append((kk, vv))
+            used += n
+        return out + ([cur] if cur else [])
+
+    recs = _records_for(rng, sp, register, state)
+    slots = [(sp["kind"], r, S, depth, fi) for r in pack(recs)]     # (kind, records, unit, ldepth, owner) per slice
+    assert len(slots) <= k, f"{len(recs)} records need {len(slots)} slices; a {S}-byte frame has {k}"
+    kids = sp["children"]
+    for c in kids:
+        assert c["size"] % s == 0 and not c["children"], f"a child of a sliced frame is a whole number of slices with no children ({c['size']})"
+    need = sum(c["size"] // s for c in kids)
+    assert len(slots) + need <= k, f"the children ({need} slices) do not fit a sliced frame of {k} slices after {len(slots)} record slices"
+    for c in kids:
+        slack = k - len(slots) - need
+        gap = int(rng.integers(0, slack + 1)) if slack > 0 else 0
+        slots += [(sp["kind"], [], S, depth, fi)] * gap
+        crecs, kc = pack(_records_for(rng, c, register, state)), c["size"] // s
+        assert len(crecs) <= kc, f"a child of {c['size']} bytes holds {kc} slices, its records need {len(crecs)}"
+        owner = ("run", fi, len(slots))                            # a child run is never a top-level frame
+        slots += [(c["kind"], crecs[j] if j < len(crecs) else [], c["size"], depth + 1, owner) for j in range(kc)]
+        need -= kc
+    slots += [(sp["kind"], [], S, depth, fi)] * (k - len(slots))
+    body = bytearray()
+    for kind, rs, unit, ld, owner in slots:
+        sb = base + len(tag) + len(body)
+        si = len(state["frames"])
+        state["frames"].append(None)
+        st = open_tag(kind, s, True)
+        sbody = bytearray()
+        for kk, vv in rs:
+            state["defs"].setdefault(kk, []).append((sb + len(st) + len(sbody), vv, si, ld, owner))
+            sbody += record_bytes(kk, vv)
+        sbody += fill.take(room - len(sbody))
+        state["frames"][si] = dict(kind=kind, size=s, start=sb, end=sb + s, depth=depth + 1, n_records=len(rs), keys=[kk.decode() for kk, _ in rs],
+                                   children=0, generic=s, open=len(st), unit=unit, ldepth=ld, slice_of=fi)
+        body += st + bytes(sbody) + bytes([END])
+    assert len(body) == S, (len(body), S)
+    state["frames"][fi] = dict(kind=sp["kind"], size=S + 3, start=base, end=base + S + 3, depth=depth, n_records=len(recs),
+                               keys=[kk.decode() for kk, _ in recs], children=len(kids), generic=S, open=len(tag), sliced=s, slices=k)
+    return tag + bytes(body) + bytes([END])
 
 
 def compose_dynamic(rng, src: bytes, ctx: int, specs: list, register: str = "caption", scheme: str = "mode", ask: str = "any",
-                    facts: list | None = None, gap_max: int = 64) -> tuple:
+                    facts: list | None = None, gap_max: int = 64, sized: bool = False, sliced: int = 0) -> tuple:
     """The dynamic row: DOC, the register tag, SEP q SEP, the frames in order after gaps of 0..gap_max filler bytes, the question
     CUE key SEP, the value, END, filler to the window end. ask: any (a uniform key), nested (a key defined at depth >= 1), overlap (a key
     defined more than once; the truth is the LATEST definition before the question), first / last (a key of that frame), weights (a fact
-    absent from every frame; needs facts). -> (row, meta): v0, vlen, dist (v0 minus the truth's position; None for weights), key,
-    truth_frame, truth_depth, n_defs, source ('frame' | 'weights'), frames (the list), scheme, register, ctx, q0."""
+    absent from every frame; needs facts). sized: every open tag names its frame's generic size (one payload byte); sliced = s (needs
+    sized): every frame larger than s bytes is built as closed s-byte slices (build_sliced). -> (row, meta): v0, vlen, dist (v0 minus
+    the truth's position; None for weights), key, truth_frame, truth_depth, n_defs, source ('frame' | 'weights'), frames (the list),
+    scheme, register, ctx, q0 (and sized / sliced when set)."""
+    assert not sliced or sized, "a sliced frame is a sized frame: sliced needs sized"
     fill = Filler(src, int(rng.integers(0, max(1, len(src) - 1))))
-    state = dict(frames=[], defs={}, facts=None, key_iter=iter(rng.permutation(16000).tolist()), fact_iter=None)
+    state = dict(frames=[], defs={}, facts=None, key_iter=iter(rng.permutation(16000).tolist()), fact_iter=None, sized=bool(sized),
+                 sliced=int(sliced))
     asked_fact = None
     if facts is not None:
         perm = rng.permutation(len(facts)).tolist()
@@ -295,6 +415,10 @@ def compose_dynamic(rng, src: bytes, ctx: int, specs: list, register: str = "cap
             cands = [k for k, d in defs.items() if d[-1][3] >= 1]
         elif ask == "overlap":
             cands = [k for k, d in defs.items() if len(d) > 1]
+        elif ask in ("first", "last") and sliced:                  # sliced: a key of the first / last top-level frame's own records
+            tops = [i for i, f in enumerate(state["frames"]) if f["depth"] == 0]
+            fi = tops[0] if ask == "first" else tops[-1]
+            cands = [k for k, d in defs.items() if d[-1][4] == fi]
         elif ask in ("first", "last"):
             fi = 0 if ask == "first" else len(state["frames"]) - 1
             cands = [k for k, d in defs.items() if d[-1][2] == fi]
@@ -318,6 +442,10 @@ def compose_dynamic(rng, src: bytes, ctx: int, specs: list, register: str = "cap
                 truth_frame=None if truth is None else truth[2], truth_depth=None if truth is None else truth[3],
                 n_defs=0 if truth is None else len(defs[key]), source="weights" if truth is None else "frame",
                 frames=state["frames"], scheme=scheme, register=register, ctx=ctx, q0=q0)
+    if sized:
+        meta["sized"] = True
+    if sliced:
+        meta["sliced"] = int(sliced)
     return row, meta
 
 
@@ -331,16 +459,17 @@ def overlap_specs(rng, register: str, size1: int, size2: int, k: int, mode: str 
 
 
 def frame_masks(meta: dict, ctx: int) -> dict:
-    """Per position of the row (length ctx + 1): the innermost frame's kind id, its size bucket, its depth + 1 (0 outside), and the segment
-    (1 the open tag, 2 the first eight body bytes, 3 the body, 4 the close tag, 0 outside)."""
+    """Per position of the row (length ctx + 1): the innermost frame's kind id, its generic size (frame_generic), its depth + 1 (0
+    outside), and the segment (1 the open tag, two bytes when sized; 2 the first eight body bytes; 3 the body; 4 the close tag; 0 outside).
+    A sliced frame shows its own open tag and END; its slices paint the rest."""
     n = ctx + 1
     kind, size, depth, seg = (np.zeros(n, dtype=np.int64) for _ in range(4))
     for f in sorted(meta["frames"], key=lambda f: f["depth"]):
-        s, e = f["start"], f["end"]
-        kind[s:e], size[s:e], depth[s:e] = KIND_ID[f["kind"]], size_bucket(f["size"]), f["depth"] + 1
+        s, e, o = f["start"], f["end"], f.get("open", 1)
+        kind[s:e], size[s:e], depth[s:e] = KIND_ID[f["kind"]], frame_generic(f), f["depth"] + 1
         seg[s:e] = SEG_ID["body"]
-        seg[s] = SEG_ID["open"]
-        seg[s + 1:min(s + 9, e - 1)] = SEG_ID["head"]
+        seg[s:s + o] = SEG_ID["open"]
+        seg[s + o:min(s + o + 8, e - 1)] = SEG_ID["head"]
         seg[e - 1] = SEG_ID["close"]
     return dict(kind=kind, size=size, depth=depth, seg=seg)
 
@@ -406,14 +535,15 @@ def uniform_bits(register: str) -> float:
     return float(np.log2(len(ALPH[REGISTERS[register][2]])))
 
 
-def canary_rows(docs: list, ctx: int, register: str = "caption", scheme: str = "mode", seed: int = 1) -> tuple:
+def canary_rows(docs: list, ctx: int, register: str = "caption", scheme: str = "mode", seed: int = 1, sized: bool = False) -> tuple:
     """The plain-document canary rows (ctx + 1 bytes each) for every document, three kinds: plain = DOC + text (the only row a diet
     composes); tag = DOC + the register tag + SEP q SEP + text (a question cue before any frame); frame = the same with one flat 32-byte
-    lookup frame of one record before the text (the same frame in every row). -> ({kind: [row bytes]}, meta). A craft that reads the
-    plain row and breaks on the others learned its opening grammar strictly; one that breaks on the plain row lost the bare document."""
+    lookup frame of one record before the text (the same frame in every row; sized like the craft's own frames when it was trained on
+    sized frames). -> ({kind: [row bytes]}, meta). A craft that reads the plain row and breaks on the others learned its opening grammar
+    strictly; one that breaks on the plain row lost the bare document."""
     rng = np.random.default_rng([seed, 4343])
     prefix = tag_bytes(register, scheme) + bytes([SEP]) + b"q" + bytes([SEP])
-    state = dict(frames=[], defs={}, facts=None, key_iter=iter(rng.permutation(16000).tolist()), fact_iter=None)
+    state = dict(frames=[], defs={}, facts=None, key_iter=iter(rng.permutation(16000).tolist()), fact_iter=None, sized=bool(sized))
     frame = build_frame(rng, spec("data", 32, records=1), 1 + len(prefix), Filler(docs[-1], 0), register, state)
     assert len(frame) == 32 and frame[0] == DATA and frame[-1] == END, (len(frame), frame[:1], frame[-1:])
     rows = {"plain": [], "tag": [], "frame": []}
@@ -423,7 +553,10 @@ def canary_rows(docs: list, ctx: int, register: str = "caption", scheme: str = "
         rows["frame"].append(bytes([DOC]) + prefix + frame + d[:ctx - len(prefix) - len(frame)])
     for kind, rs in rows.items():
         assert all(len(r) == ctx + 1 for r in rs), (kind, [len(r) for r in rs if len(r) != ctx + 1][:3])
-    return rows, dict(prefix_bytes=len(prefix), frame_bytes=len(frame), frame_records=1, register=register, scheme=scheme)
+    meta = dict(prefix_bytes=len(prefix), frame_bytes=len(frame), frame_records=1, register=register, scheme=scheme)
+    if sized:
+        meta["sized"] = True
+    return rows, meta
 
 
 def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2, floor: float = 0.05, min_trials: int = 8) -> dict:
@@ -459,10 +592,28 @@ def _check_dynamic(row, m, ctx):
     assert len(row) == ctx + 1 and row[0] == DOC
     for f in m["frames"]:
         assert row[f["start"]] == KIND_TAG[f["kind"]] and row[f["end"] - 1] == END and f["end"] - f["start"] == f["size"], f
+        if f.get("generic") is not None:                          # sized: the payload byte names the generic size
+            assert row[f["start"] + 1:f["start"] + 2] == SIZE_LETTER[f["generic"]], f
         if f["depth"] >= 1:
             assert any(p["depth"] == f["depth"] - 1 and p["start"] < f["start"] and f["end"] <= p["end"] - 1 for p in m["frames"]), f
     assert row[m["q0"]] == CUE and row[m["v0"] - 1] == SEP and row[m["v0"] + m["vlen"]] == END
-    assert int((frame_masks(m, ctx)["seg"] == SEG_ID["open"]).sum()) == len(m["frames"])
+    assert int((frame_masks(m, ctx)["seg"] == SEG_ID["open"]).sum()) == sum(f.get("open", 1) for f in m["frames"])
+
+
+def _check_sliced(row, m):
+    """Every sliced frame: its open tag, then exactly size / s closed slices tiling its body with no byte between them, then END."""
+    n = 0
+    for i, f in enumerate(m["frames"]):
+        if not f.get("sliced"):
+            continue
+        s, k = f["sliced"], f["slices"]
+        kids = [g for g in m["frames"] if g.get("slice_of") == i]
+        assert len(kids) == k and f["size"] == k * s + 3 and row[f["end"] - 1] == END, f
+        for j, g in enumerate(sorted(kids, key=lambda g: g["start"])):
+            assert g["start"] == f["start"] + 2 + j * s and g["end"] - g["start"] == s, (j, g)
+            assert row[g["start"]] == KIND_TAG[g["kind"]] and row[g["start"] + 1:g["start"] + 2] == SIZE_LETTER[s] and row[g["end"] - 1] == END
+        n += 1
+    return n
 
 
 def _selftest_dynamic(rng, src):
@@ -498,6 +649,25 @@ def _selftest_dynamic(rng, src):
     print(f"dynamic: composed {n} rows (sizes 32 / 64 / 128 / 256, a nested lookup inside a thinking frame, the weights source, an overlap"
           f" in conflict) at 1,024 and 4,096 across 2 schemes x 2 registers: every assert held; bits by frame sums to the window")
     print(fmt_frame_bits(res))
+
+
+def _selftest_sized(rng, src):
+    n = 0
+    for sliced in (0, 32):
+        for ctx in (1024, 4096):
+            specs = [spec("data", 32, records=1), spec("think", 256, children=[spec("data", 64, records=2)]), spec("data", 128, records=4)]
+            if ctx == 4096:
+                specs += [spec("think", 1024, children=[spec("data", 256, records=4)]), spec("data", 512, records=8)]
+            for ask in ("any", "nested", "first", "last"):
+                row, m = compose_dynamic(rng, src, ctx, specs, "caption", "mode", ask, sized=True, sliced=sliced)
+                _check_dynamic(row, m, ctx)
+                n_sl = _check_sliced(row, m)
+                assert n_sl == (0 if not sliced else (2 if ctx == 1024 else 4)), n_sl     # every frame above 32 bytes
+                if ask == "nested":
+                    assert m["truth_depth"] == 1 and frame_group(m["frames"][m["truth_frame"]]).endswith("/depth1"), m["truth_frame"]
+                n += 1
+    print(f"sized and sliced: composed {n} rows (plain sized; sliced into 32-byte slices) at 1,024 and 4,096: every open tag names its size,"
+          f" every sliced frame is its slices back to back and its END")
 
 
 def _selftest():
@@ -536,6 +706,7 @@ def _selftest():
     print(f"  meta: source {m['source']} key {m['key']} dist {m['dist']} v0 {m['v0']} bands {m['bands']}")
     print("bands:", bands_for(1024), bands_for(4096))
     _selftest_dynamic(rng, src)
+    _selftest_sized(rng, src)
 
 
 if __name__ == "__main__":

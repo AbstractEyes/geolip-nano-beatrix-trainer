@@ -163,3 +163,10 @@ def test_fetch_init_pulls_the_craft_into_the_bed(monkeypatch, tmp_path):
     assert any("fetched" in l for l in lines)
     mod.hf_hub_download = lambda *a, **k: (_ for _ in ()).throw(OSError("404"))
     assert not br.fetch_init("org/repo", str(tmp_path), "nobody_s9", lines.append) and any("not fetched" in l for l in lines)
+
+
+def test_run_label_and_grid_carry_the_frame_form():
+    assert run_label(["--arm=castor-both", "--seed=1", "--frames=dyn", "--frame_records=8", "--sized=1", "--sliced=32"]) == "castor-both s1 caption r8 sized sl32"
+    assert run_label(["--arm=castor-both", "--seed=1", "--frames=dyn", "--sized=0", "--sliced=0"]) == "castor-both s1 caption"
+    runs = expand({"arms": "castor-both", "seeds": "1", "frames": "dyn", "sized": "0,1"})
+    assert len(runs) == 2 and sorted(a for r in runs for a in r if a.startswith("--sized=")) == ["--sized=0", "--sized=1"]

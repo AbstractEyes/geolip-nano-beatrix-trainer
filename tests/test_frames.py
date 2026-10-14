@@ -78,7 +78,7 @@ def _check_dynamic(row, m, ctx):
         if f["depth"] >= 1:
             assert any(p["depth"] == f["depth"] - 1 and p["start"] < f["start"] and f["end"] <= p["end"] - 1 for p in m["frames"])
     assert row[m["q0"]] == CUE and row[m["v0"] - 1] == SEP and row[m["v0"] + m["vlen"]] == END
-    assert int((bf.frame_masks(m, ctx)["seg"] == bf.SEG_ID["open"]).sum()) == len(m["frames"])
+    assert int((bf.frame_masks(m, ctx)["seg"] == bf.SEG_ID["open"]).sum()) == sum(f.get("open", 1) for f in m["frames"])
 
 
 @pytest.mark.parametrize("ctx", [1024, 4096])
@@ -174,3 +174,106 @@ def test_bits_by_frame_sums_to_the_window(src):
     assert all(abs(c["bits"] - 1 / np.log(2.0)) < 1e-9 for c in cells)
     assert sum(v["n"] for v in res["by_kind_depth"].values()) + res["outside"]["n"] == 4 * 1024
     assert "data/64/open" in res["by_kind_size_segment"] and "data/depth2" in res["by_kind_depth"]
+
+
+# ------------------------------------------------------------------ 0.1.21: the sized and the sliced frames
+def _h(b) -> str:
+    import hashlib
+    import json
+    return hashlib.sha256(b if isinstance(b, (bytes, bytearray)) else json.dumps(b, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _specs(ctx):
+    sp = [bf.spec("data", 32, records=1), bf.spec("think", 256, children=[bf.spec("data", 64, records=2)]), bf.spec("data", 128, records=4)]
+    return sp + ([bf.spec("think", 1024, children=[bf.spec("data", 256, records=4)]), bf.spec("data", 512, records=8)] if ctx == 4096 else [])
+
+
+def test_default_rows_are_the_0_1_20_rows(src):
+    """With the new options off the composer writes the 0.1.20 rows and metadata byte for byte (digests taken from 0.1.20, d3d5e33)."""
+    row, m = bf.compose_dynamic(np.random.default_rng([1024, 4, 7, 3]), src, 1024, _specs(1024), "caption", "mode", "any")
+    assert (_h(row), _h(m)) == ("67d5fd58463afc86", "33d37b1906620933")
+    row, m = bf.compose_dynamic(np.random.default_rng([4096, 3, 4, 6]), src, 4096, _specs(4096), "code", "esc", "nested")
+    assert (_h(row), _h(m)) == ("0d76932736fbac2a", "9029a04f08a7054f")
+    rng = np.random.default_rng([1024, 99])
+    row, m = bf.compose_dynamic(rng, src, 1024, bf.overlap_specs(rng, "caption", 128, 128, 3, "conflict"), "caption", "mode", "overlap")
+    assert (_h(row), _h(m)) == ("3481016c9ade88a4", "4c0a592302ced436")
+    rows, meta = bf.canary_rows([src[i:i + 1200] for i in range(0, 4800, 1200)], 1024, "caption", "mode", seed=1)
+    assert (_h(b"".join(r for rs in rows.values() for r in rs)), _h(meta)) == ("300670fc34fda72b", "93a5772f138938af")
+
+
+@pytest.mark.parametrize("ctx", [1024, 4096])
+@pytest.mark.parametrize("ask", ["any", "nested", "first", "last"])
+def test_sized_open_tags_name_the_size(src, ctx, ask):
+    row, m = bf.compose_dynamic(np.random.default_rng(21), src, ctx, _specs(ctx), "caption", "mode", ask, sized=True)
+    _check_dynamic(row, m, ctx)
+    assert m["sized"] is True and "sliced" not in m
+    for f in m["frames"]:
+        assert row[f["start"]:f["start"] + 2] == bytes([bf.KIND_TAG[f["kind"]]]) + bf.SIZE_LETTER[f["size"]]    # the letter names the size
+        assert f["generic"] == f["size"] and f["open"] == 2 and row[f["start"] + f["size"] - 1] == END              # END where it says
+        if f["n_records"]:
+            assert row[f["start"] + 2] == CUE                                                                       # records after the tag
+    assert int((bf.frame_masks(m, ctx)["seg"] == bf.SEG_ID["open"]).sum()) == 2 * len(m["frames"])
+
+
+@pytest.mark.parametrize("ctx", [1024, 4096])
+@pytest.mark.parametrize("ask", ["any", "nested", "first", "last"])
+def test_sliced_frames_are_their_slices_and_an_end(src, ctx, ask):
+    row, m = bf.compose_dynamic(np.random.default_rng(23), src, ctx, _specs(ctx), "caption", "mode", ask, sized=True, sliced=32)
+    _check_dynamic(row, m, ctx)
+    assert m["sliced"] == 32 and bf._check_sliced(row, m) == (2 if ctx == 1024 else 4)       # every frame above 32 bytes is sliced
+    for i, f in enumerate(m["frames"]):
+        if not f.get("sliced"):
+            continue
+        assert row[f["start"]:f["start"] + 2] == bytes([bf.KIND_TAG[f["kind"]]]) + bf.SIZE_LETTER[f["generic"]]
+        assert f["size"] == f["generic"] + 3 and row[f["start"] + 2 + f["generic"]] == END    # the slices, then the frame's own END
+        kids = sorted((g for g in m["frames"] if g.get("slice_of") == i), key=lambda g: g["start"])
+        own = [g for g in kids if g["ldepth"] == f["depth"]]
+        filled = [g for g in own if g["n_records"]]
+        assert own[:len(filled)] == filled and sum(g["n_records"] for g in own) == f["n_records"]    # records fill the first slices
+        run = [g for g in kids if g["ldepth"] == f["depth"] + 1]                                    # a nested lookup frame: a run
+        if run:
+            assert len(run) == run[0]["unit"] // 32 and all(b["start"] - a["start"] == 32 for a, b in zip(run, run[1:]))
+    t = m["frames"][m["truth_frame"]]
+    if t.get("slice_of") is not None:                                     # the fetch groups a sliced record by the frame it belongs to
+        assert bf.frame_group(t) == f"{t['kind']}/{t['unit']}/depth{t['ldepth']}"
+    if ask == "nested":
+        assert m["truth_depth"] == 1 and bf.frame_group(t).endswith("/depth1")
+    if ask in ("first", "last"):
+        tops = [j for j, f in enumerate(m["frames"]) if f["depth"] == 0]
+        top = m["frames"][tops[0] if ask == "first" else tops[-1]]
+        assert top["start"] < m["v0"] - m["dist"] < top["end"]           # the truth lies in that top-level frame
+
+
+def test_sliced_nested_child_is_a_run_of_lookup_slices(src):
+    row, m = bf.compose_dynamic(np.random.default_rng(29), src, 4096, [bf.spec("think", 1024, children=[bf.spec("data", 256, records=4)])],
+                                "caption", "mode", "nested", sized=True, sliced=32)
+    parent = m["frames"][0]
+    run = sorted((g for g in m["frames"] if g.get("slice_of") == 0 and g["ldepth"] == 1), key=lambda g: g["start"])
+    think = [g for g in m["frames"] if g.get("slice_of") == 0 and g["ldepth"] == 0]
+    assert len(run) == 8 and all(g["kind"] == "data" and g["unit"] == 256 for g in run) and (run[0]["start"] - parent["start"] - 2) % 32 == 0
+    assert all(b["start"] - a["start"] == 32 for a, b in zip(run, run[1:])) and [g["n_records"] for g in run] == [1, 1, 1, 1, 0, 0, 0, 0]
+    assert len(think) == 24 and all(g["kind"] == "think" and g["n_records"] == 0 for g in think)
+    assert m["truth_depth"] == 1 and bf.frame_group(m["frames"][m["truth_frame"]]) == "data/256/depth1"
+
+
+def test_capacity_and_length_by_form():
+    rec = bf.capacity(1024, "A", "caption")["record_bytes"]
+    sizes = (32, 64, 128, 256)
+    assert [bf.frame_capacity(s, rec) for s in sizes] == [(s - 2) // rec for s in sizes]
+    assert [bf.frame_capacity(s, rec, sized=True) for s in sizes] == [(s - 3) // rec for s in sizes]
+    assert [bf.frame_capacity(s, rec, True, 32) for s in (32, 64, 128, 1024)] == [1, 2, 4, 32]
+    assert bf.frame_bytes(1024) == 1024 and bf.frame_bytes(1024, 32) == 1027 and bf.frame_bytes(32, 32) == 32
+    assert bf.open_tag("data", 1024) == bytes([DATA]) and bf.open_tag("think", 1024, True) == bytes([THINK]) + b"f"
+    assert bf.frame_group(dict(kind="data", size=121, depth=0)) == "data/128/depth0"                # the 0.1.20 group, unchanged
+
+
+def test_sliced_needs_sized(src):
+    with pytest.raises(AssertionError):
+        bf.compose_dynamic(np.random.default_rng(1), src, 1024, [bf.spec("data", 128, records=2)], sliced=32)
+
+
+def test_sized_canary_frame(src):
+    rows, meta = bf.canary_rows([src[i:i + 1200] for i in range(0, 4800, 1200)], 1024, "caption", "mode", seed=1, sized=True)
+    p = 1 + meta["prefix_bytes"]
+    f = rows["frame"][0][p:p + 32]
+    assert f[:2] == bytes([DATA]) + b"a" and f[2] == CUE and f[-1] == END and meta["sized"] is True and meta["frame_bytes"] == 32

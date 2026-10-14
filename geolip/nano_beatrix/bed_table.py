@@ -159,11 +159,13 @@ def main(argv: list) -> None:
               "the nested whole = every data frame at depth 1 or deeper, trial-weighted):")
         sizes = sorted({int(k.split("/")[1]) for r in framed for k in r["heldout_bits_by_frame"]["by_kind_size_segment"] if k.startswith("data/")}
                        | {int(k.split("/")[1]) for r in framed for k in r["fetch_by_frame"] if k.startswith("data/")})
-        print("| arm | seed | ctx | steps | register | tags | sizes | nest | overlap | ask | facts | text | outside | "
+        print("| arm | seed | ctx | steps | start | register | tags | form | sizes | nest | overlap | ask | facts | text | outside | "
               + " | ".join(f"data {s} body" for s in sizes) + " | " + " | ".join(f"whole value {s}" for s in sizes) + " | nested whole | tok/s | min |")
-        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|" + "---|" * (2 * len(sizes)) + "---|---|---|")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|" + "---|" * (2 * len(sizes)) + "---|---|---|")
         for r in framed:
             fr, bf, ff = r["frames"], r["heldout_bits_by_frame"], r["fetch_by_frame"]
+            form = f"sliced {fr['sliced']}" if fr.get("sliced") else ("sized" if fr.get("sized") else "plain")   # 0.1.21 (a sliced frame's body is its slices: data 32)
+            start = "continued" if r.get("init") else "birth"
             seg = bf["by_kind_size_segment"]
             body = " | ".join(f"{seg['data/%d/body' % s]['bits']:.2f}" if "data/%d/body" % s in seg else "-" for s in sizes)
             fetch = " | ".join(f"{ff['data/%d/depth0' % s]['full_value']:.2f} ({ff['data/%d/depth0' % s]['first_byte']:.2f}, n {ff['data/%d/depth0' % s]['n']})"
@@ -171,7 +173,7 @@ def main(argv: list) -> None:
             nested = [v for k, v in ff.items() if k.startswith("data/") and not k.endswith("depth0")]
             n_nest = sum(v["n"] for v in nested)
             nest_s = f"{sum(v['full_value'] * v['n'] for v in nested) / n_nest:.2f} (n {n_nest})" if n_nest else "-"
-            print(f"| {r['arm']} | {r['seed']} | {r.get('ctx', 1024):,} | {r['steps']:,} | {fr.get('register')} | {fr.get('tags')} | {'/'.join(map(str, fr.get('sizes', [])))} | "
+            print(f"| {r['arm']} | {r['seed']} | {r.get('ctx', 1024):,} | {r['steps']:,} | {start} | {fr.get('register')} | {fr.get('tags')} | {form} | {'/'.join(map(str, fr.get('sizes', [])))} | "
                   f"{fr.get('nest')} | {fr.get('overlap')} | {fr.get('ask')} | {fr.get('facts')} | {r['heldout_bpb']:.4f} | {bf['outside']['bits']:.3f} | {body} | {fetch} | {nest_s} | "
                   f"{r['tok_per_s'] / 1e3:.0f} | {r['train_minutes']:.1f} |")
 

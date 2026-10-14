@@ -38,3 +38,12 @@ def test_run_tag_matches_the_record_names():
     assert run_tag({"arm": "smr-fixed", "seed": "2", "steps": "3000", "ctx": "4096"}) == "smr-fixed_s2_L3000_ctx4096"
     assert run_tag({"arm": "castor-both", "seed": "1", "steps": "12000", "ctx": "4096", "init": "castor-both_s1_L12000_frdyn_cap_mode_sz32-128-256_r4_n30_o0_askany_p75"}) == \
         "castor-both_s1_L12000_ctx4096_from_L12000_frdyn_cap_mode_sz32-128-256_r4_n30_o0_askany_p75"
+
+
+def test_run_tag_names_the_sized_and_sliced_forms():
+    from geolip.nano_beatrix.names import run_tag
+    base = {"arm": "castor-both", "seed": "1", "steps": "12000", "frames": "dyn", "plant": "0.75", "frame_records": "8"}
+    assert run_tag(base) == "castor-both_s1_L12000_frdyn_cap_mode_sz32-128-256_r8_n30_o0_askany_p75"
+    assert run_tag(dict(base, sized="1")) == "castor-both_s1_L12000_frdyn_cap_mode_sized_sz32-128-256_r8_n30_o0_askany_p75"
+    assert run_tag(dict(base, sized="1", sliced="32")) == "castor-both_s1_L12000_frdyn_cap_mode_sized_sl32_sz32-128-256_r8_n30_o0_askany_p75"
+    assert run_tag(dict(base, sized="0", sliced="0")) == run_tag(base)

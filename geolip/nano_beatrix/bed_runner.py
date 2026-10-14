@@ -19,7 +19,7 @@ From the command line:
     python -m geolip.nano_beatrix.bed_runner --out=DIR --arms=smr-fixed,altn-fixed --seeds=1,2 --ctx=1024 --steps=12000 --mb=32 \\
         [--frames=dyn --sizes=32,128,256 --ask=any --facts=0,64,256 ...] [--push=AbstractPhil/alephllm-nano-beatrix-training] [--parallel=4] [--dry=1]
 Grid keys (a comma list expands into the product): arms, seeds, ctx, steps, mb, frames, ask, facts, register, tags, n_lookup, n_bulk,
-frame_records, nest, overlap, records, hub_K, hub_D, hub_const, plant, lr, cues. Everything else passes through to bed_train.py as given
+frame_records, nest, overlap, records, hub_K, hub_D, hub_const, plant, lr, cues, init, sized, sliced. Everything else passes through to bed_train.py as given
 (--sizes keeps its own comma list). Shipping needs HF_TOKEN in the environment; without it the runner only prints the plan."""
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ except ImportError:                                      # run as a file: the fo
     from names import run_tag  # noqa: E402
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
-             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues", "init")
+             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues", "init", "sized", "sliced")
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
 DEFAULT_REPO = "AbstractPhil/alephllm-nano-beatrix-training"       # where a starting craft is fetched from when it is not in <out>/bed
@@ -93,6 +93,10 @@ def run_label(run: list) -> str:
             parts.append(f"o{kv['overlap']}")
         if kv.get("facts"):
             parts.append(f"f{kv['facts']}")
+        if kv.get("sized") == "1":
+            parts.append("sized")
+        if kv.get("sliced") not in (None, "0"):
+            parts.append(f"sl{kv['sliced']}")
     if kv.get("init"):
         parts.append("cont")
     return " ".join(parts)
