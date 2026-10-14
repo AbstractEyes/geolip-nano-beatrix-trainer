@@ -145,6 +145,10 @@ def craft_cfg(arm: str) -> AlephLMConfig:
          "altn": dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_rotary=True)}
     A["castor"] = A["smr"]            # the twins' names: Castor = the rotary softmax body (the mortal twin, the growing memory)
     A["pollux"] = A["altn"]           # Pollux = the all-rotary alternating body (the immortal twin, the constant decode memory)
+    # the dual-hub bodies: each hub keeps two address masses, one rotary (sharp near) and one plain (distance-free, far reach); with the
+    # dense planted records the dual hub recalled the full value at every distance where a rotary-only hub lost the far records
+    A["hubdb"] = dict(A["hubd"], hub_K=64, hub_D=32, hub_const=2)        # six dual hubs on the bigger address (two books of 64 in 32)
+    A["altd"] = dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_dual=True)   # Pollux's layout with dual hubs
     Bk = {"free": "", "fixed": "fixed", "both": "add"}
     assert attn in A and bank in Bk, f"unknown arm {arm!r}: attention in {sorted(A)}, bank in {sorted(Bk)}"
     extra = {}
