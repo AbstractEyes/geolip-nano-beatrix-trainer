@@ -72,6 +72,13 @@ byte; each learns from the other at every byte), seeds 1 and 2, the v4 train's s
 against the v4 train's solo blocks of the same seeds and reads how alike the twins end, paired and alone:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pair.ipynb)
 
+The Canon bodies beside the twins, `colab/nano_canon_train.ipynb`: Pollux with Canon layers (`polluxc`) and Pollux's layout with dual
+hubs and Canon layers (`altdc`) go through the v4 train's curriculum on the seeds still open, beside Castor and Pollux on the same
+seeds, in phases run in order (the twins on seed 4; both Canon bodies on seed 3, continued from their stage-A blocks on the Hub; the
+twins on seed 3). C2 prices every arm at each stage's rows on the card in hand and prints each chain's next block and the time it has
+left; C4 renders each phase's boundary table:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_canon_train.ipynb)
+
 Then:
 
 ```bash
@@ -110,6 +117,14 @@ pytest -q
 The frame composer's tests run on the CPU without a model.
 
 ## Status
+
+0.1.25 (2026-10-14): the Canon bodies' notebook, and the arms added since 0.1.24. `colab/nano_canon_train.ipynb` runs the v4
+train's curriculum in phases (each phase a curriculum over its own chains, run to its end before the next): the twins on seed 4, both
+Canon bodies on seed 3 (continued from their stage-A blocks on the Hub), the twins on seed 3; its preflight prices every arm at each
+stage's rows on the card in hand and prints each chain's next block and the training time it has left. Released here from main: the
+dual-hub bodies (`hubdb`, `altd`, `d5s1`, `d4s2`) and the Canon bodies (`altdc`, `hubdc`, `polluxc`), with the library pinned to
+alephllm `d26b40d` (its `feat/canon-layers` branch: the Canon layers, born at zero; every flag off is the previous pin bit for bit).
+The training code is otherwise 0.1.24's.
 
 0.1.24 (2026-10-13): the pair run. `bed_train --pair=<arm>` trains two crafts on the very same rows with a cross term between their
 next-byte predictions (one way or both ways, at the asked values' bytes or every byte; the module docstring and the run section above);
