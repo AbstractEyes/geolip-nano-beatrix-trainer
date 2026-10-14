@@ -39,7 +39,7 @@ except ImportError:                                      # run as a file: the fo
     from names import run_tag  # noqa: E402
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
-             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues", "init", "sized", "sliced")
+             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues", "init", "sized", "sliced", "stage")
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
 DEFAULT_REPO = "AbstractPhil/alephllm-nano-beatrix-training"       # where a starting craft is fetched from when it is not in <out>/bed
@@ -97,7 +97,9 @@ def run_label(run: list) -> str:
             parts.append("sized")
         if kv.get("sliced") not in (None, "0"):
             parts.append(f"sl{kv['sliced']}")
-    if kv.get("init"):
+    if kv.get("stage"):
+        parts.append(f"stage {kv['stage']}")
+    elif kv.get("init"):
         parts.append("cont")
     return " ".join(parts)
 

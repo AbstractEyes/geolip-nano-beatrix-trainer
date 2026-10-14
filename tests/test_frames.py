@@ -272,6 +272,30 @@ def test_sliced_needs_sized(src):
         bf.compose_dynamic(np.random.default_rng(1), src, 1024, [bf.spec("data", 128, records=2)], sliced=32)
 
 
+def test_near_band_windows_and_formation_read_the_last_steps():
+    """0.1.22: a curve with counts reads the near band over the last 400 steps, exact; a curve without counts (before 0.1.22) gives its
+    means since step 1, named as such."""
+    u = bf.uniform_bits("caption")
+    # 100 values a line every 100 steps: 6.0 bits for the first 3,000 steps, then 1.0 bits; the mean since step 1 ends at 4.75, above the rate
+    steps = list(range(100, 4001, 100))
+    vals = [6.0 if s <= 3000 else 1.0 for s in steps]
+    cum, curve = 0.0, []
+    for i, (s, v) in enumerate(zip(steps, vals)):
+        cum += 100 * v
+        n = 100 * (i + 1)
+        curve.append(dict(step=s, value_bits={"0": cum / n}, value_n={"0": n}))
+    pts, basis = bf.near_band_windows(curve)
+    assert basis == "the last 400 steps" and abs(pts[-1][1] - 1.0) < 1e-12 and abs(pts[19][1] - 6.0) < 1e-12
+    r = bf.formation(curve, "caption", {"data/32/depth0": dict(full_value=0.9, n=20)})
+    # the window (2,800, 3,200] reads 6, 6, 1, 1 = 3.5 bits, the first under the rate's margin (4.5); (2,700, 3,100] reads 4.75
+    assert abs(r["near_band_value_bits_at_end"] - 1.0) < 1e-12 and r["first_step_under"] == 3200 and not r["at_the_rate"]
+    assert abs(dict(pts)[3100] - 4.75) < 1e-12 and abs(dict(pts)[3200] - 3.5) < 1e-12
+    assert curve[-1]["value_bits"]["0"] > u - 0.2                          # the mean since step 1 would still read 'at the rate'
+    old = [dict(step=c["step"], value_bits=c["value_bits"]) for c in curve]   # the same curve without counts
+    pts, basis = bf.near_band_windows(old)
+    assert basis.startswith("the mean since step 1") and abs(pts[-1][1] - curve[-1]["value_bits"]["0"]) < 1e-12
+
+
 def test_sized_canary_frame(src):
     rows, meta = bf.canary_rows([src[i:i + 1200] for i in range(0, 4800, 1200)], 1024, "caption", "mode", seed=1, sized=True)
     p = 1 + meta["prefix_bytes"]

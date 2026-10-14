@@ -443,7 +443,8 @@ def lr_at(step):
     return LR * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * t)))
 
 
-curve, online = [], {k: [0.0, 0] for k in range(N_BANDS)}
+curve, online = [], {k: [0.0, 0] for k in range(N_BANDS)}   # the value bytes' nats and count by band since step 1 (never reset)
+prev = {k: [0.0, 0] for k in range(N_BANDS)}                # the same at the previous progress line: the window since it is exact
 ema = None
 t_train = time.time()
 model.train()
@@ -480,12 +481,18 @@ for step in range(STEPS):
         el = time.time() - t_train
         rate = (step + 1) * MB * CTX / max(el, 1e-6)
         left = (STEPS - step - 1) * el / (step + 1)
-        bands = " ".join(f"{BAND_LABELS[k]}:{online[k][0] / online[k][1] / LN2:.2f}" if online[k][1] else f"{BAND_LABELS[k]}:-" for k in range(N_BANDS))
+        # 0.1.22: the window since the previous line, exact from the sums (the 0.1.21 line printed the mean since step 1: its reset sat
+        # inside this branch on a step it can never reach, so every record's value_bits is a mean since step 1, and stays so for comparison)
+        win = {k: ((online[k][0] - prev[k][0]) / (online[k][1] - prev[k][1]) / LN2 if online[k][1] > prev[k][1] else None) for k in range(N_BANDS)}
+        bands = " ".join(f"{BAND_LABELS[k]}:{win[k]:.2f}" if win[k] is not None else f"{BAND_LABELS[k]}:-" for k in range(N_BANDS))
         log(f"step {step + 1}/{STEPS} loss {li:.3f} ema {ema:.3f} ({ema / LN2:.3f} bpb) gn {float(gn):.2f} lr {lr_at(step):.2e} | "
-            f"{rate / 1e3:.0f}k tok/s | spent {el / 60:.1f} min, left {left / 60:.1f} min | value bits {bands}")
-        curve.append(dict(step=step + 1, loss=li, ema=ema, lr=lr_at(step), value_bits={(str(BANDS[k][0]) if k < len(BANDS) else "w"): (online[k][0] / online[k][1] / LN2 if online[k][1] else None) for k in range(N_BANDS)}))
-        if step % (LOG_EVERY * 4) == LOG_EVERY * 4 - 1:
-            online = {k: [0.0, 0] for k in range(N_BANDS)}
+            f"{rate / 1e3:.0f}k tok/s | spent {el / 60:.1f} min, left {left / 60:.1f} min | value bits since the last line {bands}")
+        lab = [str(BANDS[k][0]) if k < len(BANDS) else "w" for k in range(N_BANDS)]
+        curve.append(dict(step=step + 1, loss=li, ema=ema, lr=lr_at(step),
+                          value_bits={lab[k]: (online[k][0] / online[k][1] / LN2 if online[k][1] else None) for k in range(N_BANDS)},   # since step 1
+                          value_n={lab[k]: online[k][1] for k in range(N_BANDS)},                 # 0.1.22: the counts, so any window between lines is exact
+                          value_bits_window={lab[k]: win[k] for k in range(N_BANDS)}))            # 0.1.22: since the previous line
+        prev = {k: list(online[k]) for k in range(N_BANDS)}
 train_s = time.time() - t_train
 if _pool is not None:
     _pool.shutdown()
@@ -730,6 +737,8 @@ R = dict(arm=ARM, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, 
          dispatch_off_by_class=by_cls_off, fetch=fetch_res, dispatch_census=census, curve=curve, wall_s=time.time() - T0,
          frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch, fetch_by_frame_bank_off=frame_fetch_bank_off, canary=canary, formation=formation, plain_collapse=collapse,
          weights=os.path.relpath(os.path.join(wdir, "model.safetensors"), OUT))
+if ARGS.get("stage"):
+    R["stage"] = ARGS["stage"]               # 0.1.22: a curriculum block's stage name (its tag carries it in place of the starting craft's)
 path = os.path.join(BED, f"bed_{TAG}.json")
 json.dump(R, open(path, "w", encoding="utf-8"), indent=1)
 log(f"wrote {path} ({(time.time() - T0) / 60:.1f} min)")

@@ -80,6 +80,17 @@ The frame composer's tests run on the CPU without a model.
 
 ## Status
 
+0.1.22 (2026-10-13): the online value gauge reads windows, and a curriculum block names its stage. Every record's training curve
+(`value_bits`, the value bytes' bits by distance band at each progress line) has been a mean since the run's first step: the reset meant
+to make it a 400-step window sat inside the progress-line branch on a step it can never reach. `value_bits` keeps that meaning (every
+stored record carries it); each curve line now also carries the counts (`value_n`), so any window between lines is exact, and the
+window since the previous line (`value_bits_window`, which the progress line now prints). The formation verdict reports the near band
+over the last 400 steps (`near_band_basis` names it); records before 0.1.22 carry the run-long mean there, and their "first step under
+the rate" lags the real crossing. The verdict itself (the whole value) and every fetch are unchanged. `--stage=<name>` puts the stage name
+in a continuation's tag in place of its starting craft's (a chain of blocks would otherwise nest every earlier tag into the next: the
+second block's ran to 259 characters); the record keeps the starting craft. The defaults are bit-identical to 0.1.21 in the weights and
+in every field 0.1.21 wrote. colab/nano_pass4.ipynb pins v0.1.22.
+
 0.1.21 (2026-10-13): the sized and the sliced frames. The open tag of a frame costs 6.4-6.7 bits at every size, but the close tag
 costs 0.04 bits at 32 bytes (the records fill the frame) and 2.3-3.8 bits at 128-1,024 bytes, where the size is unannounced. `--sized=1`
 puts the frame's generic size in its open tag (the frame tag and one letter, as the register tag is MODE and one letter: no new special

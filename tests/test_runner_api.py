@@ -170,3 +170,8 @@ def test_run_label_and_grid_carry_the_frame_form():
     assert run_label(["--arm=castor-both", "--seed=1", "--frames=dyn", "--sized=0", "--sliced=0"]) == "castor-both s1 caption"
     runs = expand({"arms": "castor-both", "seeds": "1", "frames": "dyn", "sized": "0,1"})
     assert len(runs) == 2 and sorted(a for r in runs for a in r if a.startswith("--sized=")) == ["--sized=0", "--sized=1"]
+
+
+def test_run_label_names_a_curriculum_stage():
+    assert run_label(["--arm=castor-both", "--seed=3", "--frames=dyn", "--init=castor-both_s3_L12000", "--stage=B2"]) == "castor-both s3 caption stage B2"
+    assert run_label(["--arm=castor-both", "--seed=3", "--frames=dyn", "--init=castor-both_s3_L12000"]) == "castor-both s3 caption cont"

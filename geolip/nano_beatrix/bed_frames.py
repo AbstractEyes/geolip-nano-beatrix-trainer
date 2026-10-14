@@ -559,14 +559,32 @@ def canary_rows(docs: list, ctx: int, register: str = "caption", scheme: str = "
     return rows, meta
 
 
-def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2, floor: float = 0.05, min_trials: int = 8) -> dict:
+def near_band_windows(curve: list, window: int = 400, band: str = "0", min_n: int = 8) -> tuple:
+    """The near band's online value bits as (step, bits) read over the last `window` steps at every progress line, exact from the
+    cumulative counts a 0.1.22 curve carries (value_n; at least `min_n` values in a window); a curve without counts (records before
+    0.1.22) gives its means since step 1, as recorded. -> (points, basis)."""
+    pts = [(c["step"], c["value_bits"].get(band), (c.get("value_n") or {}).get(band)) for c in curve if (c.get("value_bits") or {}).get(band) is not None]
+    if not pts or any(n is None for _, _, n in pts):
+        return [(s, b) for s, b, _ in pts], "the mean since step 1 (a curve before 0.1.22)"
+    out = []
+    for i, (s, b, n) in enumerate(pts):
+        base = [p for p in pts[:i] if p[0] <= s - window]                       # the window starts after the last line this far back
+        s0, b0, n0 = base[-1] if base else (0, 0.0, 0)                          # (or at the run start)
+        if n - n0 >= min_n:
+            out.append((s, (b * n - b0 * n0) / (n - n0)))
+    return out, f"the last {window} steps"
+
+
+def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2, floor: float = 0.05, min_trials: int = 8,
+              window: int = 400) -> dict:
     """Did the copy form? A formation FAILURE when every gauged lookup group of `min_trials` trials or more reads the whole value at or
     under `floor` (a 6-letter value written whole from its frame). The near band's online value bits (the value's bytes at the question
-    when the frame sits within 128 bytes; the last logged read) are reported against the register's uniform rate with the first logged
-    step under it by `margin`, and are NOT required for the verdict: a copy can form misaligned (near band 2.26 bits, the greedy first byte
-    wrong in every trial, 2026-10-13) or never form (near band at the rate). A verdict in the record, never a halt."""
+    when the frame sits within 128 bytes) are reported against the register's uniform rate, read over the last `window` steps at the end and
+    at the first progress line under the rate by `margin` (near_band_windows: exact on a 0.1.22 curve; a curve before 0.1.22 only has the
+    mean since step 1, and its 'at the end' and 'first step under' are that mean's), and are NOT required for the verdict: a copy can form
+    misaligned (near band 2.26 bits, the greedy first byte wrong in every trial, 2026-10-13) or never form. A verdict in the record, never a halt."""
     u = uniform_bits(register)
-    near = [(c["step"], c["value_bits"]["0"]) for c in curve if (c.get("value_bits") or {}).get("0") is not None]
+    near, basis = near_band_windows(curve, window)
     last = near[-1][1] if near else None
     first_under = next((s for s, v in near if v < u - margin), None)
     at_rate = last is None or last > u - margin
@@ -575,7 +593,7 @@ def formation(curve: list, register: str, fetch_groups: dict | None, margin: flo
     failure = bool(whole_zero)
     return dict(register=register, uniform_bits=u, margin=margin, near_band_value_bits_at_end=last, first_step_under=first_under,
                 at_the_rate=bool(at_rate), whole_value_zero_everywhere=whole_zero, failure=failure, formed=not failure, floor=floor,
-                min_trials=min_trials, groups_judged=len(lookup))
+                min_trials=min_trials, groups_judged=len(lookup), near_band_basis=basis)
 
 
 def plain_collapse(by_position_row: dict, threshold: float = 2.5, head: str = "0-64") -> dict:

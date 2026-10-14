@@ -47,3 +47,14 @@ def test_run_tag_names_the_sized_and_sliced_forms():
     assert run_tag(dict(base, sized="1")) == "castor-both_s1_L12000_frdyn_cap_mode_sized_sz32-128-256_r8_n30_o0_askany_p75"
     assert run_tag(dict(base, sized="1", sliced="32")) == "castor-both_s1_L12000_frdyn_cap_mode_sized_sl32_sz32-128-256_r8_n30_o0_askany_p75"
     assert run_tag(dict(base, sized="0", sliced="0")) == run_tag(base)
+
+
+def test_a_stage_name_replaces_the_starting_craft_in_the_tag():
+    from geolip.nano_beatrix.names import run_tag
+    a = {"arm": "castor-both", "seed": "3", "steps": "12000", "frames": "dyn", "plant": "0.75", "frame_records": "8"}
+    b1 = dict(a, steps="4000", ctx="4096", sizes="32,128,256,512,1024", frame_records="16", init=run_tag(a))
+    assert run_tag(b1).endswith("_from_L12000_frdyn_cap_mode_sz32-128-256_r8_n30_o0_askany_p75")   # the plain continuation, as before
+    s1 = run_tag(dict(b1, stage="B1"))
+    s2 = run_tag(dict(b1, init=s1, stage="B2"))
+    assert s1.endswith("_r16_n30_o0_askany_p75_stB1") and s2.endswith("_stB2") and "_from_" not in s1 + s2
+    assert len(s2) == len(s1) < 100                                          # a chain's tags stay short, block after block

@@ -13,7 +13,9 @@ def init_suffix(init, arm, seed):
 def run_tag(args: dict) -> str:
     """The run's tag from its argument dict (the command-line values as strings): the single source of the trainer's record and weights
     names, and of the runner's resume (a run whose record exists on disk is done, whatever the done list says). The defaults here are
-    the trainer's; a new tag piece is added here and nowhere else."""
+    the trainer's; a new tag piece is added here and nowhere else. A curriculum block (--stage=<name>, 0.1.22) carries its stage name in
+    place of its starting craft's tag: a chain of continuations would otherwise nest every earlier tag into the next (a second block's
+    tag ran to 259 characters); the record keeps the starting craft (init). The stage name must be unique within its chain."""
     arm, seed = args["arm"], int(args.get("seed", "1"))
     smoke = args.get("smoke", "0") == "1"
     steps = int(args.get("steps", "20" if smoke else "3000"))
@@ -36,4 +38,5 @@ def run_tag(args: dict) -> str:
             + (f"_b{args['rotary_base']}" if "rotary_base" in args else "") + (f"_f{args['hub_rotary_frac']}" if "hub_rotary_frac" in args else "")
             + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "")
             + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr
-            + (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else ""))   # a continued run names its starting craft
+            + (f"_st{args['stage']}" if args.get("stage") else                              # 0.1.22: a curriculum block names its stage
+               (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else "")))  # a continued run names its starting craft
