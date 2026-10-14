@@ -19,7 +19,9 @@ From the command line:
     python -m geolip.nano_beatrix.bed_runner --out=DIR --arms=smr-fixed,altn-fixed --seeds=1,2 --ctx=1024 --steps=12000 --mb=32 \\
         [--frames=dyn --sizes=32,128,256 --ask=any --facts=0,64,256 ...] [--push=AbstractPhil/alephllm-nano-beatrix-training] [--parallel=4] [--dry=1]
 Grid keys (a comma list expands into the product): arms, seeds, ctx, steps, mb, frames, ask, facts, register, tags, n_lookup, n_bulk,
-frame_records, nest, overlap, records, hub_K, hub_D, hub_const, plant, lr, cues, init, sized, sliced. Everything else passes through to bed_train.py as given
+frame_records, nest, overlap, records, hub_K, hub_D, hub_const, plant, lr, warmup, cues, init, sized, sliced, stage, and the pair run's
+pair, pair_init, xc, xc_pos, xc_w, xc_from (0.1.24: a pair run writes two records; both ship). init and pair_init may name the starting
+crafts from the run's own values ("{arm}_s{seed}_..." and "{pair}_s{seed}_..."). Everything else passes through to bed_train.py as given
 (--sizes keeps its own comma list). Shipping needs HF_TOKEN in the environment; without it the runner only prints the plan."""
 from __future__ import annotations
 
@@ -39,7 +41,9 @@ except ImportError:                                      # run as a file: the fo
     from names import run_tag  # noqa: E402
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
-             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "cues", "init", "sized", "sliced", "stage")
+             "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "warmup", "cues", "init", "sized", "sliced", "stage",
+             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from")
+STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
 DEFAULT_REPO = "AbstractPhil/alephllm-nano-beatrix-training"       # where a starting craft is fetched from when it is not in <out>/bed
@@ -66,8 +70,9 @@ def expand(args: dict) -> list:
     for combo in itertools.product(*axes) if axes else [()]:
         kv = dict(fixed)
         kv.update(dict(combo))
-        if "init" in kv and "{" in str(kv["init"]):             # a continuation family: the starting craft named from the run's own values
-            kv["init"] = str(kv["init"]).format(**kv)
+        for key in STARTS:                                     # a continuation family: the starting crafts named from the run's own values
+            if key in kv and "{" in str(kv[key]):
+                kv[key] = str(kv[key]).format(**kv)
         runs.append([f"--{k}={v}" for k, v in kv.items()])
     return runs
 
@@ -97,6 +102,12 @@ def run_label(run: list) -> str:
             parts.append("sized")
         if kv.get("sliced") not in (None, "0"):
             parts.append(f"sl{kv['sliced']}")
+    if kv.get("pair"):                                            # 0.1.24: a pair run: the partner and the cross term
+        parts.append(f"+ {kv['pair']} {kv.get('xc', 'one')} {kv.get('xc_pos', 'value')}" + (f" w{kv['xc_w']}" if kv.get("xc_w") not in (None, "1", "1.0") else ""))
+    if kv.get("lr"):
+        parts.append(f"lr {kv['lr']}")
+    if kv.get("warmup"):
+        parts.append(f"warmup {kv['warmup']}")
     if kv.get("stage"):
         parts.append(f"stage {kv['stage']}")
     elif kv.get("init"):
@@ -135,6 +146,11 @@ def wrote_path(stdout: str) -> str | None:
     """The record the trainer wrote (its last 'wrote <path>' line), or None."""
     m = re.findall(r"wrote (\S+\.json)", stdout)
     return m[-1] if m else None
+
+
+def wrote_paths(stdout: str) -> list:
+    """Every record the trainer wrote, in order (a pair run writes two: the partner's, then the run's own)."""
+    return re.findall(r"wrote (\S+\.json)", stdout)
 
 
 SHIP_ATTEMPTS, SHIP_WAIT = 8, 15          # a Hub fault is retried: 15 s doubling to 10 min between attempts (about 26 min in all)
@@ -355,9 +371,14 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
                     result["stopped"] = halt = True
                     break
                 r = pending.pop(0)
-                init = next((a.split("=", 1)[1] for a in r if a.startswith("--init=")), None)
-                if init and not os.path.isdir(os.path.join(out, "bed", init)) and not fetch_init(init_repo or push or DEFAULT_REPO, out, init, lambda m: log(m, gbar)):
-                    log(f"the starting craft {init} is neither in {out}/bed nor on the Hub: no new run starts", gbar)
+                missing = None
+                for key in STARTS:                                # the run's starting crafts (a pair run: its own and its partner's)
+                    init = next((a.split("=", 1)[1] for a in r if a.startswith(f"--{key}=")), None)
+                    if init and not os.path.isdir(os.path.join(out, "bed", init)) and not fetch_init(init_repo or push or DEFAULT_REPO, out, init, lambda m: log(m, gbar)):
+                        missing = init
+                        break
+                if missing:
+                    log(f"the starting craft {missing} is neither in {out}/bed nor on the Hub: no new run starts", gbar)
                     result["failed"] = halt = 4
                     break
                 slot = min(set(range(parallel)) - {c.slot for c in active})
@@ -375,14 +396,14 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
                     halt = True
                     continue
                 took.append(time.time() - c.t0)
-                rec = wrote_path("\n".join(c.lines))
+                recs = wrote_paths("\n".join(c.lines))                    # a pair run wrote two records
                 with open(done_f, "a", encoding="utf-8") as f:          # done the moment the run is: a Hub fault never costs the run
                     f.write(run_key(c.run) + "\n")
-                if shipper and rec:
+                for rec in recs if shipper else []:
                     with open(os.path.join(out, "runner_pushlist.txt"), "a", encoding="utf-8") as f:   # listed before the ship: a crash leaves it pending
                         f.write(os.path.basename(rec) + "\n")
                     shipper.submit(rec)                                   # the ship runs beside the next run; its retries never hold the card
-                result["ran"].append(rec or run_key(c.run))
+                result["ran"] += recs or [run_key(c.run)]
                 if gbar is not None:
                     gbar.update(1)
                 left = (len(pending) + len(active)) * (sum(took) / len(took)) / parallel

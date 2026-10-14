@@ -175,3 +175,17 @@ def test_run_label_and_grid_carry_the_frame_form():
 def test_run_label_names_a_curriculum_stage():
     assert run_label(["--arm=castor-both", "--seed=3", "--frames=dyn", "--init=castor-both_s3_L12000", "--stage=B2"]) == "castor-both s3 caption stage B2"
     assert run_label(["--arm=castor-both", "--seed=3", "--frames=dyn", "--init=castor-both_s3_L12000"]) == "castor-both s3 caption cont"
+
+
+def test_a_pair_grid_names_both_starting_crafts_and_both_records():
+    runs = expand({"arms": "castor-both", "pair": "pollux-both", "seeds": "1,2", "xc": "one,mutual", "steps": "4000", "stage": "B1",
+                   "init": "{arm}_s{seed}_A_{xc}", "pair_init": "{pair}_s{seed}_A_{xc}"})
+    assert len(runs) == 4
+    for r in runs:
+        kv = dict(a.lstrip("-").split("=", 1) for a in r)
+        assert kv["init"] == f"castor-both_s{kv['seed']}_A_{kv['xc']}" and kv["pair_init"] == f"pollux-both_s{kv['seed']}_A_{kv['xc']}"
+    assert run_label(runs[0]) == "castor-both s1 + pollux-both one value stage B1"
+    assert run_label(["--arm=pollux-both", "--seed=1", "--lr=5e-4", "--warmup=1000"]) == "pollux-both s1 lr 5e-4 warmup 1000"
+    out = "[..] wrote /o/bed/bed_pollux-both_s1_x.json (0.1 min)\n[..] wrote /o/bed/bed_castor-both_s1_x.json (0.1 min)"
+    assert br.wrote_paths(out) == ["/o/bed/bed_pollux-both_s1_x.json", "/o/bed/bed_castor-both_s1_x.json"]
+    assert br.wrote_path(out) == "/o/bed/bed_castor-both_s1_x.json"        # the run's own record is the last one written

@@ -17,6 +17,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_corpus.py` | builds the bed's corpus and held-out file from fineweb-edu |
 | `geolip/nano_beatrix/bed_runner.py` | runs a grid of arms in sequence on one card (the launch point for a rented card): the grid expands from comma lists, finished runs are remembered so a restart resumes, a stop file ends the grid between runs, each finished run can ship its record and weights to the Hub repo. From Python, `run(spec, out, push, parallel=N)` streams every run with a grid bar and a step bar per running child fed by the trainer's own progress lines; `parallel` shares the card between runs (a 9M craft takes ~5 GB a run) |
 | `geolip/nano_beatrix/bed_curriculum.py` | a curriculum train as chains of continuation blocks: each chain (an arm and a seed) goes through the stages in order, a stage runs in blocks, and each block's record decides by the stage's rule whether the stage takes another block or the chain moves on (the copy formed; the far reads still improving); the chains advance in rounds, one block at a time on the card; a restart replays the decisions from the records on disk or on the Hub; `run(STAGES, BASE, arms, seeds, out, push)` and `report(...)` (the boundary table) |
+| `geolip/nano_beatrix/bed_pair.py` | how alike two crafts are on the same held-out rows: the KL between their next-byte distributions each way, how often their greedy next bytes agree, the debiased linear CKA of their residual streams block by block; the helpers that read a stored pair the same way (`load_craft`, `heldout_rows`, `solo_twins`) and the pair notebook's table (`report`) |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
@@ -60,6 +61,12 @@ blocks while the reads of records more than 512 bytes back still improve, at mos
 one setting in C1 (plain, sized or sliced), and C4 renders the boundary table:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v4_train.ipynb)
 
+The twins trained together, `colab/nano_pair.ipynb`: Castor and Pollux in one process on the very same rows, with a cross term between
+their next-byte predictions, in three forms (Pollux learns from Castor at the asked values' bytes; Pollux learns from Castor at every
+byte; each learns from the other at every byte), seeds 1 and 2, the v4 train's stage A and one long-window block; C4 reads every pair
+against the v4 train's solo blocks of the same seeds and reads how alike the twins end, paired and alone:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pair.ipynb)
+
 Then:
 
 ```bash
@@ -75,6 +82,16 @@ closed 32-byte slices back to back between its own open tag and END. Both are of
 `--gauge_asks=nested,overlap` asks the nested and the redefined-key questions strictly on their own held-out rows after the main gauge,
 whatever the training rows ask (`fetch_by_frame_asks` in the record).
 
+A pair run: `--pair=pollux-both [--xc=one|mutual --xc_pos=value|all --xc_w=1 --xc_from=0 --pair_init=<the partner's starting craft>]`
+trains a second craft beside `--arm` on the very same rows, each with its own Adam and the same schedule, plus a cross term: at the
+selected bytes (the asked values' bytes, or every byte) the KL from one craft's next-byte distribution, held fixed, to the other's,
+weighted like the byte's own target; `one`: the partner learns from the arm (the arm trains exactly as alone), `mutual`: each from the
+other. Both crafts start from the run's seed, so with `--xc_w=0` each trains exactly as it would alone (a CPU smoke: the two records and
+weights byte for byte those of the two solo runs). The run writes two records (the partner's first), each with a `pair` field: the
+roles, the cross term's mean KL a kept byte, and the pair's reads on 32 held-out documents (`bed_pair.twin_reads`). Names: a pair
+craft's tag carries `_pair-<partner>-<role><where>` (role t teaches, s learns, m both ways; where v the asked values, a every byte;
+then `w<weight>` and `f<first step>` when not 1 and 0); a learning rate or warmup other than the defaults adds `_lr<rate>` / `_wu<steps>`.
+
 Every run prints its job size, the time spent and the time left, and ends with the gauges. The record lands at `<out>/bed/bed_<tag>.json`
 and the weights at `<out>/bed/<tag>/`. A continued run (`--init=<a previous tag>`) carries its starting craft in its own tag
 (`..._from_<init>`), so two continuations of one recipe from different crafts never share a name. `python -m geolip.nano_beatrix.bed_table <out>/bed --pairs` builds the results index.
@@ -88,6 +105,16 @@ pytest -q
 The frame composer's tests run on the CPU without a model.
 
 ## Status
+
+0.1.24 (2026-10-13): the pair run. `bed_train --pair=<arm>` trains two crafts on the very same rows with a cross term between their
+next-byte predictions (one way or both ways, at the asked values' bytes or every byte; the module docstring and the run section above);
+both start from the run's seed, so a zero-weight pair reproduces the two solo runs byte for byte (a CPU smoke: weights and every record
+field but the clock); in the one-way forms the teaching craft trains exactly as alone (the same smoke: its weights byte for byte). The
+trainer's single craft became a `Craft` and its gauges a per-craft `finish()`; the defaults are bit-identical to 0.1.23 (a CPU smoke of
+each twin: the weights byte for byte, the record but the clock). `bed_pair` reads how alike two crafts are (the KL each way, the greedy
+agreement, the debiased CKA by block) for a pair run and, from stored weights on the same rows, for two solo runs. The runner ships every
+record a run writes (a pair: two) and fetches both starting crafts of a continuation pair (`init`, `pair_init`); the names carry a
+learning rate and a warmup that are not the defaults. colab/nano_pair.ipynb runs the three forms against the v4 train's solo blocks.
 
 0.1.23 (2026-10-13): the curriculum train. `bed_curriculum` runs chains of continuation blocks: a stage runs in blocks, each block a
 continuation of the chain's previous block named by its stage (`_stA1`, `_stB3`), and each block's record decides the next by the

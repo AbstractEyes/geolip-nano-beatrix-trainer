@@ -10,6 +10,18 @@ def init_suffix(init, arm, seed):
     return init[len(p):] if init.startswith(p) else init
 
 
+def partner_args(args: dict) -> dict:
+    """A pair run's partner as a run of its own (0.1.24): the arguments its tag is made from. Its arm and starting craft are the pair's
+    partner arm and pair_init; the run's arm is its partner; its role is "s" (it learns from the run's arm, xc one) or "m" (mutual)."""
+    a = {k: v for k, v in args.items() if k not in ("init", "pair_init", "pair_role")}
+    a.update(arm=args["pair"], pair=args["arm"], pair_role="s" if args.get("xc", "one") == "one" else "m")
+    if args.get("pair_init"):
+        a["init"] = args["pair_init"]
+    if args.get("init"):
+        a["pair_init"] = args["init"]
+    return a
+
+
 def run_tag(args: dict) -> str:
     """The run's tag from its argument dict (the command-line values as strings): the single source of the trainer's record and weights
     names, and of the runner's resume (a run whose record exists on disk is done, whatever the done list says). The defaults here are
@@ -33,10 +45,22 @@ def run_tag(args: dict) -> str:
           + (f"_nl{n_lookup}_nb{n_bulk}" if frames == "A" else f"_sz{'-'.join(map(str, sizes))}_r{n_rec_frame}_n{int(nest_p * 100)}_o{int(overlap_p * 100)}")
           + (f"_M{n_facts}" if n_facts else "") + f"_ask{ask}"
           + (f"_p{int(round(p_plant * 100))}" if p_plant != 1.0 else ""))   # the diet, when not every row is framed
+    # 0.1.24: the learning rate and the warmup, when not the trainer's defaults (a rate screen's runs would otherwise share one name)
+    lr, warm = float(args.get("lr", "1e-3")), int(args.get("warmup", "5" if smoke else "100"))
+    hp = (f"_lr{lr:g}" if lr != 1e-3 else "") + (f"_wu{warm}" if warm != (5 if smoke else 100) else "")
+    # 0.1.24: a pair run (--pair): the partner's arm, this craft's role (t teaches its partner, s learns from it, m both ways), where the
+    # cross term reads (v the asked values' bytes, a every byte), its weight and its first step when not 1 and 0
+    pair = args.get("pair", "")
+    pr = ""
+    if pair:
+        role = args.get("pair_role") or ("t" if args.get("xc", "one") == "one" else "m")
+        where = {"value": "v", "all": "a"}[args.get("xc_pos", "value")]
+        xw, xf = float(args.get("xc_w", "1.0")), int(args.get("xc_from", "0"))
+        pr = f"_pair-{pair}-{role}{where}" + (f"w{xw:g}" if xw != 1.0 else "") + (f"f{xf}" if xf else "")
     return (f"{arm}_s{seed}" + ("_smoke" if smoke else "") + (f"_L{steps}" if steps > 2500 and not smoke else "")   # the short grid keeps its bare names
             + (f"_dense{args.get('records')}" if int(args.get("records", "1")) > 1 else "")
             + (f"_b{args['rotary_base']}" if "rotary_base" in args else "") + (f"_f{args['hub_rotary_frac']}" if "hub_rotary_frac" in args else "")
-            + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "")
-            + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr
+            + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "") + hp
+            + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr + pr
             + (f"_st{args['stage']}" if args.get("stage") else                              # 0.1.22: a curriculum block names its stage
                (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else "")))  # a continued run names its starting craft
