@@ -23,7 +23,9 @@ The arms: an attention form (softmax with a learned position table, softmax with
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
 alone, an installed byte-class expert table, or both). The dual-hub bodies: `hubd` (six dual hubs: each hub keeps a rotary address
 mass, sharp on near records, and a plain one, distance-free, that reaches far records), `hubdb` (the same on the bigger address, two
-books of 64 in 32) and `altd` (Pollux's alternating layout with dual hubs in place of its rotary-only hubs).
+books of 64 in 32), `altd` (Pollux's alternating layout with dual hubs in place of its rotary-only hubs), `d5s1` (five dual hubs and
+one rotary softmax block, block 3) and `d4s2` (four dual hubs and two rotary softmax blocks, 1 and 3: `altd` with its last softmax block
+a dual hub).
 
 The nano twin pair has names: **Castor** is the rotary softmax body (`--arm=castor-<bank>`, the same craft as `smr`), the mortal
 twin whose memory grows with the window; **Pollux** is the all-rotary alternating body (`--arm=pollux-<bank>`, the same as `altn`),
