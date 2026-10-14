@@ -59,6 +59,7 @@ def craft_cfg(arm, fix="", big=False):
     A["castor"], A["pollux"] = A["smr"], A["altn"]
     A["hubdb"] = dict(A["hubd"], hub_K=64, hub_D=32, hub_const=2)
     A["altd"] = dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_dual=True)
+    A["d5s1"] = dict(hub_layers=(0, 1, 2, 4, 5), attn_rotary=True, hub_dual=True)
     Bk = {"free": "", "fixed": "fixed", "both": "add"}
     return AlephLMConfig(**{**base, **A[attn]}, bank_byte_table=Bk[bank], bank_last_fix=fix, fix_warm=2)
 
