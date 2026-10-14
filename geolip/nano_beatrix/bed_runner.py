@@ -290,13 +290,16 @@ class _Child:
             self.bar.close()
 
 
-def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bool = False, parallel: int = 1, init_repo: str = "") -> dict:
+def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bool = False, parallel: int = 1, init_repo: str = "",
+        shipper: "_Shipper | None" = None) -> dict:
     """Run the grid `spec` (the command-line keys; values as strings or numbers; comma lists expand into the product) under `out`, up to
     `parallel` runs at once on the card. Resumes from <out>/runner_done.txt; <out>/STOP starts no new run and lets the running ones finish;
     ships each finished run in the background when `push` names a Hub repo and HF_TOKEN is set (a Hub fault retries and never stops the
     grid; records left unshipped are re-shipped at the next start and at the end). A run whose record exists on disk counts as done
-    whatever the done list says. Returns {"runs", "done_before", "ran": [records], "failed": rc or None, "stopped": bool,
-    "unshipped": [tags]}."""
+    whatever the done list says. A caller running many small grids (a curriculum's blocks) passes its own `shipper` (_Shipper(push, out,
+    log)): the finished runs ship through it and this call neither re-ships old records nor waits for the ships (the caller drains it
+    once at its end, so the card never waits on the Hub between blocks). Returns {"runs", "done_before", "ran": [records], "failed": rc
+    or None, "stopped": bool, "unshipped": [tags]}."""
     py = python or sys.executable
     parallel = max(1, int(parallel))
     os.makedirs(out, exist_ok=True)
@@ -334,11 +337,15 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
         result["failed"] = 2
         return result
     gbar = tqdm(total=len(todo), unit="run", dynamic_ncols=True, desc="grid", position=0) if tqdm else None
-    shipper = _Shipper(push, out, lambda m: log(m, gbar)) if push else None
-    if shipper:
-        for rec in pending_records(out):
-            log(f"unshipped record from before: {os.path.basename(rec)}; shipping in the background", gbar)
-            shipper.submit(rec)
+    own = shipper is None
+    if own:
+        shipper = _Shipper(push, out, lambda m: log(m, gbar)) if push else None
+        if shipper:
+            for rec in pending_records(out):
+                log(f"unshipped record from before: {os.path.basename(rec)}; shipping in the background", gbar)
+                shipper.submit(rec)
+    elif not push:
+        shipper = None                                    # a shared shipper ships only under a push
     pending, active, took, halt = list(todo), [], [], False
     try:
         while pending or active:
@@ -392,7 +399,7 @@ def run(spec: dict, out: str, push: str = "", python: str | None = None, dry: bo
     finally:
         if gbar is not None:
             gbar.close()
-    if shipper:
+    if shipper and own:
         idle = shipper.drain(lambda m: log(m))
         result["unshipped"] = [os.path.basename(p)[4:-5] for p in pending_records(out)]
         if result["unshipped"] and idle:

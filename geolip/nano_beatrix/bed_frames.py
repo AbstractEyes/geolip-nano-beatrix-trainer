@@ -575,6 +575,42 @@ def near_band_windows(curve: list, window: int = 400, band: str = "0", min_n: in
     return out, f"the last {window} steps"
 
 
+def band_fall(curve: list, band: str = "512", window: int = 800, min_n: int = 8) -> dict | None:
+    """Is a band's online value still improving at a run's end? Its mean value bits over the last `window` steps against the `window`
+    before them, exact from a 0.1.22 curve's counts (value_n): a window starts after the last progress line that far back (or at the run
+    start), as in near_band_windows. -> dict(last, before, fall = before - last, steps = the three line steps, n = the two windows'
+    value counts), or None when the curve has no counts, or either window holds fewer than `min_n` values (a curriculum's stage-B rule
+    reads the far band: the records more than 512 bytes back)."""
+    pts = [(c["step"], (c.get("value_bits") or {}).get(band), (c.get("value_n") or {}).get(band)) for c in curve]
+    pts = [(0, 0.0, 0)] + [(s, b, n) for s, b, n in pts if b is not None and n is not None]
+    if len(pts) < 3 or any(c.get("value_n") is None for c in curve):
+        return None
+    s2, b2, n2 = pts[-1]
+    base1 = [p for p in pts[:-1] if p[0] <= s2 - window]
+    if not base1:
+        return None
+    s1, b1, n1 = base1[-1]
+    base0 = [p for p in pts if p[0] <= s1 - window]
+    if not base0:
+        return None
+    s0, b0, n0 = base0[-1]
+    if n2 - n1 < min_n or n1 - n0 < min_n:
+        return None
+    last, before = (b2 * n2 - b1 * n1) / (n2 - n1), (b1 * n1 - b0 * n0) / (n1 - n0)
+    return dict(last=last, before=before, fall=before - last, steps=(s0, s1, s2), n=(n1 - n0, n2 - n1), band=band, window=window)
+
+
+def pooled_fetch(groups: dict | None, kind: str = "data/") -> dict | None:
+    """The fetch pooled over the lookup groups (every frame size and depth), weighted by their trials: the whole value, the first byte,
+    the value bits, the trials. None when no group was read."""
+    g = [v for k, v in (groups or {}).items() if k.startswith(kind) and v.get("n")]
+    n = sum(v["n"] for v in g)
+    if not n:
+        return None
+    return dict(full_value=sum(v["full_value"] * v["n"] for v in g) / n, first_byte=sum(v["first_byte"] * v["n"] for v in g) / n,
+                value_bits=sum(v["value_bits"] * v["n"] for v in g) / n, n=n)
+
+
 def formation(curve: list, register: str, fetch_groups: dict | None, margin: float = 0.2, floor: float = 0.05, min_trials: int = 8,
               window: int = 400) -> dict:
     """Did the copy form? A formation FAILURE when every gauged lookup group of `min_trials` trials or more reads the whole value at or

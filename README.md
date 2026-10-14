@@ -16,6 +16,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_timing.py` | the back-to-back timing of the arms on one card (train step and inference row) |
 | `geolip/nano_beatrix/bed_corpus.py` | builds the bed's corpus and held-out file from fineweb-edu |
 | `geolip/nano_beatrix/bed_runner.py` | runs a grid of arms in sequence on one card (the launch point for a rented card): the grid expands from comma lists, finished runs are remembered so a restart resumes, a stop file ends the grid between runs, each finished run can ship its record and weights to the Hub repo. From Python, `run(spec, out, push, parallel=N)` streams every run with a grid bar and a step bar per running child fed by the trainer's own progress lines; `parallel` shares the card between runs (a 9M craft takes ~5 GB a run) |
+| `geolip/nano_beatrix/bed_curriculum.py` | a curriculum train as chains of continuation blocks: each chain (an arm and a seed) goes through the stages in order, a stage runs in blocks, and each block's record decides by the stage's rule whether the stage takes another block or the chain moves on (the copy formed; the far reads still improving); the chains advance in rounds, one block at a time on the card; a restart replays the decisions from the records on disk or on the Hub; `run(STAGES, BASE, arms, seeds, out, push)` and `report(...)` (the boundary table) |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
@@ -53,6 +54,12 @@ The second pass, `colab/nano_frame_pass2.ipynb`, runs the in-window capacity axi
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pass3.ipynb) (the third pass: the scrutiny reads by continuation, the sixteen-record second seeds, Pollux's hub address axis)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pass4.ipynb) (the fourth pass: the plain, sized and sliced frames side by side, stage A at 1,024 then the 4,096 continuation, both twins, seeds 3 and 4)
 
+The v4 train, `colab/nano_v4_train.ipynb`, takes both twins on two seeds through the curriculum block by block (`bed_curriculum`):
+stage A, the copy, at 1,024 x 32 (12,000-step blocks, at most two); stage B, the long window and the count, at 4,096 x 8 (4,000-step
+blocks while the reads of records more than 512 bytes back still improve, at most five); the anneal on the plain diet. Its frame form is
+one setting in C1 (plain, sized or sliced), and C4 renders the boundary table:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v4_train.ipynb)
+
 Then:
 
 ```bash
@@ -65,6 +72,8 @@ layout; `--n_lookup --n_bulk --ask=lookup|bulk|weights`). Without `--frames` the
 With dynamic frames, `--sized=1` gives every open tag one byte naming its frame's generic size (a = 32, b = 64, c = 128, d = 256,
 e = 512, f = 1,024, g = 2,048), so the close is countable; `--sliced=32` (with `--sized=1`) builds every frame larger than 32 bytes as
 closed 32-byte slices back to back between its own open tag and END. Both are off by default, and the rows are then those of 0.1.20.
+`--gauge_asks=nested,overlap` asks the nested and the redefined-key questions strictly on their own held-out rows after the main gauge,
+whatever the training rows ask (`fetch_by_frame_asks` in the record).
 
 Every run prints its job size, the time spent and the time left, and ends with the gauges. The record lands at `<out>/bed/bed_<tag>.json`
 and the weights at `<out>/bed/<tag>/`. A continued run (`--init=<a previous tag>`) carries its starting craft in its own tag
@@ -79,6 +88,21 @@ pytest -q
 The frame composer's tests run on the CPU without a model.
 
 ## Status
+
+0.1.23 (2026-10-13): the curriculum train. `bed_curriculum` runs chains of continuation blocks: a stage runs in blocks, each block a
+continuation of the chain's previous block named by its stage (`_stA1`, `_stB3`), and each block's record decides the next by the
+stage's rule: "formed" (the copy formed by the whole-value rule: move on; not formed: another block up to the stage's most, then move on
+marked), "far_fall" (another block while the far band's online value bits fell by more than a threshold over the block's last window
+of steps against the window before, exact from the curve's counts: `bed_frames.band_fall`), or one block. The decisions are pure
+functions of the records, so a restart replays them and runs only the missing blocks; a block's record missing on disk is fetched from
+the Hub when it is there; a record continued from another craft than the chain's previous block (a rule changed since it ran) stops the
+walk with a message. The chains advance in rounds, one block at a time on the card, through one background shipper (`bed_runner.run`
+takes a caller's shipper and then never waits on the Hub). The decisions and the boundary table ship at the end under
+`bed/curriculum/`. `--gauge_asks=nested,overlap` reads the strict questions by the gauge alone (a craft trained on a strict ask learns a
+stricter grammar, so the curriculum's rows ask any); a gauge row draws the asked feature at least as often as the scrutiny settings of
+record (nesting 0.6, a key defined twice in 0.3 of the rows), so a craft trained on that ask with those settings is gauged on the very
+same rows (a CPU smoke: identical groups). The defaults are bit-identical to 0.1.22 (a CPU smoke's weights byte for byte and its record
+but the clock). colab/nano_v4_train.ipynb runs the train (both twins, two seeds; the frame form one setting).
 
 0.1.22 (2026-10-13): the online value gauge reads windows, and a curriculum block names its stage. Every record's training curve
 (`value_bits`, the value bytes' bits by distance band at each progress line) has been a mean since the run's first step: the reset meant

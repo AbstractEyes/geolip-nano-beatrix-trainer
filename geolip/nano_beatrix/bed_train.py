@@ -17,6 +17,7 @@ class (block 0 / middle / last), the dispatch-off toggle. Pure Adam. Progress li
 Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1 --prefetch=0]
 Framed rows: --frames=dyn [--sizes=32,128,256 --frame_records=4 --nest=0.3 --overlap=0.0 --ask=any --sized=1 --sliced=32] (bed_frames.py;
 --sized=1 names every frame's size in its open tag, --sliced=32 builds every larger frame as closed 32-byte slices; both off by default)
+[--gauge_asks=nested,overlap]: after the main gauge, the held-out fetch asked each named question strictly (the diet may ask any)
 Data: DIR/bed/bed_corpus.bin + bed_corpus_offsets.npy (bed_corpus.py); held-out heldout_fineweb_edu_head2048.jsonl in DIR or DIR/bed (the reserved head).
 Output: DIR/bed/bed_<arm>_s<seed>[_smoke].json; the weights DIR/bed/<arm>_s<seed>/model.safetensors + config.json"""
 import json
@@ -69,6 +70,14 @@ SIZES = [int(x) for x in ARGS.get("sizes", "32,128,256").split(",")]
 N_REC_FRAME = int(ARGS.get("frame_records", "4"))         # the most records a dynamic lookup frame carries
 NEST_P = float(ARGS.get("nest", "0.3"))
 OVERLAP_P = float(ARGS.get("overlap", "0.0"))
+# 0.1.23: the strict questions read by the gauge alone. A curriculum's diet asks any (a craft trained on a strict ask learns a stricter
+# opening grammar); the nested and the redefined-key questions are then the gauge's: each named ask is read on its own held-out rows after
+# the main gauge (fetch_by_frame_asks). A gauge row's plan draws the asked feature at least as often as the scrutiny settings of record
+# (nesting 0.6, a key defined twice in 0.3 of the rows): the redraw until the feature appears stays exact, and a craft trained on that ask
+# with those settings is gauged on the very same rows. Empty by default (the record unchanged).
+GAUGE_ASKS = [a for a in ARGS.get("gauge_asks", "").split(",") if a]
+assert all(a in ("nested", "overlap") for a in GAUGE_ASKS) and (not GAUGE_ASKS or FRAMES == "dyn"), f"--gauge_asks={GAUGE_ASKS}: nested, overlap (--frames=dyn)"
+GAUGE_FLOOR = {"nested": ("nest_p", 0.6), "overlap": ("overlap_p", 0.3)}
 # 0.1.21: the sized frame (every open tag names its frame's generic size in one payload byte) and the sliced frame (every frame larger
 # than the slice size built as closed slices of that size; a sliced frame is a sized frame); both off by default (the rows bit-identical)
 SIZED = ARGS.get("sized", "0") == "1"
@@ -293,14 +302,17 @@ def cap(size: int) -> int:
     return bf.frame_capacity(size, REC_BYTES, SIZED, SLICED)
 
 
-def draw_plan(rng):
+def draw_plan(rng, nest_p=None, overlap_p=None):
     """One row's dynamic plan: frames of the generic sizes while they fit the window (a gap and the question reserved), lookup frames
     with as many records as fit up to N_REC_FRAME, a thinking frame nesting a smaller lookup frame with probability NEST_P, an
     overlapping pair of lookup frames in conflict with probability OVERLAP_P. -> (specs, has_nested, has_overlap). A frame's room and
-    length follow the run's form (a sized open tag has two bytes; a sliced frame is its slices plus three tag bytes)."""
+    length follow the run's form (a sized open tag has two bytes; a sliced frame is its slices plus three tag bytes). nest_p and
+    overlap_p replace the run's two probabilities for one draw (0.1.23: a strict-ask gauge row; None = the run's own)."""
+    nest_p = NEST_P if nest_p is None else nest_p
+    overlap_p = OVERLAP_P if overlap_p is None else overlap_p
     budget = CTX + 1 - 6 - 64 - (REC_BYTES + 2)
     specs, used, nested, overlap = [], 0, False, False
-    if OVERLAP_P and rng.random() < OVERLAP_P:
+    if overlap_p and rng.random() < overlap_p:
         sz = SIZES[0]
         specs += bf.overlap_specs(rng, REGISTER, sz, sz, max(1, min(2, cap(sz))), "conflict")
         used += 2 * (bf.frame_bytes(sz, SLICED) + 64)
@@ -315,7 +327,7 @@ def draw_plan(rng):
         else:
             kids = []
             csize = max(32, size // 4)
-            if rng.random() < NEST_P and cap(csize) >= 1 and csize <= size - 4:
+            if rng.random() < nest_p and cap(csize) >= 1 and csize <= size - 4:
                 kids = [bf.spec("data", csize, records=min(N_REC_FRAME, cap(csize)))]
                 nested = True
             specs.append(bf.spec("think", size, children=kids))
@@ -326,28 +338,34 @@ def draw_plan(rng):
     return specs, nested, overlap
 
 
-def frame_row(rng, src, strict=False):
+def frame_row(rng, src, strict=False, ask_as=None):
     """A framed row. Training (strict=False): the ask falls back to 'any' when the drawn plan lacks the asked feature, and the weights
     ask is asked half the time (the other half reads the frame). The held-out gauge (strict=True): the plan is redrawn until it has the
-    feature and the ask is exactly ASK. -> (row bytes of CTX + 1, [meta])."""
+    feature and the ask is exactly ASK, or exactly `ask_as` (0.1.23, a strict-ask gauge: the plan draws the feature at least as often as
+    GAUGE_FLOOR). -> (row bytes of CTX + 1, [meta])."""
     if FRAMES == "A":
+        assert ask_as is None, "the strict-ask gauge reads the dynamic frames"
         ask = ASK
         if ask == "weights" and not strict and rng.random() < 0.5:
             ask = "lookup" if N_LOOKUP else "bulk"
         row, m = bf.compose(rng, src, CTX, "A", TAGS, REGISTER, N_LOOKUP, N_BULK, FACTS, ask)
         return row, [m]
+    want, kw = ask_as or ASK, {}
+    if ask_as:
+        key, floor = GAUGE_FLOOR[ask_as]
+        kw[key] = max(NEST_P if key == "nest_p" else OVERLAP_P, floor)
     for _ in range(64):
-        specs, nested, overlap = draw_plan(rng)
-        ask = ASK
+        specs, nested, overlap = draw_plan(rng, **kw)
+        ask = want
         if (ask == "nested" and not nested) or (ask == "overlap" and not overlap) or (ask == "weights" and FACTS is None):
             ask = "any"
         elif ask == "weights" and not strict and rng.random() < 0.5:
             ask = "any"
-        if strict and ask != ASK:
+        if strict and ask != want:
             continue
         row, m = bf.compose_dynamic(rng, src, CTX, specs, REGISTER, TAGS, ask, FACTS, sized=SIZED, sliced=SLICED)
         return row, [m]
-    raise RuntimeError(f"no plan with the feature for ask={ASK!r} in 64 draws")
+    raise RuntimeError(f"no plan with the feature for ask={want!r} in 64 draws")
 
 
 # ------------------------------------------------------------------ data
@@ -628,14 +646,14 @@ log("dispatch census (last block): " + " ".join(f"{c}:e{v['dominant']}/{v['home_
 
 
 @torch.no_grad()
-def frame_gauges(disable_bank=False):
-    """Held-out framed rows (the eval and fetch documents as the filler, the plan drawn as in training, the ask strict): bits by frame
-    (kind x size x segment, by depth, outside the frames) and the fetch grouped by the truth's source / frame size / depth (teacher-forced
-    value bits, the greedy first byte, the whole value, the mean distance)."""
+def frame_gauges(disable_bank=False, ask_as=None):
+    """Held-out framed rows (the eval and fetch documents as the filler, the plan drawn as in training, the ask strict; `ask_as` asks
+    that question instead of the run's own): bits by frame (kind x size x segment, by depth, outside the frames) and the fetch grouped by
+    the truth's source / frame size / depth (teacher-forced value bits, the greedy first byte, the whole value, the mean distance)."""
     rng = np.random.default_rng([SEED, 4242])
     rows, metas = [], []
     for doc in eval_docs + fetch_docs:
-        r, m = frame_row(rng, bytes([DOC]) + doc, strict=True)
+        r, m = frame_row(rng, bytes([DOC]) + doc, strict=True, ask_as=ask_as)
         rows.append(r)
         metas.append(m[0])
     acc, nll_rows = None, []
@@ -692,6 +710,16 @@ if FRAMES:
     log("fetch by frame: " + " | ".join(f"{g}: n {a['n']} bits {a['value_bits']:.2f} first {a['first_byte']:.2f} full {a['full_value']:.2f} dist {a['dist']:.0f}"
                                         for g, a in sorted(frame_fetch.items())))
     log("fetch by frame, bank off: " + " | ".join(f"{g}: full {a['full_value']:.2f} bits {a['value_bits']:.2f}" for g, a in sorted(frame_fetch_bank_off.items())))
+frame_fetch_asks = {}
+for _a in GAUGE_ASKS:                          # 0.1.23: the strict questions the diet does not ask alone, read by the gauge
+    try:
+        frame_fetch_asks[_a] = frame_gauges(ask_as=_a)[1]
+        log(f"fetch by frame, asked {_a} (the gauge's strict question): " + " | ".join(
+            f"{g}: n {a['n']} bits {a['value_bits']:.2f} first {a['first_byte']:.2f} full {a['full_value']:.2f} dist {a['dist']:.0f}"
+            for g, a in sorted(frame_fetch_asks[_a].items())))
+    except RuntimeError as e:                  # diagnostics collect, never raise (a plan without the feature in 64 draws)
+        frame_fetch_asks[_a] = None
+        log(f"fetch by frame, asked {_a}: not read ({e})")
 
 
 @torch.no_grad()
@@ -739,6 +767,8 @@ R = dict(arm=ARM, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, 
          weights=os.path.relpath(os.path.join(wdir, "model.safetensors"), OUT))
 if ARGS.get("stage"):
     R["stage"] = ARGS["stage"]               # 0.1.22: a curriculum block's stage name (its tag carries it in place of the starting craft's)
+if GAUGE_ASKS:
+    R["fetch_by_frame_asks"] = frame_fetch_asks   # 0.1.23: {ask: the fetch groups asked strictly, or None when no plan carried the feature}
 path = os.path.join(BED, f"bed_{TAG}.json")
 json.dump(R, open(path, "w", encoding="utf-8"), indent=1)
 log(f"wrote {path} ({(time.time() - T0) / 60:.1f} min)")
