@@ -151,6 +151,10 @@ def craft_cfg(arm: str) -> AlephLMConfig:
     A["altd"] = dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_dual=True)   # Pollux's layout with dual hubs
     A["d5s1"] = dict(hub_layers=(0, 1, 2, 4, 5), attn_rotary=True, hub_dual=True)        # five dual hubs, one rotary softmax block (3)
     A["d4s2"] = dict(hub_layers=(0, 2, 4, 5), attn_rotary=True, hub_dual=True)           # four dual hubs, two rotary softmax blocks (1, 3)
+    # Canon layers (a causal kernel-4 convolution with a residual on each block's mixer and bank inputs, born zero; arXiv 2512.17351)
+    A["altdc"] = dict(A["altd"], canon="AC")
+    A["hubdc"] = dict(A["hubd"], canon="AC")
+    A["polluxc"] = dict(A["altn"], canon="AC")
     Bk = {"free": "", "fixed": "fixed", "both": "add"}
     assert attn in A and bank in Bk, f"unknown arm {arm!r}: attention in {sorted(A)}, bank in {sorted(Bk)}"
     extra = {}

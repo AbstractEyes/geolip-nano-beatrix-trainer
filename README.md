@@ -25,7 +25,8 @@ alone, an installed byte-class expert table, or both). The dual-hub bodies: `hub
 mass, sharp on near records, and a plain one, distance-free, that reaches far records), `hubdb` (the same on the bigger address, two
 books of 64 in 32), `altd` (Pollux's alternating layout with dual hubs in place of its rotary-only hubs), `d5s1` (five dual hubs and
 one rotary softmax block, block 3) and `d4s2` (four dual hubs and two rotary softmax blocks, 1 and 3: `altd` with its last softmax block
-a dual hub).
+a dual hub). With Canon layers (a short causal convolution with a residual on each block's mixer input and bank input, born zero;
+Allen-Zhu, arXiv 2512.17351): `altdc` (`altd` with them), `hubdc` (`hubd` with them) and `polluxc` (Pollux with them).
 
 The nano twin pair has names: **Castor** is the rotary softmax body (`--arm=castor-<bank>`, the same craft as `smr`), the mortal
 twin whose memory grows with the window; **Pollux** is the all-rotary alternating body (`--arm=pollux-<bank>`, the same as `altn`),
@@ -41,8 +42,8 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-The library is pinned to a commit of its `feat/night-rigs` branch (the rotary flags, the byte-class table, the dual hub, the bits-by-position
-gauge). The pin moves to a tagged release when that branch merges.
+The library is pinned to a commit of its `feat/canon-layers` branch (the `feat/night-rigs` branch's rotary flags, byte-class table, dual
+hub and bits-by-position gauge, plus the Canon layers). The pin moves to a tagged release when those branches merge.
 
 ## Run
 
