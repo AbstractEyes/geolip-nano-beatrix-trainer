@@ -97,6 +97,7 @@ onto one fixed direction within their first 1,145 steps, so the library's four b
 register, temperature, gain, and normwrite as the comparison arm) are screened against the bare crafts through the start of the diet
 (4,960 steps; two bare seeds for the bar; Castor and the dual-hub Canon body), with the big direction's reads every 500 steps in the
 same TensorBoard and the drift memory at the end; the records go to AbstractPhil/alephllm-nano-beatrix-training under `v1_lastfix/`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_lastfix_screen.ipynb)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_head_decay.ipynb)
 (the second stage: the bounds moved the direction upstream, and its share climbs while the output layer grows under Muon, so three
 arms move the output layer's readout to AdamW at decay 0, 0.1 and 1.2 from the plain Castor start; the first stage's plain runs are
