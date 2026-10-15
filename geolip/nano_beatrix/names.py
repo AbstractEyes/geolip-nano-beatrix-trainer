@@ -49,6 +49,9 @@ def run_tag(args: dict) -> str:
     # 0.1.24: the learning rate and the warmup, when not the trainer's defaults (a rate screen's runs would otherwise share one name)
     lr, warm = float(args.get("lr", "1e-3")), int(args.get("warmup", "5" if smoke else "100"))
     hp = (f"_lr{lr:g}" if lr != 1e-3 else "") + (f"_wu{warm}" if warm != (5 if smoke else 100) else "")
+    # 0.1.31: the optimizer, when not pure Adam: AdamW's decoupled decay and its set when not the stream's matrices ("_wd0.1", "_wd1.2head")
+    wd, wd_set = float(args.get("wd", "0")), args.get("wd_set", "mat")
+    hp += (f"_wd{wd:g}" + ("" if wd_set == "mat" else wd_set)) if wd else ""
     # 0.1.24: a pair run (--pair): the partner's arm, this craft's role (t teaches its partner, s learns from it, m both ways), where the
     # cross term reads (v the asked values' bytes, a every byte), its weight and its first step when not 1 and 0
     pair = args.get("pair", "")

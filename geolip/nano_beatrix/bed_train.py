@@ -13,8 +13,10 @@ dispatch form (the library's flags):
              expert per class)                                   both   the address PLUS the installed table (learned)
 Gauges: the online value-byte loss by distance band during training; at the end on held-out documents: bits a byte by byte class,
 the planted fetch at 64 / 256 / 512 / 896 bytes (teacher-forced value NLL, greedy first byte, all five), the dispatch census by byte
-class (block 0 / middle / last), the dispatch-off toggle. Pure Adam. Progress lines carry the job size, the time spent and the time left.
-Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1 --prefetch=0]
+class (block 0 / middle / last), the dispatch-off toggle. Pure Adam by default; --wd=X (0.1.31) trains with AdamW instead, the decay set
+(--wd_set=mat, the stream's matrices, or head, the readout; bed_optim.py) at decoupled decay X, every other parameter at 0 (Adam's update).
+Progress lines carry the job size, the time spent and the time left.
+Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1 --prefetch=0 --wd=0.1]
 Framed rows: --frames=dyn [--sizes=32,128,256 --frame_records=4 --nest=0.3 --overlap=0.0 --ask=any --sized=1 --sliced=32] (bed_frames.py;
 --sized=1 names every frame's size in its open tag, --sliced=32 builds every larger frame as closed 32-byte slices; both off by default)
 [--gauge_asks=nested,overlap]: after the main gauge, the held-out fetch asked each named question strictly (the diet may ask any)
@@ -58,6 +60,10 @@ try:
     from .bodies import craft_cfg as body_cfg  # noqa: E402  (the package; 0.1.26: the arm table lives in bodies.py)
 except ImportError:                                      # run as a file: the folder is on the path (above)
     from bodies import craft_cfg as body_cfg  # noqa: E402
+try:
+    from . import bed_optim  # noqa: E402  (the package; 0.1.31: pure Adam, or AdamW on a decay set)
+except ImportError:                                      # run as a file: the folder is on the path (above)
+    import bed_optim  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -66,6 +72,10 @@ STEPS = int(ARGS.get("steps", "20" if SMOKE else "3000"))
 MB = int(ARGS.get("mb", "8" if SMOKE else "32"))
 CTX = int(ARGS.get("ctx", "1024"))
 LR = float(ARGS.get("lr", "1e-3"))
+# 0.1.31: the optimizer (bed_optim.py): wd 0 = pure Adam, every earlier run; wd > 0 = AdamW, the decay set at wd, the rest at 0
+WD = float(ARGS.get("wd", "0"))
+WD_SET = ARGS.get("wd_set", "mat")
+assert WD >= 0 and WD_SET in bed_optim.DECAY_SETS, f"--wd={WD} --wd_set={WD_SET!r}: a decay >= 0 on one of {bed_optim.DECAY_SETS}"
 WARM = int(ARGS.get("warmup", "5" if SMOKE else "100"))
 P_PLANT = float(ARGS.get("plant", "0.25"))
 N_EVAL = int(ARGS.get("eval_docs", "16" if SMOKE else "128"))
@@ -446,7 +456,7 @@ if DEV == "cuda":
 
 
 class Craft:
-    """One craft of the run: its config, its model, its pure Adam and its online gauges. Every craft is built right after seeding the
+    """One craft of the run: its config, its model, its optimizer (pure Adam, or AdamW on a decay set) and its online gauges. Every craft is built right after seeding the
     generators with the run's seed, so a pair's partner starts exactly as it would alone. role: "" alone; in a pair "t" (it teaches its
     partner), "s" (it learns from its partner) or "m" (both ways)."""
 
@@ -476,7 +486,11 @@ class Craft:
             log(f"continued from {init}: {len(sd)} tensors; the position table {tuple(pos.shape) if pos is not None else None} -> {tuple(self.model.embed.pos.shape)}")
         self.n_params = self.model.param_count()
         self.params = [p for p in self.model.parameters() if p.requires_grad]
-        self.opt = torch.optim.Adam(self.params, lr=LR, betas=(0.9, 0.95), eps=1e-8)      # pure Adam, never AdamW
+        self.opt = bed_optim.build(self.model, self.params, LR, WD, WD_SET)     # wd 0: pure Adam, as every earlier run
+        self.decay = bed_optim.census(self.model, WD_SET) if WD else None
+        if WD:
+            log(f"the optimizer: AdamW, decoupled decay {WD:g} on the {WD_SET} set ({self.decay['decay_tensors']} tensors, "
+                f"{self.decay['decay_params']:,} parameters), every other parameter at decay 0 ({self.decay['other_params']:,})")
         self.curve, self.ema, self.li, self.gn = [], None, None, None
         self.online = {k: [0.0, 0] for k in range(N_BANDS)}      # the value bytes' nats and count by band since step 1 (never reset)
         self.prev = {k: [0.0, 0] for k in range(N_BANDS)}        # the same at the previous progress line: the window since it is exact
@@ -862,6 +876,8 @@ def finish(c: Craft) -> tuple:
         R["fetch_by_frame_asks"] = frame_fetch_asks   # 0.1.23: {ask: the fetch groups asked strictly, or None when no plan carried the feature}
     if GAUGE_ONLY:
         R["gauge_only"] = True                       # 0.1.26: a gauge read of the init's weights (no step; no weights written)
+    if WD:
+        R["optimizer"] = dict(name="AdamW", wd=WD, wd_set=WD_SET, betas=list(bed_optim.BETAS), eps=bed_optim.EPS, **c.decay)   # 0.1.31
     return R, os.path.join(BED, f"bed_{c.tag}.json")
 
 

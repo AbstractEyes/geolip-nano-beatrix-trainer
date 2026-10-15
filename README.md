@@ -21,6 +21,8 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bodies.py` | the bed's bodies as one table: an arm name to the library config of its craft at a given context (`craft_cfg(arm, ctx)`); `bed_train` and `nano_v1` both build from it |
 | `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)` |
 | `geolip/nano_beatrix/lastfix_screen.py` | the last block's write under a bound, screened on the v1 bodies before their train: each arm (a body, a start, one of the library's `bank_last_fix` forms or none) trains through the start of the 2s diet with the 2s recipe; every 500 steps the full eval and the big-direction reads (the share of each block's output on the last block's mean direction, the last bank write's share and size, every block's rank, the final norm's gain and bias against the direction, the output layer's size and loudness) into the run's TensorBoard; at the end the drift memory on random bytes; the second stage's arms put the output layer's readout on AdamW (`TrainConfig.decay_params`); `run(out, hf_token, names)`, `table(records)` |
+| `geolip/nano_beatrix/bed_optim.py` | the bed's optimizer: pure Adam by default (every run before 0.1.31), or AdamW with decoupled decay on a named set of weights (`mat`: every weight that maps the stream; `head`: the output layer's two readouts), every other parameter at decay 0 (Adam's update exactly); `bed_train --wd=0.1 [--wd_set=mat]`; the run's name and record carry it |
+| `geolip/nano_beatrix/bed_rerun.py` | the bed's deciding tests again with AdamW in place of the pure Adam they ran on: every test's settings verbatim from its notebook, in parts that share no run (one part a card); `plan`, `price`, `run`, and `read` (each run beside the pure-Adam run of the same settings) |
 | `geolip/nano_beatrix/automodel.py` | the finished crafts as transformers AutoModel packages in their repo: the library's model files vendored with the wrapper (`hf_template/modeling_nano_beatrix.py`) at the repo's top and in each craft's folder, each craft's config and final weights (bf16, and the fp32 variant), and the gates every package passes before anything is pushed (exact parity with the library; a transformers load in a process where the library cannot be imported); `release(out, repo, crafts, token)` |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
@@ -107,6 +109,14 @@ read from the repo beside them)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_lastfix_resume_pdc_bare.ipynb)
 (the lead body's plain screen run resumed from its saved state near step 4,000 to its end, the first screen's notebook with that arm alone)
 
+The deciding tests again with AdamW, `colab/nano_bed_adamw.ipynb`: the screen showed the output layer's growth drives the last block's
+big direction, and every test that chose the twins' bodies and frames ran on the bed's pure Adam. The notebook runs them again with AdamW
+(decoupled decay 0.1 on every weight that maps the stream; the rest at decay 0) in seven parts that share no run, so each card takes
+its own part (`PART` in C1): the frame form, the twins' and Canon bodies' curriculum, the splat bodies' curriculum, the records a frame
+and the scrutiny set, the registers, the third pass, and the pair; C2 prices the part on the card in hand, C4 reads every run beside its
+pure-Adam twin:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_bed_adamw.ipynb)
+
 Then:
 
 ```bash
@@ -149,6 +159,20 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.31 (2026-10-15): AdamW for the bed (`bed_optim.py`) and the deciding tests again under it (`bed_rerun.py`,
+`colab/nano_bed_adamw.ipynb`). The v1 screen's second stage moved the output layer's readout from Muon to Adam or AdamW: the last
+block's share on its big direction held at 0.23-0.32 against the plain runs' 0.92-0.93, the readout stayed 9-15 in size against 61, and
+the bits at 4,960 steps came out within the seeds' spread or better (Castor seeds 3 and 4 at decay 0.1: +0.0017, -0.0065; at 1.2:
+-0.0012, -0.0081; the lead body at 4,000 steps: -0.0044, -0.0013). `bed_train --wd=X` trains with AdamW, the decay set at X and every
+other parameter at 0; without it the trainer is unchanged (a CPU smoke of Castor's stage-A block: the weights byte for byte those of the
+0.1.24 golden run, every record field the same; the config adds only the library's Canon flag, off). The run's name carries the decay
+(`_wd0.1`), so every AdamW run lands beside the pure-Adam run of the same settings; the runner takes `wd` and `wd_set` as grid keys.
+`bed_rerun` holds every deciding test's settings verbatim from its notebook (the four frame passes, the twins' and Canon bodies'
+curriculum, the splat bodies', the pair), with the stage-A crafts the third pass continued; a new session fetches the part's shipped
+records, so a part resumes across sessions. The 4090 smoke ran the frame-form part and a Canon body's curriculum chain at toy scale end
+to end (every record AdamW, every continuation from its own stage-A craft, the second call ran nothing).
+`colab/nano_v1_lastfix_resume_pdc_bare.ipynb` resumes the lead body's plain screen run.
 
 0.1.30 (2026-10-14): the second stage's carry-over (`colab/nano_v1_head_decay_lead_s4.ipynb`): the output layer's readout on AdamW
 at decay 0.1 and 1.2 on the lead body (dual hubs + Canon, from `pdc-bare`'s start) and on Castor's second seed (from `c-bare-s4`'s

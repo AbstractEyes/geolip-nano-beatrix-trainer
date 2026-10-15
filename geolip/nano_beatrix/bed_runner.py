@@ -20,7 +20,8 @@ From the command line:
         [--frames=dyn --sizes=32,128,256 --ask=any --facts=0,64,256 ...] [--push=AbstractPhil/alephllm-nano-beatrix-training] [--parallel=4] [--dry=1]
 Grid keys (a comma list expands into the product): arms, seeds, ctx, steps, mb, frames, ask, facts, register, tags, n_lookup, n_bulk,
 frame_records, nest, overlap, records, hub_K, hub_D, hub_const, plant, lr, warmup, cues, init, sized, sliced, stage, and the pair run's
-pair, pair_init, xc, xc_pos, xc_w, xc_from (0.1.24: a pair run writes two records; both ship). init and pair_init may name the starting
+pair, pair_init, xc, xc_pos, xc_w, xc_from (0.1.24: a pair run writes two records; both ship), wd, wd_set (0.1.31: AdamW in place of
+the pure Adam; bed_optim.py). init and pair_init may name the starting
 crafts from the run's own values ("{arm}_s{seed}_..." and "{pair}_s{seed}_..."). Everything else passes through to bed_train.py as given
 (--sizes keeps its own comma list). Shipping needs HF_TOKEN in the environment; without it the runner only prints the plan."""
 from __future__ import annotations
@@ -42,7 +43,7 @@ except ImportError:                                      # run as a file: the fo
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
              "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "warmup", "cues", "init", "sized", "sliced", "stage",
-             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from")
+             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from", "wd", "wd_set")
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -108,6 +109,8 @@ def run_label(run: list) -> str:
         parts.append(f"lr {kv['lr']}")
     if kv.get("warmup"):
         parts.append(f"warmup {kv['warmup']}")
+    if kv.get("wd") not in (None, "0", "0.0"):                     # 0.1.31: AdamW, its decay and its set
+        parts.append(f"AdamW {kv['wd']}" + ("" if kv.get("wd_set", "mat") == "mat" else f" {kv['wd_set']}"))
     if kv.get("stage"):
         parts.append(f"stage {kv['stage']}")
     elif kv.get("init"):
