@@ -18,6 +18,17 @@ Each arm trains one v1 body from the v1 craft's own start through the start of t
 1.0B = 4,960 steps) with the 2s recipe; every 500 steps the full eval (bits a byte on the fineweb-edu holdout) and the big-direction
 gauge (the 2s tool's reads) land in the run's TensorBoard and the arm's record; at the end the drift memory on random bytes (the
 exit's H, the 2s tool's estimator). run() goes arm by arm and resumes from the repo; table() compares the arms.
+
+The second stage (0.1.29), the output layer. The bounds on the last write moved the direction upstream (the earlier blocks carried it
+instead), and the saved checkpoints placed its use at the final norm: the norm rescales every byte to one size, so the room the
+direction takes in a byte is taken from the content, and the direction's size per byte sets the prediction's confidence (removing it
+leaves the predictions far too sharp; the bytes that carry more of it predict with more uncertainty). Its share climbed while the
+output layer grew: the readout's size doubled in 3,800 steps under Muon, which takes a full-size step every update and has no decay,
+so the content's net loudness (its room after the norm times the readout's gain on it) rose only a tenth. Three arms take the output
+layer's two readout matrices (head.w_h, head.w_s) off Muon onto AdamW (TrainConfig.decay_params), everything else unchanged: decay 0
+(the Adam update), 0.1, and 1.2 (0.1's total pull over the full 61,422-step diet, within these 4,960 steps). Muon's reference
+guidance trains classifier heads with AdamW (github.com/KellerJordan/Muon), and Muon-trained weights without decay keep growing (Liu
+et al. 2025, arXiv 2502.16982, s.2.2). The gauge also reads the output layer's size and loudness at every read.
 """
 from __future__ import annotations
 
@@ -46,8 +57,12 @@ ARMS = [
     dict(name="pdc-bare", craft="nano-pollux-dual-canon-v1", seed=1, mode=""),
     dict(name="pdc-register", craft="nano-pollux-dual-canon-v1", seed=1, mode="register"),
     dict(name="pdc-temperature", craft="nano-pollux-dual-canon-v1", seed=1, mode="temperature"),
+    dict(name="c-head-adam", craft="nano-castor-v1", seed=3, mode="", head_wd=0.0),
+    dict(name="c-head-adamw0.1", craft="nano-castor-v1", seed=3, mode="", head_wd=0.1),
+    dict(name="c-head-adamw1.2", craft="nano-castor-v1", seed=3, mode="", head_wd=1.2),
 ]
 BY_NAME = {a["name"]: a for a in ARMS}
+HEAD_PARAMS = ("head.w_h.", "head.w_s.")              # the output layer's two readout matrices (their biases stay undecayed)
 GAUGE_DOCS, GAUGE_CTX, IID_SEQS = 16, 2048, 24
 SCALES = np.array([16, 32, 64, 128, 256, 512, 1024])
 
@@ -103,12 +118,14 @@ def write_arm_birth(arm: dict, folder: str) -> str:
 
 def arm_preset(arm: dict, birth_file: str, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO, diet_scale: float = 1.0,
                **train_over):
-    """The library preset of an arm: the v1 body with its fix, the 2s recipe, the start of the 2s diet, the full eval every 500 steps,
-    the weights-only start from the arm's start file."""
+    """The library preset of an arm: the v1 body with its fix, the 2s recipe (an output-layer arm: its readout on AdamW at the arm's
+    decay), the start of the 2s diet, the full eval every 500 steps, the weights-only start from the arm's start file."""
     from geolip.alephllm.presets import Preset, TrainConfig
     if diet_scale == 1.0:
         assert micro_batch * grad_accum * nano_v1.CTX == nano_v1.TOKENS_PER_STEP, f"the 2s step is {nano_v1.TOKENS_PER_STEP:,} tokens"
     over = dict(eval_every=EVAL_EVERY)
+    if "head_wd" in arm:
+        over.update(decay_params=HEAD_PARAMS, decay_wd=float(arm["head_wd"]))
     over.update(train_over)
     tc = TrainConfig(micro_batch=micro_batch, grad_accum=grad_accum, governor="", head_addr_frozen=False, phase_seed_offset=True,
                      **over)
@@ -192,7 +209,55 @@ def lastwrite_gauge(model, docs: list) -> dict:
                     "bias_u_r": float(np.corrcoef(b.numpy(), u.numpy())[0, 1]) if float(b.std()) > 0 else float("nan")},
            "fix": fix.stats() if fix is not None else None,
            "_u": u}
+    head = head_reads(model, X["nf"], u)
+    head["room"] = math.sqrt(max(0.0, 1.0 - out["share_u"]["nf"]))      # the content's share of each byte's size after the norm
+    head["loudness"] = head["room"] * head["gain_content"]
+    out["head"] = head
     return out
+
+
+def head_reads(model, H: torch.Tensor, u: torch.Tensor, n: int = 4096, eps: float = 0.1) -> dict:
+    """The output layer's size and loudness: the readout's Frobenius norm and top singular value, the aleph read's Frobenius norm; the
+    logit change per unit move, centered over the vocabulary (the softmax ignores a constant shift), along u's image after the final
+    norm, along 8 random directions passed through the same norm gain (median) and along the post-norm states' top 8 principal
+    directions (mean): how loudly the output reads the content, and the direction. H = the post-norm states (CPU), fp32 throughout."""
+    head = model.head
+    dev = next(head.parameters()).device
+    gen = torch.Generator().manual_seed(0)
+    Hs = H[torch.randperm(H.shape[0], generator=gen)[:n]].float().to(dev)
+    g = model.nf.weight.detach().float().to(dev)
+
+    def post(v):
+        v = v.float().to(dev)
+        v = g * (v - v.mean())
+        return v / v.norm()
+
+    was = head.training
+    head.eval()
+    try:
+        return _head_reads(head, Hs, post, u, gen, eps)
+    finally:
+        head.train(was)
+
+
+def _head_reads(head, Hs, post, u, gen, eps):
+    dev = Hs.device
+    with torch.no_grad(), torch.autocast(device_type=dev.type, enabled=False):
+        base = head(Hs).float()
+
+        def gain(d):
+            dl = head(Hs + eps * d).float() - base
+            dl = dl - dl.mean(-1, keepdim=True)
+            return float((dl.norm(dim=-1) / eps).mean())
+        _, _, vt = torch.linalg.svd(Hs - Hs.mean(0, keepdim=True), full_matrices=False)
+        content = float(np.mean([gain(vt[k]) for k in range(8)]))
+        rand = float(np.median([gain(post(torch.randn(Hs.shape[1], generator=gen))) for _ in range(8)]))
+        along_u = gain(post(u))
+        w = head.w_h.weight if hasattr(head, "w_h") else head._tied_ref[0]
+        w = w.detach().float()
+        return {"w_h_fro": float(w.norm()), "w_h_top_sv": float(torch.linalg.matrix_norm(w, ord=2)),
+                "w_s_fro": float(head.w_s.weight.detach().float().norm()), "gain_u": along_u, "gain_random": rand,
+                "gain_content": content}
 
 
 def gauge_scalars(g: dict) -> dict:
@@ -211,6 +276,8 @@ def gauge_scalars(g: dict) -> dict:
         for k in ("gamma", "a_bar", "a_ref", "tau_at_mean"):
             if k in g["fix"]:
                 sc[f"lastwrite/fix_{k}"] = g["fix"][k]
+    for k, v in (g.get("head") or {}).items():
+        sc[f"lastwrite/head_{k}"] = v
     return {k: float(v) for k, v in sc.items() if v is not None and math.isfinite(float(v))}
 
 
@@ -303,7 +370,8 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
             print(f"[lastfix] {n} step {t.step:,}: val {ledger.get('bpb_full', float('nan')):.4f} bits a byte | share along the last "
                   f"block's direction {sc['lastwrite/share_last']:.3f} (after the norm {sc['lastwrite/share_after_norm']:.3f}) | last bank "
                   f"write {sc['lastwrite/bank_share']:.3f} on its direction, size {sc['lastwrite/bank_size']:.3g} | last block rank "
-                  f"{sc['lastwrite/rank_last']:.0f}" + (f" | gain {g['fix']['gamma']:.3f}" if g.get("fix") else ""), flush=True)
+                  f"{sc['lastwrite/rank_last']:.0f}" + (f" | gain {g['fix']['gamma']:.3f}" if g.get("fix") else "")
+                  + f" | output layer size {g['head']['w_h_fro']:.1f}, content loudness {g['head']['loudness']:.2f}", flush=True)
 
         t = nano_v1.make_trainer(p, hf_token, os.path.join(out, "runs"), True, hook, device)
         if not box["rec"]["gauges"] and t.hub.api is not None:           # a fresh machine: the record so far from the repo
@@ -315,8 +383,9 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
             json.dump(rec, open(rec_p, "w", encoding="utf-8"), indent=1, default=float)
             recs[n] = rec
             continue
-        print(f"[lastfix] {n}: {arm['craft']} seed {arm['seed']}, last-write fix {arm['mode'] or 'none (bare)'}, "
-              f"{t.raw_model.param_count():,} parameters, step {t.step:,}", flush=True)
+        print(f"[lastfix] {n}: {arm['craft']} seed {arm['seed']}, last-write fix {arm['mode'] or 'none (bare)'}"
+              + (f", the output layer on AdamW (decay {arm['head_wd']})" if "head_wd" in arm else "")
+              + f", {t.raw_model.param_count():,} parameters, step {t.step:,}", flush=True)
         stopped = None
         t0 = time.time()
         while nano_v1.phase_index(t) is not None:
@@ -369,7 +438,8 @@ def table(recs: dict, step: int | None = None) -> str:
     """The arms side by side at a step (default each arm's last gauge): the direction, the size, the rank, the bits, the drift memory."""
     base = recs.get("c-bare-s3")
     rows = ["| arm | fix | step | val bits a byte | vs bare s3 | share on the last block's direction | after the norm | last bank write: "
-            "share / size | last block rank | exit H on random bytes |", "|---|---|---|---|---|---|---|---|---|---|"]
+            "share / size | last block rank | exit H on random bytes | output layer size / content loudness |",
+            "|---|---|---|---|---|---|---|---|---|---|---|"]
     for n, r in recs.items():
         g = _at(r, step)
         if g is None:
@@ -379,7 +449,10 @@ def table(recs: dict, step: int | None = None) -> str:
         d = "-" if (b is None or g.get("val_bpb") is None or b.get("val_bpb") is None) else f"{g['val_bpb'] - b['val_bpb']:+.4f}"
         h = (r.get("exit_memory") or {}).get("exit") or {}
         hs = "-" if not h else f"{h['H_median']:.3f} [{h['H_ci95'][0]:.3f}, {h['H_ci95'][1]:.3f}]"
-        rows.append(f"| {n} | {r['arm']['mode'] or 'none'} | {g['step']:,} | {g['val_bpb'] if g.get('val_bpb') is not None else float('nan'):.4f} | {d} | "
+        fx = r["arm"].get("mode") or (f"head AdamW {r['arm']['head_wd']}" if "head_wd" in r["arm"] else "none")
+        hd = g.get("head")
+        ho = "-" if not hd else f"{hd['w_h_fro']:.1f} / {hd['loudness']:.2f}"
+        rows.append(f"| {n} | {fx} | {g['step']:,} | {g['val_bpb'] if g.get('val_bpb') is not None else float('nan'):.4f} | {d} | "
                     f"{g['share_u'][str(L - 1)]:.3f} | {g['share_u']['nf']:.3f} | {g['bank']['share_own_mean']:.3f} / {g['bank']['size']:.3g} | "
-                    f"{g['rank'][str(L - 1)]:.0f} | {hs} |")
+                    f"{g['rank'][str(L - 1)]:.0f} | {hs} | {ho} |")
     return "\n".join(rows)

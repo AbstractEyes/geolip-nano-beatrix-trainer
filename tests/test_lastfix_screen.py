@@ -98,3 +98,54 @@ def test_the_table_compares_each_arm_with_bare_at_the_same_step():
         return {"arm": {"mode": mode}, "gauges": [g], "exit_memory": {"exit": {"H_median": 0.6, "H_ci95": [0.55, 0.65]}}}
     t = LS.table({"c-bare-s3": rec("", 1.5, 0.95), "c-register": rec("register", 1.5004, 0.6)})
     assert "| c-register | register | 4,960 | 1.5004 | +0.0004 | 0.600 |" in t and "| c-bare-s3 | none | 4,960 | 1.5000 | +0.0000 |" in t
+
+
+@pytest.mark.parametrize("name,wd", [("c-head-adam", 0.0), ("c-head-adamw0.1", 0.1), ("c-head-adamw1.2", 1.2)])
+def test_an_output_layer_arm_is_the_plain_start_with_its_readout_on_adamw(name, wd):
+    from geolip.alephllm.train.optim import Muon, build_optimizers
+    arm = LS.BY_NAME[name]
+    sd, bare = LS.arm_state(arm), LS.arm_state(LS.BY_NAME["c-bare-s3"])
+    assert set(sd) == set(bare) and all(torch.equal(sd[k], bare[k]) for k in sd)            # the plain v1 start, bit for bit
+    p = LS.arm_preset(arm, "b.safetensors")
+    t = p.train
+    assert t.decay_params == LS.HEAD_PARAMS and t.decay_wd == wd and p.model.bank_last_fix == ""
+    assert (t.muon_lr, t.adam_lr, t.warmup_steps, t.grad_clip, t.eval_every, p.prefix) == (2e-2, 3e-4, 200, 1.0, 500, f"v1_lastfix/{name}")
+    m = AlephLM(p.model)
+    opts = build_optimizers(m, t.muon_lr, t.muon_momentum, t.adam_lr, decay_prefixes=t.decay_params, decay_wd=t.decay_wd)
+    named = dict(m.named_parameters())
+    readout = {id(named["head.w_h.weight"]), id(named["head.w_s.weight"])}
+    g1 = opts[1].param_groups[1]
+    assert {id(x) for x in g1["params"]} == readout and g1["weight_decay"] == wd and opts[1].param_groups[0]["weight_decay"] == 0.0
+    assert isinstance(opts[0], Muon) and not readout & {id(x) for x in opts[0].param_groups[0]["params"]}
+    assert LS.arm_preset(LS.BY_NAME["c-bare-s3"], "b.safetensors").train.decay_params == ()     # every other arm: the 2s split
+
+
+def test_the_gauge_reads_the_output_layer():
+    m = AlephLM(LS.arm_cfg(LS.BY_NAME["c-bare-s3"]))
+    m.load_state_dict(LS.arm_state(LS.BY_NAME["c-bare-s3"]), strict=True)
+    with torch.no_grad():
+        m.head.w_s.weight.zero_()                                    # the readout alone: the head is linear in the post-norm state
+    torch.manual_seed(1)
+    docs = [[0] + torch.randint(32, 127, (511,)).tolist() for _ in range(4)]
+    h0 = LS.lastwrite_gauge(m, docs)["head"]
+    assert all(np.isfinite(v) for v in h0.values()) and 0 < h0["room"] <= 1 and h0["loudness"] == pytest.approx(h0["room"] * h0["gain_content"])
+    with torch.no_grad():
+        m.head.w_h.weight.mul_(2.0)                                  # a readout twice as large reads every direction twice as loudly
+    g1 = LS.lastwrite_gauge(m, docs)
+    h1 = g1["head"]
+    assert h1["w_h_fro"] == pytest.approx(2 * h0["w_h_fro"], rel=1e-5) and h1["w_h_top_sv"] == pytest.approx(2 * h0["w_h_top_sv"], rel=1e-4)
+    assert all(h1[k] == pytest.approx(2 * h0[k], rel=1e-3) for k in ("gain_content", "gain_random", "gain_u"))
+    sc = LS.gauge_scalars(g1)
+    assert sc["lastwrite/head_w_h_fro"] == pytest.approx(h1["w_h_fro"]) and "lastwrite/head_loudness" in sc
+
+
+def test_the_table_labels_the_output_layer_arms():
+    def rec(arm, head):
+        g = {"step": 4960, "val_bpb": 1.5, "share_u": {"5": 0.9, "nf": 0.9}, "rank": {str(i): 10.0 for i in range(6)},
+             "bank": {"share_own_mean": 0.9, "size": 100.0}}
+        if head:
+            g["head"] = head
+        return {"arm": arm, "gauges": [g]}
+    t = LS.table({"c-bare-s3": rec({"mode": ""}, None),
+                  "c-head-adamw0.1": rec(dict(LS.BY_NAME["c-head-adamw0.1"]), {"w_h_fro": 30.0, "loudness": 1.5})})
+    assert "| c-head-adamw0.1 | head AdamW 0.1 | 4,960 |" in t and t.rstrip().endswith("| 30.0 / 1.50 |") and "| - | - |" in t

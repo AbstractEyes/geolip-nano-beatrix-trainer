@@ -20,7 +20,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_pair.py` | how alike two crafts are on the same held-out rows: the KL between their next-byte distributions each way, how often their greedy next bytes agree, the debiased linear CKA of their residual streams block by block; the helpers that read a stored pair the same way (`load_craft`, `heldout_rows`, `solo_twins`) and the pair notebook's table (`report`) |
 | `geolip/nano_beatrix/bodies.py` | the bed's bodies as one table: an arm name to the library config of its craft at a given context (`craft_cfg(arm, ctx)`); `bed_train` and `nano_v1` both build from it |
 | `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)` |
-| `geolip/nano_beatrix/lastfix_screen.py` | the last block's write under a bound, screened on the v1 bodies before their train: each arm (a body, a start, one of the library's `bank_last_fix` forms or none) trains through the start of the 2s diet with the 2s recipe; every 500 steps the full eval and the big-direction reads (the share of each block's output on the last block's mean direction, the last bank write's share and size, every block's rank, the final norm's gain and bias against the direction) into the run's TensorBoard; at the end the drift memory on random bytes; `run(out, hf_token, names)`, `table(records)` |
+| `geolip/nano_beatrix/lastfix_screen.py` | the last block's write under a bound, screened on the v1 bodies before their train: each arm (a body, a start, one of the library's `bank_last_fix` forms or none) trains through the start of the 2s diet with the 2s recipe; every 500 steps the full eval and the big-direction reads (the share of each block's output on the last block's mean direction, the last bank write's share and size, every block's rank, the final norm's gain and bias against the direction, the output layer's size and loudness) into the run's TensorBoard; at the end the drift memory on random bytes; the second stage's arms put the output layer's readout on AdamW (`TrainConfig.decay_params`); `run(out, hf_token, names)`, `table(records)` |
 | `geolip/nano_beatrix/automodel.py` | the finished crafts as transformers AutoModel packages in their repo: the library's model files vendored with the wrapper (`hf_template/modeling_nano_beatrix.py`) at the repo's top and in each craft's folder, each craft's config and final weights (bf16, and the fp32 variant), and the gates every package passes before anything is pushed (exact parity with the library; a transformers load in a process where the library cannot be imported); `release(out, repo, crafts, token)` |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
@@ -141,6 +141,17 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.29 (2026-10-14): the screen's second stage, the output layer (`colab/nano_v1_head_decay.ipynb`). On Castor the bounds on the
+last write held the last block's share on its direction only a little under the plain run (0.873-0.921 against 0.928 after 4,960
+steps; the rank of the spread around it 15-46 against 11) and moved the direction upstream: the earlier blocks carried it instead
+(block 5 at 0.80 against 0.58). The saved checkpoints place its use at the final norm: the norm rescales every byte to one size, so the
+direction's size per byte sets how much room the content keeps and with it the prediction's confidence (removed, the predictions turn
+far too sharp: +4.97 bits a byte; held at its mean size for every byte, +0.10; the bytes that carry more of it predict with more
+uncertainty, rank correlation 0.79). Its share climbed while the output layer grew: the readout doubled in 3,800 steps under Muon, so
+the content's net loudness rose only a tenth. Three arms move the output layer's two readout matrices from Muon to AdamW (the library's
+`TrainConfig.decay_params`, alephllm `186434b`, `feat/canon-layers` rc10; off by default, the 2s split exactly) at decay 0, 0.1 and 1.2,
+from the plain Castor start on the same data; the gauge also reads the output layer's size and loudness.
 
 0.1.28 (2026-10-14): the last-write screen (`lastfix_screen.py`, `colab/nano_v1_lastfix_screen.ipynb`). Read on 32 held-out
 documents, the v1 crafts' last block put 0.81-0.82 of its output's energy on one fixed direction after 1,145 steps of the 2s recipe
