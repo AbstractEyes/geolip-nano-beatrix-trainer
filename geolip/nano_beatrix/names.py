@@ -52,6 +52,8 @@ def run_tag(args: dict) -> str:
     # 0.1.31: the optimizer, when not pure Adam: AdamW's decoupled decay and its set when not the stream's matrices ("_wd0.1", "_wd1.2head")
     wd, wd_set = float(args.get("wd", "0")), args.get("wd_set", "mat")
     hp += (f"_wd{wd:g}" + ("" if wd_set == "mat" else wd_set)) if wd else ""
+    # 0.1.34: the head's form when not the dual head ("_hddial", "_hdpergain", ...; the library's head_mode)
+    hp += f"_hd{args['head_mode']}" if args.get("head_mode") else ""
     # 0.1.24: a pair run (--pair): the partner's arm, this craft's role (t teaches its partner, s learns from it, m both ways), where the
     # cross term reads (v the asked values' bytes, a every byte), its weight and its first step when not 1 and 0
     pair = args.get("pair", "")

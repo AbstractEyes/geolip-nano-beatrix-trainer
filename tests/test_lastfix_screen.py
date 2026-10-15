@@ -149,7 +149,7 @@ def test_the_table_labels_the_output_layer_arms():
         return {"arm": arm, "gauges": [g]}
     t = LS.table({"c-bare-s3": rec({"mode": ""}, None),
                   "c-head-adamw0.1": rec(dict(LS.BY_NAME["c-head-adamw0.1"]), {"w_h_fro": 30.0, "loudness": 1.5})})
-    assert "| c-head-adamw0.1 | head AdamW 0.1 | 4,960 |" in t and t.rstrip().endswith("| 30.0 / 1.50 |") and "| - | - |" in t
+    assert "| c-head-adamw0.1 | head AdamW 0.1 | 4,960 |" in t and t.rstrip().endswith("| 30.0 / 1.50 | - | - |") and "| - | - | - | - |" in t
 
 
 def test_the_carry_over_arms_start_from_their_plain_runs_and_compare_with_them():
@@ -170,3 +170,104 @@ def test_the_carry_over_arms_start_from_their_plain_runs_and_compare_with_them()
                                                   ("c-head-adamw0.1-s4", 1.61), ("pdc-head-adamw0.1", 1.39))}
     t = LS.table(recs)
     assert "| c-head-adamw0.1-s4 | head AdamW 0.1 | 4,960 | 1.6100 | +0.0100 |" in t and "| pdc-head-adamw0.1 | head AdamW 0.1 | 4,960 | 1.3900 | -0.0100 |" in t
+
+
+# ------------------------------------------------------------------ the head's dial arms (0.1.34)
+HEAD_NEW = {"dial": {"head.w_t", "head.a_bar"}, "dialraw": {"head.w_t", "head.a_bar"}, "dialplus": {"head.w_t", "head.a_bar"},
+            "pergain": {"head.w_g.weight", "head.a_bar"}}
+
+
+def test_the_head_arms_are_the_seven_at_the_v1_1_recipe():
+    assert LS.HEAD_ARMS == ["c-dial-s3", "c-dial-s4", "c-dialfrz-s3", "c-dialraw-s3", "c-dialplus-s3", "c-pergain-s3", "pdc-dial-s1"]
+    for n in LS.HEAD_ARMS:
+        a = LS.BY_NAME[n]
+        ref = LS.BY_NAME[a["ref"]]
+        assert a["head_wd"] == 0.1 and a["mode"] == "" and ref["head_wd"] == 0.1 and not ref.get("head_mode")
+        assert (ref["craft"], ref["seed"]) == (a["craft"], a["seed"])
+        assert LS.head_decay_params(a) == LS.HEAD_PARAMS + (("head.w_g.",) if a["head_mode"] == "pergain" else ())
+
+
+@pytest.mark.parametrize("name", LS.HEAD_ARMS)
+def test_a_head_arm_starts_from_its_reference_runs_start_with_the_dial_born_silent(name):
+    arm = LS.BY_NAME[name]
+    sd, ref = LS.arm_state(arm), LS.arm_state(LS.BY_NAME[arm["ref"]])
+    new = set(sd) - set(ref)
+    assert new == HEAD_NEW[arm["head_mode"]] and all(int(torch.count_nonzero(sd[k])) == 0 for k in new)
+    assert set(ref) <= set(sd) and all(torch.equal(sd[k], ref[k]) for k in ref)
+    p = LS.arm_preset(arm, "b.safetensors")
+    t = p.train
+    assert p.model.head_mode == arm["head_mode"] and p.model.bank_last_fix == ""
+    assert t.decay_params == LS.head_decay_params(arm) and t.decay_wd == 0.1 and t.head_addr_frozen is bool(arm.get("addr_frozen", False))
+    assert LS.arm_preset(LS.BY_NAME["c-head-adamw0.1"], "b.safetensors").train.head_addr_frozen is False
+
+
+def test_a_head_arm_is_the_plain_craft_at_birth():
+    torch.manual_seed(0)
+    x = torch.randint(32, 127, (2, 128))
+    ref = AlephLM(LS.arm_cfg(LS.BY_NAME["c-head-adamw0.1"]))
+    ref.load_state_dict(LS.arm_state(LS.BY_NAME["c-head-adamw0.1"]), strict=True)
+    ref.eval()
+    with torch.no_grad():
+        want = ref(x)[0]
+        h = ref.nf(ref._trunk(ref.embed(x), x))
+    for name in ("c-dial-s3", "c-dialplus-s3", "c-pergain-s3", "c-dialfrz-s3", "c-dialraw-s3"):
+        m = AlephLM(LS.arm_cfg(LS.BY_NAME[name]))
+        m.load_state_dict(LS.arm_state(LS.BY_NAME[name]), strict=True)
+        m.eval()
+        with torch.no_grad():
+            assert torch.equal(m(x)[0], want), name                      # the plain craft at birth, bit for bit
+            m.head.train()
+            tr = m.head(h)                                              # a training forward moves nothing at birth (the running mean stays 0)
+            m.head.eval()
+            assert torch.equal(tr, m.head(h)) and float(m.head.a_bar.abs().max()) == 0.0, name
+
+
+def test_the_gauge_reads_the_head_toggle_and_the_dial():
+    torch.manual_seed(1)
+    docs = [[0] + torch.randint(32, 127, (511,)).tolist() for _ in range(4)]
+    plain = AlephLM(LS.arm_cfg(LS.BY_NAME["c-head-adamw0.1"]))
+    plain.load_state_dict(LS.arm_state(LS.BY_NAME["c-head-adamw0.1"]), strict=True)
+    h0 = LS.lastwrite_gauge(plain, docs)["head"]
+    assert h0["toggle_bits"] == 0.0 and h0["bpb_docs"] == h0["bpb_docs_head_off"] > 0 and "dial_log_std" not in h0   # the carrying read at zero
+    m = AlephLM(LS.arm_cfg(LS.BY_NAME["c-dial-s3"]))
+    m.load_state_dict(LS.arm_state(LS.BY_NAME["c-dial-s3"]), strict=True)
+    h1 = LS.lastwrite_gauge(m, docs)["head"]
+    assert h1["toggle_bits"] == 0.0 and h1["dial_log_std"] == 0.0 and h1["dial_sat"] == 0.0 and h1["dial_w_norm"] == 0.0    # the dial at 1
+    with torch.no_grad():
+        m.head.w_t.normal_()
+    g = LS.lastwrite_gauge(m, docs)
+    h2 = g["head"]
+    assert h2["toggle_bits"] != 0.0 and h2["dial_log_std"] > 0 and 0 <= h2["dial_sat"] <= 1 and h2["dial_w_norm"] > 0
+    assert all(np.isfinite(h2[k]) for k in ("dial_corr_entropy", "dial_corr_share_u", "addr_erank", "addr_usage_ppl", "addr_drift",
+                                             "dial_log_mean", "dial_center"))
+    assert abs(h2["dial_corr_entropy"]) <= 1 + 1e-6 and 1 <= h2["addr_erank"] <= 16 + 1e-6
+    sc = LS.gauge_scalars(g)
+    assert sc["lastwrite/head_toggle_bits"] == pytest.approx(h2["toggle_bits"]) and "lastwrite/head_dial_log_std" in sc
+
+
+def test_the_table_compares_a_head_arm_with_its_reference_run():
+    def rec(arm, bpb, head=None):
+        g = {"step": 4960, "val_bpb": bpb, "share_u": {"5": 0.9, "nf": 0.3}, "rank": {str(i): 10.0 for i in range(6)},
+             "bank": {"share_own_mean": 0.9, "size": 100.0}}
+        if head:
+            g["head"] = head
+        return {"arm": dict(arm), "gauges": [g]}
+    recs = {"c-bare-s3": rec(LS.BY_NAME["c-bare-s3"], 1.50),
+            "c-head-adamw0.1": rec(LS.BY_NAME["c-head-adamw0.1"], 1.52, {"w_h_fro": 14.0, "loudness": 1.4, "toggle_bits": 0.0003}),
+            "c-dial-s3": rec(LS.BY_NAME["c-dial-s3"], 1.51, {"w_h_fro": 13.0, "loudness": 1.3, "toggle_bits": 0.0123, "dial_log_std": 0.25,
+                                                             "dial_sat": 0.05, "dial_corr_entropy": -0.4})}
+    t = LS.table(recs)
+    assert "| c-dial-s3 | head dial + AdamW 0.1 | 4,960 | 1.5100 | -0.0100 |" in t          # against c-head-adamw0.1, not c-bare-s3
+    assert "| 13.0 / 1.30 | +0.0123 | 0.250 / 0.05 / -0.40 |" in t and "| 14.0 / 1.40 | +0.0003 | - |" in t
+    recs["c-dialfrz-s3"] = rec(LS.BY_NAME["c-dialfrz-s3"], 1.53)
+    assert "| c-dialfrz-s3 | head dial (frozen address) + AdamW 0.1 | 4,960 | 1.5300 | +0.0100 |" in LS.table(recs)
+
+
+def test_the_bed_takes_the_head_form_and_names_it():
+    from geolip.nano_beatrix.bodies import craft_cfg
+    from geolip.nano_beatrix.bed_runner import GRID_KEYS
+    from geolip.nano_beatrix.names import run_tag
+    assert craft_cfg("castor-both", 1024).head_mode == "" and craft_cfg("castor-both", 1024, {"head_mode": "dial"}).head_mode == "dial"
+    assert "head_mode" in GRID_KEYS
+    base = {"arm": "castor-both", "seed": "1", "steps": "4000", "wd": "0.1"}
+    assert run_tag(base) == "castor-both_s1_L4000_wd0.1" and run_tag({**base, "head_mode": "dial"}) == "castor-both_s1_L4000_wd0.1_hddial"

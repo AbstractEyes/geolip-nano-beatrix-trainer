@@ -43,7 +43,7 @@ except ImportError:                                      # run as a file: the fo
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
              "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "warmup", "cues", "init", "sized", "sliced", "stage",
-             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from", "wd", "wd_set")
+             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from", "wd", "wd_set", "head_mode")
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")

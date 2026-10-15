@@ -62,4 +62,6 @@ def craft_cfg(arm: str, ctx: int, args: dict | None = None) -> AlephLMConfig:
     for k in ("hub_K", "hub_D", "hub_const"):          # the hub's address size (the capacity question)
         if k in args:
             extra[k] = int(args[k])
+    if args.get("head_mode"):                          # 0.1.34: the head's form (the library's head_mode: dial / dialraw / dialplus / pergain)
+        extra["head_mode"] = str(args["head_mode"])
     return AlephLMConfig(**{**dict(BASE, name=f"bed-{arm}", context=ctx), **ATTENTION[attn], **extra}, bank_byte_table=BANK[bank])

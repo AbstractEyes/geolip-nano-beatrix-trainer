@@ -23,6 +23,12 @@ def test_the_frame_tag_carries_the_diet_when_not_all_framed():
     assert mark(1.0) == "" and mark(0.75) == "_p75" and mark(0.5) == "_p50" and mark(0.25) == "_p25"
 
 
+def test_run_tag_names_the_head_form():
+    from geolip.nano_beatrix.names import run_tag
+    base = {"arm": "castor-both", "seed": "2", "steps": "4000"}
+    assert run_tag(base) == "castor-both_s2_L4000" and run_tag({**base, "head_mode": "pergain"}) == "castor-both_s2_L4000_hdpergain"
+
+
 def test_run_tag_matches_the_record_names():
     from geolip.nano_beatrix.names import run_tag
     # verbatim record names from the Hub and the local bed (2026-10-13): the pass-2 capacity run, the night's r8 run, today's smoke
