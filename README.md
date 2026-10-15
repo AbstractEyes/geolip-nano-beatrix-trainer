@@ -160,6 +160,11 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.32 (2026-10-15): the registers part (`frames-registers`) at the first pass's diet: every row framed (its pure-Adam records
+carry no plant piece), where 0.1.31 framed three rows in four; its twelve AdamW runs now land beside their pure-Adam twins. The 0.1.31
+runs stay on the Hub under their own names (`_p75`). The read judges the copy's formation by one rule on both sides of a pair (the
+current verdict recomputed from each record's fetch; records before 0.1.19 stored an older verdict). The notebook pins v0.1.32.
+
 0.1.31 (2026-10-15): AdamW for the bed (`bed_optim.py`) and the deciding tests again under it (`bed_rerun.py`,
 `colab/nano_bed_adamw.ipynb`). The v1 screen's second stage moved the output layer's readout from Muon to Adam or AdamW: the last
 block's share on its big direction held at 0.23-0.32 against the plain runs' 0.92-0.93, the readout stayed 9-15 in size against 61, and

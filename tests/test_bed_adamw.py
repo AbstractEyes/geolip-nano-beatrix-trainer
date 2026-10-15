@@ -164,6 +164,11 @@ def test_the_pure_adam_specs_are_the_earlier_notebooks_names():
     assert any(t.startswith("castor-both_s3_L4000_ctx4096_frdyn_cap_mode_sized_sl32_sz32-128-256-512-1024_r8") for t in form)
     cap = {t for st in ps["frames-capacity"] for t in bed_rerun.tags_of(st["spec"])}
     assert "castor-both_s2_L12000_ctx4096_frdyn_cap_mode_sz32-128-256-512-1024_r4_n30_o0_askany_p75" in cap   # test_names' record
+    reg = {t for st in ps["frames-registers"] for t in bed_rerun.tags_of(st["spec"])}
+    # the first pass's records on the Hub (every row framed, so no plant piece), three of its 12
+    assert {"castor-both_s1_L12000_ctx4096_frdyn_mat_mode_sz32-128-256-512_r4_n30_o0_askany",
+            "castor-both_s1_L12000_ctx4096_frdyn_cod_mode_sz32-128-256-512_r4_n30_o0_askany",
+            "pollux-both_s2_L12000_ctx4096_frdyn_cap_mode_sz32-128-256-512_r4_n30_o0_askany"} <= reg
     tw = ps["bodies-twins"][0]
     a1 = {b["tag"] for b in bc.plan(tw["stages"], tw["base"], tw["arms"], tw["seeds"]) if b["block"] == "A1"}
     assert "castor-both_s1_L12000_frdyn_cap_mode_sized_sl32_sz32-128-256_r8_n60_o30_askany_p75_stA1" in a1

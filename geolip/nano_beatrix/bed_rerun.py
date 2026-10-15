@@ -41,8 +41,9 @@ FORMS = dict(plain={}, sized=dict(sized=1), sliced=dict(sized=1, sliced=32))
 FORM = "sliced"                                         # the fourth pass's pick under the pure Adam; frames-form reads it again
 
 # ------------------------------------------------------------------ the frame passes, verbatim from their notebooks
-P1 = dict(arms=TWINS, seeds="1,2", register="caption,math,code", ctx=4096, mb=8, steps=12000, frames="dyn", plant=0.75,
+P1 = dict(arms=TWINS, seeds="1,2", register="caption,math,code", ctx=4096, mb=8, steps=12000, frames="dyn", plant=1.0,
           sizes="32,128,256,512", frame_records=4, nest=0.3, overlap=0.0, ask="any", tags="mode", log_every=100)
+# the first pass framed every row (its records carry p_plant 1.0, names without a plant piece); 0.1.31 ran it at 0.75 by mistake
 P2 = dict(arms=TWINS, seeds="1,2", register="caption", ctx=4096, mb=8, steps=12000, frames="dyn", plant=0.75,
           frame_records=4, nest=0.3, overlap=0.0, ask="any", tags="mode", log_every=100)
 P3_SHORT = dict(P2, ctx=1024, mb=32)                    # stage A: the short window at 32 rows a step
