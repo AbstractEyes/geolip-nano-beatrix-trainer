@@ -60,7 +60,13 @@ ARMS = [
     dict(name="c-head-adam", craft="nano-castor-v1", seed=3, mode="", head_wd=0.0),
     dict(name="c-head-adamw0.1", craft="nano-castor-v1", seed=3, mode="", head_wd=0.1),
     dict(name="c-head-adamw1.2", craft="nano-castor-v1", seed=3, mode="", head_wd=1.2),
+    # the second stage's carry-over (0.1.30): the lead body (from pdc-bare's start) and Castor's second seed (from c-bare-s4's start)
+    dict(name="pdc-head-adamw0.1", craft="nano-pollux-dual-canon-v1", seed=1, mode="", head_wd=0.1),
+    dict(name="c-head-adamw0.1-s4", craft="nano-castor-v1", seed=4, mode="", head_wd=0.1),
+    dict(name="pdc-head-adamw1.2", craft="nano-pollux-dual-canon-v1", seed=1, mode="", head_wd=1.2),
+    dict(name="c-head-adamw1.2-s4", craft="nano-castor-v1", seed=4, mode="", head_wd=1.2),
 ]
+PLAIN = {("nano-castor-v1", 3): "c-bare-s3", ("nano-castor-v1", 4): "c-bare-s4", ("nano-pollux-dual-canon-v1", 1): "pdc-bare"}
 BY_NAME = {a["name"]: a for a in ARMS}
 HEAD_PARAMS = ("head.w_h.", "head.w_s.")              # the output layer's two readout matrices (their biases stay undecayed)
 GAUGE_DOCS, GAUGE_CTX, IID_SEQS = 16, 2048, 24
@@ -435,9 +441,9 @@ def _at(rec: dict, step: int | None):
 
 
 def table(recs: dict, step: int | None = None) -> str:
-    """The arms side by side at a step (default each arm's last gauge): the direction, the size, the rank, the bits, the drift memory."""
-    base = recs.get("c-bare-s3")
-    rows = ["| arm | fix | step | val bits a byte | vs bare s3 | share on the last block's direction | after the norm | last bank write: "
+    """The arms side by side at a step (default each arm's last gauge): the direction, the size, the rank, the bits (against the plain
+    run of the arm's own body and start when its record is in recs, else c-bare-s3), the drift memory."""
+    rows = ["| arm | fix | step | val bits a byte | vs its plain run | share on the last block's direction | after the norm | last bank write: "
             "share / size | last block rank | exit H on random bytes | output layer size / content loudness |",
             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for n, r in recs.items():
@@ -445,6 +451,8 @@ def table(recs: dict, step: int | None = None) -> str:
         if g is None:
             continue
         L = len(g["rank"])
+        pn = PLAIN.get((r["arm"].get("craft"), r["arm"].get("seed")))
+        base = recs.get(pn) if pn in recs else recs.get("c-bare-s3")
         b = _at(base, g["step"]) if base else None
         d = "-" if (b is None or g.get("val_bpb") is None or b.get("val_bpb") is None) else f"{g['val_bpb'] - b['val_bpb']:+.4f}"
         h = (r.get("exit_memory") or {}).get("exit") or {}

@@ -101,6 +101,8 @@ same TensorBoard and the drift memory at the end; the records go to AbstractPhil
 (the second stage: the bounds moved the direction upstream, and its share climbs while the output layer grows under Muon, so three
 arms move the output layer's readout to AdamW at decay 0, 0.1 and 1.2 from the plain Castor start; the first stage's plain runs are
 read from the repo beside them)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_head_decay_lead_s4.ipynb)
+(the same change on the lead body and on Castor's second seed, each against its own plain run)
 
 Then:
 
@@ -144,6 +146,10 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.30 (2026-10-14): the second stage's carry-over (`colab/nano_v1_head_decay_lead_s4.ipynb`): the output layer's readout on AdamW
+at decay 0.1 and 1.2 on the lead body (dual hubs + Canon, from `pdc-bare`'s start) and on Castor's second seed (from `c-bare-s4`'s
+start); `table()` reads each arm against the plain run of its own body and start (`PLAIN`).
 
 0.1.29 (2026-10-14): the screen's second stage, the output layer (`colab/nano_v1_head_decay.ipynb`). On Castor the bounds on the
 last write held the last block's share on its direction only a little under the plain run (0.873-0.921 against 0.928 after 4,960

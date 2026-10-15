@@ -15,7 +15,8 @@ def test_the_arms_are_the_bare_crafts_and_the_four_forms():
     assert len({a["name"] for a in LS.ARMS}) == len(LS.ARMS) and all(a["mode"] in MODES for a in LS.ARMS)
     castor = [a for a in LS.ARMS if a["craft"] == "nano-castor-v1"]
     assert {a["mode"] for a in castor} == set(MODES) and {a["seed"] for a in castor if not a["mode"]} == {3, 4}
-    assert all(a["seed"] == nano_v1.CRAFTS[a["craft"]]["seed"] for a in LS.ARMS if a["name"] != "c-bare-s4")
+    assert all(a["seed"] == nano_v1.CRAFTS[a["craft"]]["seed"] for a in LS.ARMS if not a["name"].endswith("s4"))
+    assert all(a["seed"] == 4 and a["craft"] == "nano-castor-v1" for a in LS.ARMS if a["name"].endswith("s4"))
 
 
 @pytest.mark.parametrize("name", ["c-register", "c-temperature", "c-gain", "c-normwrite"])
@@ -149,3 +150,23 @@ def test_the_table_labels_the_output_layer_arms():
     t = LS.table({"c-bare-s3": rec({"mode": ""}, None),
                   "c-head-adamw0.1": rec(dict(LS.BY_NAME["c-head-adamw0.1"]), {"w_h_fro": 30.0, "loudness": 1.5})})
     assert "| c-head-adamw0.1 | head AdamW 0.1 | 4,960 |" in t and t.rstrip().endswith("| 30.0 / 1.50 |") and "| - | - |" in t
+
+
+def test_the_carry_over_arms_start_from_their_plain_runs_and_compare_with_them():
+    for name, plain in (("pdc-head-adamw0.1", "pdc-bare"), ("pdc-head-adamw1.2", "pdc-bare"), ("c-head-adamw0.1-s4", "c-bare-s4"),
+                        ("c-head-adamw1.2-s4", "c-bare-s4")):
+        arm = LS.BY_NAME[name]
+        assert LS.PLAIN[(arm["craft"], arm["seed"])] == plain
+        sd, ref = LS.arm_state(arm), LS.arm_state(LS.BY_NAME[plain])
+        assert set(sd) == set(ref) and all(torch.equal(sd[k], ref[k]) for k in sd)
+        t = LS.arm_preset(arm, "b.safetensors").train
+        assert t.decay_params == LS.HEAD_PARAMS and t.decay_wd == arm["head_wd"]
+
+    def rec(arm, bpb):
+        g = {"step": 4960, "val_bpb": bpb, "share_u": {"5": 0.9, "nf": 0.9}, "rank": {str(i): 10.0 for i in range(6)},
+             "bank": {"share_own_mean": 0.9, "size": 100.0}}
+        return {"arm": dict(arm), "gauges": [g]}
+    recs = {n: rec(LS.BY_NAME[n], b) for n, b in (("c-bare-s3", 1.50), ("c-bare-s4", 1.60), ("pdc-bare", 1.40),
+                                                  ("c-head-adamw0.1-s4", 1.61), ("pdc-head-adamw0.1", 1.39))}
+    t = LS.table(recs)
+    assert "| c-head-adamw0.1-s4 | head AdamW 0.1 | 4,960 | 1.6100 | +0.0100 |" in t and "| pdc-head-adamw0.1 | head AdamW 0.1 | 4,960 | 1.3900 | -0.0100 |" in t
