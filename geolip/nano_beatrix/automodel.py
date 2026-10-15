@@ -389,8 +389,14 @@ def fetch_finals(repo: str, crafts: list, runs: str, token: str | None = None) -
 
 
 def card(repo: str, hist: dict, params: dict) -> str:
-    """The repo's card once the crafts are packages: what each craft is, its final reads, how to load it."""
-    from .nano_v1 import CRAFTS
+    """The repo's card once the crafts are packages: what each craft is, its final reads, how to load it (the version from the crafts:
+    a v1.1 card states the readout's recipe and that the v1 folders stay)."""
+    from .nano_v1 import ALL as CRAFTS, V11_NOTE, version_of
+    ver = version_of(list(params))
+    note = V11_NOTE if ver == "v1.1" else ""
+    recipe = (" The output layer's two readout matrices trained with AdamW (0.0003, decoupled weight decay 0.1) instead of Muon."
+              if ver == "v1.1" else "")
+    nb = "colab/nano_v1_1.ipynb" if ver == "v1.1" else "colab/nano_v1_2s.ipynb"
 
     def f(x, nd):
         return "-" if x is None else f"{x:.{nd}f}"
@@ -417,11 +423,11 @@ tags:
 - custom_code
 ---
 
-# AlephLLM nano: Castor and Pollux, v1
+# AlephLLM nano: Castor and Pollux, {ver}
 
 Four small byte-level AlephLLM models (about 9 million parameters each, a 4,096-byte window), trained from birth on Beatrix 2s's
 diet: 16.1 billion bytes in thirteen phases (wikitext-103, fineweb-edu, nine curriculum stages, two anneals), 61,422 steps each.
-They read and write raw UTF-8 bytes: no tokenizer.
+They read and write raw UTF-8 bytes: no tokenizer.{note}
 
 | model | the body | parameters | bits a byte (fineweb-edu holdout) | recall: copy / nested / repeated key | 1,024-byte frame | planted record at 2,048 / 3,584 bytes (bits) |
 |---|---|---|---|---|---|---|
@@ -452,11 +458,11 @@ the whole window each step (no cache).
 ## Training
 
 The recipe is Beatrix 2s's: Muon at 0.02 on the trunk's matrices, Adam at 0.0003 on the rest, 200 warmup steps then a flat rate,
-gradient clip 1.0, 262,144 bytes a step. Each model started from exactly the weights its strongest run on the nano bed started from.
+gradient clip 1.0, 262,144 bytes a step.{recipe} Each model started from exactly the weights its strongest run on the nano bed started from.
 Each folder keeps the whole training record: `checkpoints/`, `resume/`, `manifest.json`, `runs/` (TensorBoard: the training curves,
 the health census, the evals with bits by position, and the bed's checks at intervals under `bed/`), `bed_gauges/` and
 `v1_boundaries.json` (one row a phase). The trainer: [geolip-nano-beatrix-trainer](https://github.com/AbstractEyes/geolip-nano-beatrix-trainer)
-(`nano_v1.py`, `automodel.py`, `colab/nano_v1_2s.ipynb`) on [AlephLLM](https://github.com/AbstractEyes/alephllm). The license follows
+(`nano_v1.py`, `automodel.py`, `{nb}`) on [AlephLLM](https://github.com/AbstractEyes/alephllm). The license follows
 the training data's share-alike and non-commercial terms, as Beatrix 2s's does.
 """
 
@@ -465,6 +471,7 @@ def release(out: str, repo: str, crafts: list, token: str, tf_pkgs: str | None =
     """The end of the train: each craft's final files (fetched from the repo unless fetch=False), the packages through every gate,
     the card from the repo's boundary tables, one commit, then the load gate again from the repo. -> the commit id."""
     from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
+    from .nano_v1 import version_of
     runs, root = os.path.join(out, "runs"), os.path.join(out, "automodel")
     if fetch:
         fetch_finals(repo, crafts, runs, token)
@@ -476,7 +483,7 @@ def release(out: str, repo: str, crafts: list, token: str, tf_pkgs: str | None =
     open(os.path.join(root, "README.md"), "w", encoding="utf-8", newline="\n").write(card(repo, hist, params))
     ops = [CommitOperationAdd(path_in_repo=p, path_or_fileobj=f) for p, f in check_gated(root, crafts)]
     info = HfApi(token=token).create_commit(repo_id=repo, operations=ops,
-                                            commit_message="the nano v1 models as AutoModel packages (bf16 default, fp32 variant)")
+                                            commit_message=f"the nano {version_of(crafts)} models as AutoModel packages (bf16 default, fp32 variant)")
     log(f"pushed {len(ops)} files to {repo}: {info.oid}")
     for c in crafts:
         load_child(c, repo, os.path.join(root, "work", c), os.path.join(root, "gates"), tf_pkgs, from_hub=True)

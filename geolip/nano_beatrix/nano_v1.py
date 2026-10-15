@@ -35,7 +35,14 @@ batches and the resume position are exactly the library stream's (each batch tra
 
 The order (run): round-robin by phase: every craft through a phase before any craft goes on, so the four curves stay comparable at
 any stop; every craft resumes from its hub record (the trainer's resume-first contract) and every train() call returns at the phase
-boundary (stop_at_boundary)."""
+boundary (stop_at_boundary).
+
+THE V1.1 CRAFTS (0.1.33; CRAFTS_V11, the same names with a .1): the same four bodies from the same births on the same diet, with one
+change to the recipe: the output layer's two readout matrices (head.w_h, head.w_s; their biases stay undecayed) train with AdamW at the
+Adam rate (3e-4) and decoupled weight decay 0.1 instead of Muon (TrainConfig.decay_params). Under Muon the readout takes a full-size step
+every update with no decay and keeps growing, and the last block's output gathered onto one direction (0.92-0.93 of its energy within
+4,960 steps); with the readout on AdamW the same crafts held it at 0.23-0.32 at no cost in bits (lastfix_screen.py, its second stage).
+The v1 crafts keep their names and their recipe; ALL holds both sets."""
 from __future__ import annotations
 
 import json
@@ -73,6 +80,23 @@ GAUGE_ARGS = dict(ctx="4096", frames="dyn", register="caption", tags="mode", siz
 GAUGE_SEED = 1
 GAUGE_EVERY = 4000              # steps (two full evals); and every phase boundary
 
+READOUT = ("head.w_h.", "head.w_s.")                     # the output layer's two readout matrices (their biases stay undecayed)
+V11_TRAIN = dict(decay_params=READOUT, decay_wd=0.1)      # the readout on AdamW at the Adam rate, decoupled decay 0.1, instead of Muon
+CRAFTS_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS.items()}
+ALL = {**CRAFTS, **CRAFTS_V11}
+
+
+def train_of(name: str) -> dict:
+    """The TrainConfig fields a craft's version sets: none for a v1 craft, the readout's AdamW group for a v1.1 craft."""
+    return dict(ALL[name].get("train") or {})
+
+
+def gauge_init(name: str, step: int) -> str:
+    """The folder the bed's gauge reads a craft's weights from, also its record's starting-craft piece: v1<code>_<step> for a v1 craft,
+    v11<code>_<step> for a v1.1 craft (so the two versions' records never share a name)."""
+    c = ALL[name]
+    return f"{c.get('tag', 'v1')}{c['code']}_{step}"
+
 
 # ------------------------------------------------------------------ the start
 def birth_state(arm: str, seed: int) -> dict:
@@ -95,7 +119,7 @@ def write_birth(name: str, folder: str) -> str:
     """The craft's start file <folder>/<name>_birth.safetensors (written once; a present file is checked against a fresh build).
     -> the path."""
     from safetensors.torch import load_file, save_file
-    c = CRAFTS[name]
+    c = ALL[name]
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{name}_birth.safetensors")
     sd = birth_state(c["arm"], c["seed"])
@@ -123,14 +147,15 @@ def diet(scale: float = 1.0) -> list:
 def preset(name: str, birth_file: str, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO, diet_scale: float = 1.0,
            **train_over):
     """The library preset of a v1 craft: the body at context 4,096 named for the craft (its prefix in the repo), the 2s recipe, the 2s
-    diet, the weights-only start from the birth file at step 0. train_over: TrainConfig fields to override (a smoke run's cadences)."""
+    diet, the weights-only start from the birth file at step 0. The craft's version sets its recipe fields (train_of: a v1.1 craft's
+    readout on AdamW); train_over: TrainConfig fields to override (a smoke run's cadences)."""
     from geolip.alephllm.presets import Preset, TrainConfig
-    cfg = craft_cfg(CRAFTS[name]["arm"], CTX)
+    cfg = craft_cfg(ALL[name]["arm"], CTX)
     cfg.name = name
     if diet_scale == 1.0:
         assert micro_batch * grad_accum * CTX == TOKENS_PER_STEP, f"the 2s step is {TOKENS_PER_STEP:,} tokens"
     tc = TrainConfig(micro_batch=micro_batch, grad_accum=grad_accum, governor="", head_addr_frozen=False, phase_seed_offset=True,
-                     **train_over)
+                     **{**train_of(name), **train_over})
     return Preset(model=cfg, train=tc, hf_repo=repo, curriculum=diet(diet_scale), data_scale=1.0,
                   init_from={"file": birth_file, "step": 0})
 
@@ -151,10 +176,11 @@ def _bench(name, birth_file, micro_batch, grad_accum, steps, warm, device) -> di
     from geolip.alephllm.model.alephlm import AlephLM
     from geolip.alephllm.train.optim import build_optimizers
     from geolip.alephllm.train.precision import autocast
-    model = AlephLM(craft_cfg(CRAFTS[name]["arm"], CTX)).to(device)
+    model = AlephLM(craft_cfg(ALL[name]["arm"], CTX)).to(device)
     model.load_state_dict({k: v.to(device) for k, v in load_file(birth_file).items()}, strict=True)
     model.train()
-    opts = build_optimizers(model, 2e-2, 0.95, 3e-4)
+    tr = train_of(name)
+    opts = build_optimizers(model, 2e-2, 0.95, 3e-4, decay_prefixes=tuple(tr.get("decay_params", ())), decay_wd=tr.get("decay_wd", 0.0))
     params = list(model.parameters())
     xb = torch.randint(0, 256, (micro_batch, CTX + 1), generator=torch.Generator().manual_seed(0)).to(device)
     torch.cuda.reset_peak_memory_stats()
@@ -377,7 +403,7 @@ def gauge_scalars(rec: dict) -> dict:
 
 
 def gauge_args(name: str, init: str, out: str) -> dict:
-    c = CRAFTS[name]
+    c = ALL[name]
     return dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
 
 
@@ -394,15 +420,15 @@ def bed_gauge(trainer, name: str, out: str, gauge_cmd=None, gauge_gb: float = 10
         return None
     finally:
         if not keep_weights:                              # the craft's copy for the child goes, read or not
-            shutil.rmtree(os.path.join(out, "bed", f"v1{CRAFTS[name]['code']}_{trainer.step}"), ignore_errors=True)
+            shutil.rmtree(os.path.join(out, "bed", gauge_init(name, trainer.step)), ignore_errors=True)
 
 
 def _bed_gauge(trainer, name, out, gauge_cmd, gauge_gb):
     total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
     gpu_frac = min(0.6, max(0.05, gauge_gb / total))
     from safetensors.torch import save_file
-    c = CRAFTS[name]
-    init = f"v1{c['code']}_{trainer.step}"
+    c = ALL[name]
+    init = gauge_init(name, trainer.step)
     bed = os.path.join(out, "bed")
     wdir = os.path.join(bed, init)
     args = gauge_args(name, init, out)
@@ -479,14 +505,14 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         p = preset(n, births[n], micro_batch, grad_accum, repo, diet_scale, **train_over)
         t = make_trainer(p, hf_token, os.path.join(out, "runs"), process_streams, hook_for(n), device)
         if t.step == 0 and t.manifest.init_from and not any("BIRTH:" in str(x) for x in (t.manifest.notes or [])):
-            c = CRAFTS[n]
+            c = ALL[n]
             t.manifest.note(f"BIRTH: the nano bed's birth of {c['arm']} seed {c['seed']} (torch.manual_seed then the CPU build at context "
                             f"{BIRTH_CTX}, the position rows {BIRTH_CTX}..{CTX - 1} zero): the start of its strongest v4 bed run; {c['body']}")
         if not hist.get(n):                               # a fresh machine: the boundary table so far from the craft's hub record
             prev = t.hub.download("v1_boundaries.json") if t.hub.api else None
             hist[n] = json.load(open(prev, encoding="utf-8")) if prev else []
         trainers[n] = t
-        print(f"[v1] {n}: {c_arm(n)} seed {CRAFTS[n]['seed']}, {t.raw_model.param_count():,} parameters, step {t.step:,}, "
+        print(f"[v1] {n}: {c_arm(n)} seed {ALL[n]['seed']}, {t.raw_model.param_count():,} parameters, step {t.step:,}, "
               f"phase {phase_index(t)}", flush=True)
 
     stopped = None
@@ -546,9 +572,21 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
     return hist
 
 
-def card_in_training() -> str:
-    """The repo's card while the crafts train (the AutoModel card replaces it when they finish)."""
-    rows = "\n".join(f"| `{n}` | {c['body']} | `{c['arm']}`, seed {c['seed']} |" for n, c in CRAFTS.items())
+def version_of(names) -> str:
+    """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft, else v1."""
+    return "v1.1" if any(n in CRAFTS_V11 for n in names) else "v1"
+
+
+def card_in_training(names=None) -> str:
+    """The repo's card while the crafts train (the AutoModel card replaces it when they finish); names: the crafts training (the v1
+    crafts by default, the v1 text unchanged)."""
+    names = list(names or CRAFTS)
+    ver = version_of(names)
+    rows = "\n".join(f"| `{n}` | {ALL[n]['body']} | `{ALL[n]['arm']}`, seed {ALL[n]['seed']} |" for n in names)
+    note = V11_NOTE if ver == "v1.1" else ""
+    recipe = (" The output layer's two readout matrices train with AdamW (0.0003, decoupled weight decay 0.1) instead of Muon."
+              if ver == "v1.1" else "")
+    nb = "colab/nano_v1_1.ipynb" if ver == "v1.1" else "colab/nano_v1_2s.ipynb"
     return f"""---
 license: cc-by-nc-sa-4.0
 language: en
@@ -559,11 +597,11 @@ tags:
 - custom_code
 ---
 
-# AlephLLM nano: Castor and Pollux, v1
+# AlephLLM nano: Castor and Pollux, {ver}
 
 Four small byte-level AlephLLM crafts (about 9.2 million parameters, a 4,096-byte window) training from birth on Beatrix 2s's diet:
 16.1 billion bytes in thirteen phases (wikitext-103, fineweb-edu, nine curriculum stages, two anneals). **Training now**; when they
-finish, each craft's folder becomes a transformers AutoModel package (`trust_remote_code=True`, raw UTF-8 bytes in and out).
+finish, each craft's folder becomes a transformers AutoModel package (`trust_remote_code=True`, raw UTF-8 bytes in and out).{note}
 
 | craft | the body | started from the start of its bed run |
 |---|---|---|
@@ -575,18 +613,20 @@ health census, the evals on the fineweb-edu holdout with the bits by position ba
 frame size, the frame questions and the far reach), `bed_gauges/` (the gauge records) and `v1_boundaries.json` (one row a phase).
 
 The recipe is Beatrix 2s's: Muon at 0.02 on the trunk's matrices, Adam at 0.0003 on the rest, 200 warmup steps then a flat rate,
-gradient clip 1.0, 262,144 bytes a step (61,422 steps a craft). The trainer: [geolip-nano-beatrix-trainer](https://github.com/AbstractEyes/geolip-nano-beatrix-trainer)
-(`nano_v1.py`, `colab/nano_v1_2s.ipynb`) on [AlephLLM](https://github.com/AbstractEyes/alephllm). The license follows the training
+gradient clip 1.0, 262,144 bytes a step (61,422 steps a craft).{recipe} The trainer: [geolip-nano-beatrix-trainer](https://github.com/AbstractEyes/geolip-nano-beatrix-trainer)
+(`nano_v1.py`, `{nb}`) on [AlephLLM](https://github.com/AbstractEyes/alephllm). The license follows the training
 data's share-alike and non-commercial terms, as Beatrix 2s's does.
 """
 
+
+V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run (the folders without the .1) the readout kept growing under\nMuon and the last block's output gathered onto a single direction within its first thousand steps; that run was stopped and\nits folders stay as they were.")
 
 HEADLINE = ("bed/text/heldout_bits", "bed/frame/copy_whole", "bed/frame/nested_whole", "bed/frame/redefined_key_whole",
             "bed/scaling/frame_1024_whole", "bed/window/planted_2048_bits", "bed/window/planted_3584_bits")
 
 
 def c_arm(n: str) -> str:
-    return CRAFTS[n]["arm"]
+    return ALL[n]["arm"]
 
 
 def table(hist: dict) -> str:

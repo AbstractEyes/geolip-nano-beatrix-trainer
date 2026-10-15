@@ -19,7 +19,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_curriculum.py` | a curriculum train as chains of continuation blocks: each chain (an arm and a seed) goes through the stages in order, a stage runs in blocks, and each block's record decides by the stage's rule whether the stage takes another block or the chain moves on (the copy formed; the far reads still improving); the chains advance in rounds, one block at a time on the card; a restart replays the decisions from the records on disk or on the Hub; `run(STAGES, BASE, arms, seeds, out, push)` and `report(...)` (the boundary table) |
 | `geolip/nano_beatrix/bed_pair.py` | how alike two crafts are on the same held-out rows: the KL between their next-byte distributions each way, how often their greedy next bytes agree, the debiased linear CKA of their residual streams block by block; the helpers that read a stored pair the same way (`load_craft`, `heldout_rows`, `solo_twins`) and the pair notebook's table (`report`) |
 | `geolip/nano_beatrix/bodies.py` | the bed's bodies as one table: an arm name to the library config of its craft at a given context (`craft_cfg(arm, ctx)`); `bed_train` and `nano_v1` both build from it |
-| `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)` |
+| `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)`. The v1.1 crafts (`CRAFTS_V11`, the same names with `.1`): the same bodies, births and diet with the output layer's two readout matrices on AdamW (decay 0.1) instead of Muon |
 | `geolip/nano_beatrix/lastfix_screen.py` | the last block's write under a bound, screened on the v1 bodies before their train: each arm (a body, a start, one of the library's `bank_last_fix` forms or none) trains through the start of the 2s diet with the 2s recipe; every 500 steps the full eval and the big-direction reads (the share of each block's output on the last block's mean direction, the last bank write's share and size, every block's rank, the final norm's gain and bias against the direction, the output layer's size and loudness) into the run's TensorBoard; at the end the drift memory on random bytes; the second stage's arms put the output layer's readout on AdamW (`TrainConfig.decay_params`); `run(out, hf_token, names)`, `table(records)` |
 | `geolip/nano_beatrix/bed_optim.py` | the bed's optimizer: pure Adam by default (every run before 0.1.31), or AdamW with decoupled decay on a named set of weights (`mat`: every weight that maps the stream; `head`: the output layer's two readouts), every other parameter at decay 0 (Adam's update exactly); `bed_train --wd=0.1 [--wd_set=mat]`; the run's name and record carry it |
 | `geolip/nano_beatrix/bed_rerun.py` | the bed's deciding tests again with AdamW in place of the pure Adam they ran on: every test's settings verbatim from its notebook, in parts that share no run (one part a card); `plan`, `price`, `run`, and `read` (each run beside the pure-Adam run of the same settings) |
@@ -109,6 +109,12 @@ read from the repo beside them)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_lastfix_resume_pdc_bare.ipynb)
 (the lead body's plain screen run resumed from its saved state near step 4,000 to its end, the first screen's notebook with that arm alone)
 
+The nano v1.1 crafts, `colab/nano_v1_1.ipynb`: the v1 notebook with one change to the recipe. The output layer's two readout matrices
+(`head.w_h`, `head.w_s`) train with AdamW at 0.0003 and decoupled weight decay 0.1 instead of Muon, the change that held the last
+block's dominant direction at a quarter of its output in the screen. The same four bodies from the same starts on the same diet; the
+records go to the same repo under the `.1` names, beside the v1 folders, which stay as they were:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_1.ipynb)
+
 The deciding tests again with AdamW, `colab/nano_bed_adamw.ipynb`: the screen showed the output layer's growth drives the last block's
 big direction, and every test that chose the twins' bodies and frames ran on the bed's pure Adam. The notebook runs them again with AdamW
 (decoupled decay 0.1 on every weight that maps the stream; the rest at decay 0) in seven parts that share no run, so each card takes
@@ -159,6 +165,13 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.33 (2026-10-15): the nano v1.1 crafts (`nano_v1.CRAFTS_V11`, `colab/nano_v1_1.ipynb`): the v1 crafts again with the output
+layer's two readout matrices on AdamW (lr 0.0003, decoupled weight decay 0.1; their biases at 0) instead of Muon, set per craft
+(`TrainConfig.decay_params`); the same bodies, births, diet and gauges; the gauge folders and records carry the version (`v11<code>`),
+so the two versions never share a name; the repo's two cards name their version. The v1 crafts and their notebook are unchanged.
+Tests: the v1.1 names and births, only v1.1 moves the readout (exactly the two matrices, off Muon, at 0.1), the gauge names, the
+cards. The 4090 toy run: both v1.1 crafts through every phase of the diet at 2e-5 of its bytes, a stop and a resume.
 
 0.1.32 (2026-10-15): the registers part (`frames-registers`) at the first pass's diet: every row framed (its pure-Adam records
 carry no plant piece), where 0.1.31 framed three rows in four; its twelve AdamW runs now land beside their pure-Adam twins. The 0.1.31
