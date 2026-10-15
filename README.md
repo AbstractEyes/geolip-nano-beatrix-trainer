@@ -20,6 +20,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_pair.py` | how alike two crafts are on the same held-out rows: the KL between their next-byte distributions each way, how often their greedy next bytes agree, the debiased linear CKA of their residual streams block by block; the helpers that read a stored pair the same way (`load_craft`, `heldout_rows`, `solo_twins`) and the pair notebook's table (`report`) |
 | `geolip/nano_beatrix/bodies.py` | the bed's bodies as one table: an arm name to the library config of its craft at a given context (`craft_cfg(arm, ctx)`); `bed_train` and `nano_v1` both build from it |
 | `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)` |
+| `geolip/nano_beatrix/lastfix_screen.py` | the last block's write under a bound, screened on the v1 bodies before their train: each arm (a body, a start, one of the library's `bank_last_fix` forms or none) trains through the start of the 2s diet with the 2s recipe; every 500 steps the full eval and the big-direction reads (the share of each block's output on the last block's mean direction, the last bank write's share and size, every block's rank, the final norm's gain and bias against the direction) into the run's TensorBoard; at the end the drift memory on random bytes; `run(out, hf_token, names)`, `table(records)` |
 | `geolip/nano_beatrix/automodel.py` | the finished crafts as transformers AutoModel packages in their repo: the library's model files vendored with the wrapper (`hf_template/modeling_nano_beatrix.py`) at the repo's top and in each craft's folder, each craft's config and final weights (bf16, and the fp32 variant), and the gates every package passes before anything is pushed (exact parity with the library; a transformers load in a process where the library cannot be imported); `release(out, repo, crafts, token)` |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
@@ -91,6 +92,13 @@ the diet, packages the crafts for transformers AutoModel in the same repo. The c
 [AbstractPhil/alephllm-nano-castor-pollux](https://huggingface.co/AbstractPhil/alephllm-nano-castor-pollux):
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2s.ipynb)
 
+Before that train, `colab/nano_v1_lastfix_screen.ipynb`: under the 2s recipe the v1 crafts turned most of their last block's output
+onto one fixed direction within their first 1,145 steps, so the library's four bounds on the last block's write (`bank_last_fix`:
+register, temperature, gain, and normwrite as the comparison arm) are screened against the bare crafts through the start of the diet
+(4,960 steps; two bare seeds for the bar; Castor and the dual-hub Canon body), with the big direction's reads every 500 steps in the
+same TensorBoard and the drift memory at the end; the records go to AbstractPhil/alephllm-nano-beatrix-training under `v1_lastfix/`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_lastfix_screen.ipynb)
+
 Then:
 
 ```bash
@@ -133,6 +141,14 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.28 (2026-10-14): the last-write screen (`lastfix_screen.py`, `colab/nano_v1_lastfix_screen.ipynb`). Read on 32 held-out
+documents, the v1 crafts' last block put 0.81-0.82 of its output's energy on one fixed direction after 1,145 steps of the 2s recipe
+(0.19-0.24 at birth; 0.43-0.50 at the end of the same bodies' bed runs), its bank write 25-36x larger and the rank of its spread 13-16
+of 256. Nine arms (Castor bare on two seeds, each of the four forms on Castor, the dual-hub Canon body bare, with the register and with
+the temperature) train 4,960 steps each from the v1 starts on the same data; a fix arm starts from its craft's v1 start plus the
+fix's own tensors (the register, the temperature and the gain give the plain craft's logits exactly at birth). The pass rule is
+written in the notebook before any arm runs.
 
 0.1.27 (2026-10-14): the AutoModel packages of the nano v1 crafts (`automodel.py`, the notebook's C5). transformers looks for remote
 code at the top of a repo even when the config and the weights come from a subfolder, so the model code sits at the repo's top and,
