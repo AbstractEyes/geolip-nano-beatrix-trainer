@@ -275,6 +275,14 @@ def _f(x, nd=2) -> str:
     return "-" if x is None else f"{x:.{nd}f}"
 
 
+def _formed(rec: dict, floor: float = 0.05, min_trials: int = 8) -> bool:
+    """The copy formed, by the current verdict (bf.formation, 0.1.19) recomputed from the record's own fetch: some lookup group of
+    `min_trials` trials or more writes the value whole above `floor`. Records before 0.1.19 stored a verdict under an older rule (and
+    no groups_judged), so the stored field is not comparable across the two sides of a pair."""
+    lookup = [a["full_value"] for g, a in (rec.get("fetch_by_frame") or {}).items() if g.startswith("data/") and a.get("n", 0) >= min_trials]
+    return bool(lookup) and not all(v <= floor for v in lookup)
+
+
 def _reads(rec: dict | None) -> dict:
     if rec is None:
         return {}
@@ -282,9 +290,8 @@ def _reads(rec: dict | None) -> dict:
     asks = rec.get("fetch_by_frame_asks") or {}
     nested = bf.pooled_fetch(asks.get("nested")) if asks.get("nested") else None
     redef = bf.pooled_fetch(asks.get("overlap")) if asks.get("overlap") else None
-    f = rec.get("formation") or {}
     return dict(text=rec.get("heldout_bpb"), whole=None if whole is None else whole["full_value"],
-                by_size=bc._whole_by_size(rec), formed=bool(f.get("formed")) and int(f.get("groups_judged", 0)) > 0,   # the curriculum's rule
+                by_size=bc._whole_by_size(rec), formed=_formed(rec),
                 nested=None if nested is None else nested["full_value"], redef=None if redef is None else redef["full_value"])
 
 

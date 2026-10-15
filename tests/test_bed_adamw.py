@@ -195,3 +195,12 @@ def test_the_read_of_an_empty_folder_is_dashes(tmp_path):
     assert md.count("| castor-both s3") >= 3 and "-> " not in md.replace("Adam -> AdamW", "")
     md = bed_rerun.read("bodies-twins", str(tmp_path), repo="")
     assert "#### the twins and the Canon bodies" in md
+
+
+def test_the_read_judges_formation_by_one_rule_on_both_sides():
+    g = lambda v, n=10: {"full_value": v, "n": n, "first_byte": 0.0, "value_bits": 0.0}       # noqa: E731
+    old = {"formation": {"formed": True}, "fetch_by_frame": {"data/32/1": g(0.40)}}               # a record before 0.1.19: no groups_judged
+    assert bed_rerun._reads(old)["formed"] is True
+    assert bed_rerun._reads({"formation": {"formed": True}, "fetch_by_frame": {"data/32/1": g(0.03), "data/128/1": g(0.05)}})["formed"] is False
+    assert bed_rerun._reads({"fetch_by_frame": {"data/32/1": g(0.90, n=7)}})["formed"] is False   # too few trials to judge
+    assert bed_rerun._reads({"fetch_by_frame": {"data/32/1": g(0.02), "data/128/1": g(0.30)}})["formed"] is True
