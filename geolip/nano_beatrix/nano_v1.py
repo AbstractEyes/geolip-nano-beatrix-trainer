@@ -477,6 +477,23 @@ def phase_index(trainer) -> int | None:
     return None
 
 
+def unrecorded_boundary(trainer, rows: list) -> tuple:
+    """The craft's last finished phase when the boundary table has no row for it (a session that ended inside the boundary's handling:
+    after the trainer's boundary, before the driver's eval, gauge and row). -> (phase name, exact): exact when the craft still stands at
+    that boundary (the next phase has trained nothing, or the diet is done), so the row can be written from these very weights;
+    (None, False) when every finished phase has its row; reads only."""
+    phs = trainer.manifest.phases
+    done = [i for i, ph in enumerate(phs) if ph["status"] == "done"]
+    if not done:
+        return None, False
+    i = done[-1]
+    name = phs[i]["name"]
+    if any(r.get("phase") == name for r in rows):
+        return None, False
+    nxt = phs[i + 1] if i + 1 < len(phs) else None
+    return name, nxt is None or not int(nxt.get("tokens_done") or 0)
+
+
 def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO,
         gauge_every: int = GAUGE_EVERY, gauge_cmd=None, max_hours: float | None = None, process_streams: bool = True,
         diet_scale: float = 1.0, device=None, gauge_gb: float = 10.0, **train_over) -> dict:
@@ -500,6 +517,26 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
                 bed_gauge(t, n, out, gauge_cmd, gauge_gb)
         return hook
 
+    def record(n, t, done, eval_now):
+        """A boundary's eval, the bed's gauges, its row in the table (local and the craft's hub record) and the TensorBoard upload."""
+        if eval_now:
+            t._full_eval()                                # the boundary's own eval (the hook gauges at its cadence)
+        if t.step not in gauged[n]:
+            gauged[n].add(t.step)
+            rec = bed_gauge(t, n, out, gauge_cmd, gauge_gb)
+        else:
+            rec = None
+        ledger = (getattr(t, "_last_eval", {}) or {}).get("ledger") or {}
+        hist.setdefault(n, []).append(dict(phase=done, step=t.step, tokens=t.manifest.tokens_seen, val_bpb=ledger.get("bpb_full"),
+                                           bed=None if rec is None else {k: v for k, v in gauge_scalars(rec).items()
+                                                                         if k in HEADLINE}))
+        json.dump(hist, open(hist_p, "w", encoding="utf-8"), indent=1)
+        t.hub.upload_bytes(json.dumps(hist[n], indent=1).encode(), "v1_boundaries.json")
+        t.writer.flush()
+        t.hub.upload_tensorboard(t.tb_dir)
+        print(f"[v1] {n}: '{done}' done at step {t.step:,} ({t.manifest.tokens_seen / 1e9:.3f}B tokens); val "
+              f"{ledger.get('bpb_full', float('nan')):.4f} bits a byte", flush=True)
+
     trainers, failed = {}, {}
     for n in names:
         p = preset(n, births[n], micro_batch, grad_accum, repo, diet_scale, **train_over)
@@ -514,6 +551,13 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         trainers[n] = t
         print(f"[v1] {n}: {c_arm(n)} seed {ALL[n]['seed']}, {t.raw_model.param_count():,} parameters, step {t.step:,}, "
               f"phase {phase_index(t)}", flush=True)
+        lost, exact = unrecorded_boundary(t, hist.get(n) or [])
+        if lost and exact:                                # the last session ended inside this boundary's handling: write it now
+            print(f"[v1] {n}: the boundary '{lost}' has no row (the last session ended inside its handling); written now at step "
+                  f"{t.step:,}", flush=True)
+            record(n, t, lost, eval_now=True)
+        elif lost:
+            print(f"[v1] {n}: the boundary '{lost}' has no row and the craft has trained past it; its reads are lost", flush=True)
 
     stopped = None
     while stopped is None:
@@ -546,23 +590,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
                 stopped = "the session's wall budget"
                 break
             close_stream(t)
-            if t.step % t.tc.eval_every != 0:
-                t._full_eval()                            # the boundary's own eval (the hook gauges at its cadence)
-            if t.step not in gauged[n]:
-                gauged[n].add(t.step)
-                rec = bed_gauge(t, n, out, gauge_cmd, gauge_gb)
-            else:
-                rec = None
-            ledger = (getattr(t, "_last_eval", {}) or {}).get("ledger") or {}
-            hist.setdefault(n, []).append(dict(phase=done, step=t.step, tokens=t.manifest.tokens_seen, val_bpb=ledger.get("bpb_full"),
-                                               bed=None if rec is None else {k: v for k, v in gauge_scalars(rec).items()
-                                                                             if k in HEADLINE}))
-            json.dump(hist, open(hist_p, "w", encoding="utf-8"), indent=1)
-            t.hub.upload_bytes(json.dumps(hist[n], indent=1).encode(), "v1_boundaries.json")
-            t.writer.flush()
-            t.hub.upload_tensorboard(t.tb_dir)
-            print(f"[v1] {n}: '{done}' done at step {t.step:,} ({t.manifest.tokens_seen / 1e9:.3f}B tokens); val "
-                  f"{ledger.get('bpb_full', float('nan')):.4f} bits a byte", flush=True)
+            record(n, t, done, eval_now=t.step % t.tc.eval_every != 0)
     for t in trainers.values():
         close_stream(t)
     for n, why in failed.items():

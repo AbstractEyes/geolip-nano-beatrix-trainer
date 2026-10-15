@@ -93,3 +93,26 @@ def test_the_cards_name_the_version_and_the_v1_card_is_unchanged():
     assert f'subfolder="{V11[0]}"' in am and "decoupled weight decay 0.1" in am and "colab/nano_v1_1.ipynb" in am
     am1 = automodel.card("AbstractPhil/alephllm-nano-castor-pollux", {n: hist[f"{n}.1"] for n in V1}, {n: 9_000_000 for n in V1})
     assert "Castor and Pollux, v1\n" in am1 and "v1.1" not in am1
+
+
+def test_a_boundary_left_without_its_row_is_found_and_written_only_from_its_own_weights():
+    class T:                                                                   # the trainer as the driver reads it
+        def __init__(self, phases):
+            self.manifest = type("M", (), {"phases": phases})()
+
+    def ph(name, status, tokens=0):
+        return {"name": name, "status": status, "tokens_done": tokens}
+    rows = [{"phase": "warmup_wikitext"}]
+    assert nano_v1.unrecorded_boundary(T([ph("warmup_wikitext", "planned")]), []) == (None, False)        # nothing finished yet
+    assert nano_v1.unrecorded_boundary(T([ph("warmup_wikitext", "done", 9), ph("fineweb_main", "planned")]), rows) == (None, False)
+    # the session ended inside fineweb_main's handling: the craft still stands at that boundary
+    t = T([ph("warmup_wikitext", "done", 9), ph("fineweb_main", "done", 9), ph("curriculum_s0", "planned")])
+    assert nano_v1.unrecorded_boundary(t, rows) == ("fineweb_main", True)
+    t = T([ph("warmup_wikitext", "done", 9), ph("fineweb_main", "done", 9), ph("curriculum_s0", "active", 0)])
+    assert nano_v1.unrecorded_boundary(t, rows) == ("fineweb_main", True)
+    # it trained on: the boundary's weights are gone, so nothing is written from the later ones
+    t = T([ph("warmup_wikitext", "done", 9), ph("fineweb_main", "done", 9), ph("curriculum_s0", "active", 4096)])
+    assert nano_v1.unrecorded_boundary(t, rows) == ("fineweb_main", False)
+    # the diet's last boundary
+    t = T([ph("warmup_wikitext", "done", 9), ph("anneal_mix", "done", 9)])
+    assert nano_v1.unrecorded_boundary(t, rows) == ("anneal_mix", True)

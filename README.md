@@ -171,7 +171,11 @@ layer's two readout matrices on AdamW (lr 0.0003, decoupled weight decay 0.1; th
 (`TrainConfig.decay_params`); the same bodies, births, diet and gauges; the gauge folders and records carry the version (`v11<code>`),
 so the two versions never share a name; the repo's two cards name their version. The v1 crafts and their notebook are unchanged.
 Tests: the v1.1 names and births, only v1.1 moves the readout (exactly the two matrices, off Muon, at 0.1), the gauge names, the
-cards. The 4090 toy run: both v1.1 crafts through every phase of the diet at 2e-5 of its bytes, a stop and a resume.
+cards. The 4090 toy run: both v1.1 crafts through every phase of the diet at 2e-5 of its bytes, a stop and a resume. The train
+driver (v1 and v1.1): a session that ends inside a boundary's handling (after the trainer's boundary, before the eval, the gauges and
+the table row) left that boundary without its row; the next `run()` writes it from the craft's own weights when the craft still
+stands at that boundary (`unrecorded_boundary`), and says so when it has trained past it (checked on the 4090: the row written again
+at the same step with the same eval).
 
 0.1.32 (2026-10-15): the registers part (`frames-registers`) at the first pass's diet: every row framed (its pure-Adam records
 carry no plant piece), where 0.1.31 framed three rows in four; its twelve AdamW runs now land beside their pure-Adam twins. The 0.1.31
