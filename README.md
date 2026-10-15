@@ -20,6 +20,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_pair.py` | how alike two crafts are on the same held-out rows: the KL between their next-byte distributions each way, how often their greedy next bytes agree, the debiased linear CKA of their residual streams block by block; the helpers that read a stored pair the same way (`load_craft`, `heldout_rows`, `solo_twins`) and the pair notebook's table (`report`) |
 | `geolip/nano_beatrix/bodies.py` | the bed's bodies as one table: an arm name to the library config of its craft at a given context (`craft_cfg(arm, ctx)`); `bed_train` and `nano_v1` both build from it |
 | `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)` |
+| `geolip/nano_beatrix/automodel.py` | the finished crafts as transformers AutoModel packages in their repo: the library's model files vendored with the wrapper (`hf_template/modeling_nano_beatrix.py`) at the repo's top and in each craft's folder, each craft's config and final weights (bf16, and the fp32 variant), and the gates every package passes before anything is pushed (exact parity with the library; a transformers load in a process where the library cannot be imported); `release(out, repo, crafts, token)` |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
@@ -85,8 +86,9 @@ The nano v1 crafts, `colab/nano_v1_2s.ipynb`: four bodies (Pollux's layout with 
 Pollux's layout with dual hubs, and Castor as the baseline), each started from exactly the weights its strongest bed run started from,
 trained through Beatrix 2s's diet with the library's trainer and its curves (the health census, the full evals with the bits by
 position band) plus the bed's frame, scaling and window gauges at intervals. C2 benches every craft's step on the card in hand, picks
-the micro-batch shape and prints the length; C3 trains round-robin by phase and resumes from the repo; C4 shows the curves. The crafts'
-records go to [AbstractPhil/alephllm-nano-castor-pollux](https://huggingface.co/AbstractPhil/alephllm-nano-castor-pollux):
+the micro-batch shape and prints the length; C3 trains round-robin by phase and resumes from the repo; C4 shows the curves; C5, after
+the diet, packages the crafts for transformers AutoModel in the same repo. The crafts' records go to
+[AbstractPhil/alephllm-nano-castor-pollux](https://huggingface.co/AbstractPhil/alephllm-nano-castor-pollux):
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2s.ipynb)
 
 Then:
@@ -127,9 +129,18 @@ and the weights at `<out>/bed/<tag>/`. A continued run (`--init=<a previous tag>
 pytest -q
 ```
 
-The frame composer's tests run on the CPU without a model.
+The frame composer's tests run on the CPU without a model. The AutoModel load test needs transformers: installed, or a folder that holds
+it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.27 (2026-10-14): the AutoModel packages of the nano v1 crafts (`automodel.py`, the notebook's C5). transformers looks for remote
+code at the top of a repo even when the config and the weights come from a subfolder, so the model code sits at the repo's top and,
+byte for byte, in each craft's folder (a folder downloaded alone loads too). The wrapper refills the buffers a weight file does not
+store (the byte-class table): transformers 5 re-creates them as empty memory and asks the model to fill them; each is copied from a
+fresh build of the same craft (a control test shows the load gate failing a wrapper that leaves them empty). The config loads the
+bf16 file into fp32 parameters, exactly. On the smoke's two finished crafts every gate passes: the vendored code gives the library's
+logits exactly, and transformers 5.18 loads each craft, by both routes and from both weight files, with the same logits.
 
 0.1.26 (2026-10-14): the nano v1 crafts. `nano_v1` trains four bodies from their bed births through Beatrix 2s's diet with the
 library's trainer (`colab/nano_v1_2s.ipynb`): the 2s recipe (Muon 0.02 on the trunk's matrices, Adam 0.0003 on the rest, 200 warmup
