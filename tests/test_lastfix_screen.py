@@ -2,6 +2,8 @@
 """The last-write screen (lastfix_screen.py): every arm starts from its v1 craft's start, the fix arms that promise it equal the plain
 craft at birth, the presets carry the recipe and the slice of the diet, the gauge reads what it says, the drift-memory estimator reads
 known signals. CPU only; the Hub is never touched."""
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -184,7 +186,7 @@ def test_the_head_arms_are_the_seven_at_the_v1_1_recipe():
         ref = LS.BY_NAME[a["ref"]]
         assert a["head_wd"] == 0.1 and a["mode"] == "" and ref["head_wd"] == 0.1 and not ref.get("head_mode")
         assert (ref["craft"], ref["seed"]) == (a["craft"], a["seed"])
-        assert LS.head_decay_params(a) == LS.HEAD_PARAMS + (("head.w_g.",) if a["head_mode"] == "pergain" else ())
+        assert LS.head_decay_params(a) == LS.HEAD_PARAMS                    # a dial's own weights stay on pure Adam
 
 
 @pytest.mark.parametrize("name", LS.HEAD_ARMS)
@@ -229,10 +231,12 @@ def test_the_gauge_reads_the_head_toggle_and_the_dial():
     plain.load_state_dict(LS.arm_state(LS.BY_NAME["c-head-adamw0.1"]), strict=True)
     h0 = LS.lastwrite_gauge(plain, docs)["head"]
     assert h0["toggle_bits"] == 0.0 and h0["bpb_docs"] == h0["bpb_docs_head_off"] > 0 and "dial_log_std" not in h0   # the carrying read at zero
+    assert "toggle_perbyte_bits" not in h0
     m = AlephLM(LS.arm_cfg(LS.BY_NAME["c-dial-s3"]))
     m.load_state_dict(LS.arm_state(LS.BY_NAME["c-dial-s3"]), strict=True)
     h1 = LS.lastwrite_gauge(m, docs)["head"]
     assert h1["toggle_bits"] == 0.0 and h1["dial_log_std"] == 0.0 and h1["dial_sat"] == 0.0 and h1["dial_w_norm"] == 0.0    # the dial at 1
+    assert h1["toggle_perbyte_bits"] == 0.0 and h1["toggle_global_bits"] == 0.0 and h1["dial_log_hold"] == 0.0
     with torch.no_grad():
         m.head.w_t.normal_()
     g = LS.lastwrite_gauge(m, docs)
@@ -241,6 +245,8 @@ def test_the_gauge_reads_the_head_toggle_and_the_dial():
     assert all(np.isfinite(h2[k]) for k in ("dial_corr_entropy", "dial_corr_share_u", "addr_erank", "addr_usage_ppl", "addr_drift",
                                              "dial_log_mean", "dial_center"))
     assert abs(h2["dial_corr_entropy"]) <= 1 + 1e-6 and 1 <= h2["addr_erank"] <= 16 + 1e-6
+    assert h2["toggle_perbyte_bits"] + h2["toggle_global_bits"] == pytest.approx(h2["toggle_bits"], abs=1e-9)
+    assert np.isfinite(h2["dial_corr_entropy_dialed"]) and h2["toggle_perbyte_bits"] != 0.0 and m.head.dial_hold is None
     sc = LS.gauge_scalars(g)
     assert sc["lastwrite/head_toggle_bits"] == pytest.approx(h2["toggle_bits"]) and "lastwrite/head_dial_log_std" in sc
 
@@ -259,8 +265,43 @@ def test_the_table_compares_a_head_arm_with_its_reference_run():
     t = LS.table(recs)
     assert "| c-dial-s3 | head dial + AdamW 0.1 | 4,960 | 1.5100 | -0.0100 |" in t          # against c-head-adamw0.1, not c-bare-s3
     assert "| 13.0 / 1.30 | +0.0123 | 0.250 / 0.05 / -0.40 |" in t and "| 14.0 / 1.40 | +0.0003 | - |" in t
-    recs["c-dialfrz-s3"] = rec(LS.BY_NAME["c-dialfrz-s3"], 1.53)
-    assert "| c-dialfrz-s3 | head dial (frozen address) + AdamW 0.1 | 4,960 | 1.5300 | +0.0100 |" in LS.table(recs)
+    recs["c-dialfrz-s3"] = rec(LS.BY_NAME["c-dialfrz-s3"], 1.53, {"w_h_fro": 13.0, "loudness": 1.3, "toggle_bits": 0.0123,
+                                                                      "toggle_perbyte_bits": 0.0041})
+    t = LS.table(recs)
+    assert "| c-dialfrz-s3 | head dial (frozen address) + AdamW 0.1 | 4,960 | 1.5300 | +0.0100 |" in t and "| +0.0123 (+0.0041) |" in t
+    recs["pdc-dial-s1"] = rec(LS.BY_NAME["pdc-dial-s1"], 1.35)               # its reference run not in recs: no comparison
+    assert "| pdc-dial-s1 | head dial + AdamW 0.1 | 4,960 | 1.3500 | - |" in LS.table(recs)
+
+
+def test_the_dial_reads_confidence_before_the_dial():
+    m = AlephLM(LS.arm_cfg(LS.BY_NAME["c-dial-s3"]))
+    m.load_state_dict(LS.arm_state(LS.BY_NAME["c-dial-s3"]), strict=True)
+    m.eval()
+    g = torch.Generator().manual_seed(2)
+    with torch.no_grad():
+        m.head.w_t.copy_(torch.randn(m.head.w_t.shape, generator=g) * 3)
+        Hs = torch.randn(512, m.head.proj.in_features, generator=g)
+        pu = torch.randn(Hs.shape[1], generator=g)
+        pu = pu / pu.norm()
+        out = LS._dial_reads(m.head, Hs, m.head(Hs).float(), pu)
+        lt = m.head.dial_log(m.head.addr.signed(m.head.proj(Hs))).float().mean(-1)
+        p = torch.softmax(m.head.readout(Hs).float(), -1)
+        H = -(p * p.clamp_min(1e-12).log()).sum(-1) / math.log(2)
+    a, b = lt - lt.mean(), -H - (-H).mean()
+    assert out["dial_corr_entropy"] == pytest.approx(float((a * b).sum() / (a.norm() * b.norm())), abs=1e-5)
+    assert out["dial_corr_entropy"] != pytest.approx(out["dial_corr_entropy_dialed"], abs=1e-6)
+
+
+def test_the_toggle_splits_a_per_byte_gain():
+    torch.manual_seed(3)
+    docs = [[0] + torch.randint(32, 127, (255,)).tolist() for _ in range(4)]
+    m = AlephLM(LS.arm_cfg(LS.BY_NAME["c-pergain-s3"]))
+    m.load_state_dict(LS.arm_state(LS.BY_NAME["c-pergain-s3"]), strict=True)
+    with torch.no_grad():
+        m.head.w_g.weight.normal_()
+    t = LS.head_toggle(m, docs)
+    assert t["toggle_perbyte_bits"] + t["toggle_global_bits"] == pytest.approx(t["toggle_bits"], abs=1e-9)
+    assert t["toggle_bits"] != 0.0 and np.isfinite(t["dial_log_hold"]) and m.head.dial_hold is None and m.training
 
 
 def test_the_bed_takes_the_head_form_and_names_it():

@@ -169,15 +169,17 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
-0.1.34 (2026-10-15): the head's dial screen (`lastfix_screen.py`'s head arms, `colab/nano_head_dial.ipynb`; the library at rc11
-ff8e9a2, `AlephLMConfig.head_mode`). With the readout on AdamW the output layer's aleph read stays at its birth (its toggle +0.0003 /
+0.1.34 (2026-10-15): the head's dial screen (`lastfix_screen.py`'s head arms, `colab/nano_head_dial.ipynb`; the library at rc12
+8904037, `AlephLMConfig.head_mode`). With the readout on AdamW the output layer's aleph read stays at its birth (its toggle +0.0003 /
 +0.0006 bits a byte): a read born at zero beside a complete linear readout earns nothing the readout cannot write from the state; the
 one function the readout cannot write after the final norm is scale, which the last block's big direction carries at the cost of the
 content's room. The dial gives that function to the aleph read: the readout's logits times exp(ln4 tanh(w_t . s(h) - a_bar)), w_t born
 zero (the plain craft at birth, bit for bit), the carrying read frozen at zero; the forms dial / dialraw (no centering) / dialplus (the
-carrying read kept) / pergain (a per-byte gain) and the frozen-address control; seven arms at the v1.1 recipe, each read against the
-readout-on-AdamW run of its own body and start (`ref`); the gauge adds the head's toggle in bits (the dial held at 1), the dial's spread,
-saturation and correlation with the prediction's entropy and with the byte's share on the direction, and the head address's health.
+carrying read kept) / pergain (a per-byte gain, on pure Adam like the dial's weights) and the frozen-address control; seven arms at
+the v1.1 recipe, each read against the readout-on-AdamW run of its own body and start (`ref`); the gauge adds the head's toggle in bits
+(the dial held at 1) split into its per-byte part (the dial held at its own mean) and one overall temperature, the dial's spread,
+saturation and correlation with the entropy of the prediction before the dial and with the byte's share on the direction, and the head
+address's health; the dial computed in fp32.
 The bed takes `--head_mode=<form>` (the tag piece `_hd<form>`; the runner's grid key).
 
 0.1.33 (2026-10-15): the nano v1.1 crafts (`nano_v1.CRAFTS_V11`, `colab/nano_v1_1.ipynb`): the v1 crafts again with the output

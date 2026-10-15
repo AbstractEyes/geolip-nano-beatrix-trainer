@@ -36,10 +36,11 @@ nothing the readout cannot write from the state. The one function the linear rea
 norm gives every byte one size, so the per-byte confidence rides on the big direction instead, at the cost of the content's room. The
 dial arms (the library's head_mode) give that function to the aleph read: the readout's logits times exp(ln4 tanh(w_t . s(h) - a_bar)),
 w_t born zero (the dial at exactly 1, the plain craft at birth), a_bar the running mean over the training forwards; the carrying read
-frozen at zero. Forms: dial; dialraw (no centering); dialplus (the carrying read kept); pergain (a per-byte gain G s(h), G under the
-readout's AdamW); the control dialfrz (the dial over a frozen random address). Each arm trains at the v1.1 recipe and reads against the
-readout-on-AdamW run of its own body and start. The gauge adds the head's toggle in bits (the dial held at 1), the dial's spread and
-saturation, its correlation with the prediction's entropy and with the byte's share on the direction, and the head address's health.
+frozen at zero. Forms: dial; dialraw (no centering); dialplus (the carrying read kept); pergain (a per-byte gain G s(h), G on pure
+Adam like w_t); the control dialfrz (the dial over a frozen random address). Each arm trains at the v1.1 recipe and reads against the
+readout-on-AdamW run of its own body and start. The gauge adds the head's toggle in bits (the dial held at 1) and its split (the dial
+held at its own mean: the per-byte part; the rest is one overall temperature), the dial's spread and saturation, its correlation with
+the entropy of the prediction before the dial and with the byte's share on the direction, and the head address's health.
 """
 from __future__ import annotations
 
@@ -95,8 +96,9 @@ HEAD_PARAMS = ("head.w_h.", "head.w_s.")              # the output layer's two r
 
 
 def head_decay_params(arm: dict) -> tuple:
-    """The weights an output-layer arm moves onto AdamW: the two readout matrices; a per-byte gain's table G beside them."""
-    return HEAD_PARAMS + (("head.w_g.",) if arm.get("head_mode") == "pergain" else ())
+    """The weights an output-layer arm moves onto AdamW: the two readout matrices. A dial's own weights (w_t; a per-byte gain's G)
+    stay on pure Adam without decay (the library routes them there)."""
+    return HEAD_PARAMS
 GAUGE_DOCS, GAUGE_CTX, IID_SEQS = 16, 2048, 24
 SCALES = np.array([16, 32, 64, 128, 256, 512, 1024])
 
@@ -302,13 +304,17 @@ def _head_reads(head, Hs, post, u, gen, eps):
 
 def _dial_reads(head, Hs, base, pu) -> dict:
     """The dial on the sampled post-norm states: its statistics (the library's dial_stats: the log scale's mean and spread, the
-    saturated fraction, the running mean, the weights' size), the correlation of its log scale with the prediction's entropy (a
-    dial reads confidence: positive against -entropy) and with the byte's share on the direction after the norm, and the head
-    address's health (codebook rank, usage, drift from birth). A per-byte gain's log scale is its mean over the bytes."""
+    saturated fraction, the running mean, the weights' size), the correlation of its log scale with the entropy of the prediction
+    before the dial (a dial reads confidence: positive against -entropy; the dialed prediction's entropy moves with the dial by
+    construction, so it is kept beside as dial_corr_entropy_dialed) and with the byte's share on the direction after the norm, and
+    the head address's health (codebook rank, usage, drift from birth). A per-byte gain's log scale is its mean over the bytes."""
     s = head.addr.signed(head.proj(Hs))
     lt = head.dial_log(s).float().mean(-1)                                   # (n,) the log scale per position
-    p = torch.softmax(base, dim=-1)
-    H = -(p * p.clamp_min(1e-12).log()).sum(-1) / math.log(2)               # the prediction's entropy per position (bits)
+
+    def entropy(logits):                                                     # the prediction's entropy per position (bits)
+        p = torch.softmax(logits.float(), dim=-1)
+        return -(p * p.clamp_min(1e-12).log()).sum(-1) / math.log(2)
+    H, Hd = entropy(head.readout(Hs)), entropy(base)                         # before the dial; after it
     share = (Hs @ pu) ** 2 / (Hs ** 2).sum(-1).clamp_min(1e-30)              # the byte's share on u after the norm
 
     def corr(a, b):
@@ -316,7 +322,7 @@ def _dial_reads(head, Hs, base, pu) -> dict:
         d = float(a.norm() * b.norm())
         return float((a * b).sum() / d) if d > 0 else float("nan")
     out = dict(head.dial_stats(Hs))
-    out.update({"dial_corr_entropy": corr(lt, -H), "dial_corr_share_u": corr(lt, share)})
+    out.update({"dial_corr_entropy": corr(lt, -H), "dial_corr_entropy_dialed": corr(lt, -Hd), "dial_corr_share_u": corr(lt, share)})
     hl = head.addr.health(head.proj(Hs))
     out.update({"addr_erank": hl["codebook_erank"], "addr_usage_ppl": hl.get("usage_ppl", float("nan")), "addr_drift": hl["drift_mean"]})
     return out
@@ -325,22 +331,56 @@ def _dial_reads(head, Hs, base, pu) -> dict:
 @torch.no_grad()
 def head_toggle(model, docs: list, batch: int = 4) -> dict:
     """Bits a byte on the gauge documents with the head's aleph read on and off (the plain head: its carrying read; a dial form: the
-    dial held at 1): their difference is the head's function in bits (positive = the read carries function)."""
+    dial held at 1): their difference is the head's function in bits (positive = the read carries function). A dial form adds a third
+    pass with the dial held at its own mean over these documents (the library's dial_hold): on vs held = the per-byte part (what the
+    dial does byte by byte), held vs off = one overall temperature (for dialplus also the carrying read); the two parts sum to the
+    toggle."""
     dev = next(model.parameters()).device
+    head = model.head
+    dial = bool(getattr(head, "mode", ""))
     was = model.training
     model.eval()
-    tot, n = {"on": 0.0, "off": 0.0}, 0
-    try:
+    tot, n = {"on": 0.0, "off": 0.0, "held": 0.0}, 0
+    acc = {"sum": None, "n": 0}
+
+    def grab(mod, args, out):                         # the dial's log scale over the on pass's positions (eval: the mean frozen)
+        lt = mod.dial_log(mod.addr.signed(mod.proj(args[0]))).float()
+        lt = lt.reshape(-1, lt.shape[-1])
+        acc["sum"] = lt.sum(0) if acc["sum"] is None else acc["sum"] + lt.sum(0)
+        acc["n"] += lt.shape[0]
+
+    def run(k, **kw):
+        nonlocal n
         for i0 in range(0, len(docs), batch):
             xb = torch.tensor(docs[i0:i0 + batch], dtype=torch.long, device=dev)
-            for k, off in (("on", False), ("off", True)):
-                _, loss = model(xb[:, :-1], targets=xb[:, 1:], disable_head_aleph=off)
-                tot[k] += float(loss) * xb.shape[0]
-            n += xb.shape[0]
+            _, loss = model(xb[:, :-1], targets=xb[:, 1:], **kw)
+            tot[k] += float(loss) * xb.shape[0]
+            if k == "on":
+                n += xb.shape[0]
+    try:
+        hook = head.register_forward_hook(grab) if dial else None
+        try:
+            run("on")
+        finally:
+            if hook is not None:
+                hook.remove()
+        run("off", disable_head_aleph=True)
+        if dial:
+            hold = acc["sum"] / acc["n"]                                     # (1,) the scalar dial; (V,) the per-byte gain
+            head.dial_hold = hold
+            try:
+                run("held")
+            finally:
+                head.dial_hold = None
     finally:
         model.train(was)
     on, off = tot["on"] / n / math.log(2), tot["off"] / n / math.log(2)
-    return {"bpb_docs": on, "bpb_docs_head_off": off, "toggle_bits": off - on}
+    out = {"bpb_docs": on, "bpb_docs_head_off": off, "toggle_bits": off - on}
+    if dial:
+        held = tot["held"] / n / math.log(2)
+        out.update({"bpb_docs_dial_held": held, "toggle_perbyte_bits": held - on, "toggle_global_bits": off - held,
+                    "dial_log_hold": float(hold.mean())})
+    return out
 
 
 def gauge_scalars(g: dict) -> dict:
@@ -456,6 +496,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
                   f"{sc['lastwrite/rank_last']:.0f}" + (f" | gain {g['fix']['gamma']:.3f}" if g.get("fix") else "")
                   + f" | output layer size {g['head']['w_h_fro']:.1f}, content loudness {g['head']['loudness']:.2f}"
                   + f" | head toggle {g['head']['toggle_bits']:+.4f} bits"
+                  + (f" ({g['head']['toggle_perbyte_bits']:+.4f} per byte)" if "toggle_perbyte_bits" in g["head"] else "")
                   + (f", dial spread {g['head']['dial_log_std']:.3f}, saturated {g['head']['dial_sat']:.2f}, corr(-H) "
                      f"{g['head']['dial_corr_entropy']:+.2f}" if "dial_log_std" in g["head"] else ""), flush=True)
 
@@ -522,10 +563,11 @@ def _at(rec: dict, step: int | None):
 
 
 def table(recs: dict, step: int | None = None) -> str:
-    """The arms side by side at a step (default each arm's last gauge): the direction, the size, the rank, the bits (against the plain
-    run of the arm's own body and start when its record is in recs, else c-bare-s3), the drift memory."""
+    """The arms side by side at a step (default each arm's last gauge): the direction, the size, the rank, the bits (against the arm's
+    reference run, else the plain run of its own body and start; '-' when that record is not in recs), the drift memory, the head's
+    toggle (its per-byte part in brackets where read) and the dial."""
     rows = ["| arm | fix | step | val bits a byte | vs its plain run | share on the last block's direction | after the norm | last bank write: "
-            "share / size | last block rank | exit H on random bytes | output layer size / content loudness | head toggle (bits) | "
+            "share / size | last block rank | exit H on random bytes | output layer size / content loudness | head toggle (per byte), bits | "
             "dial: spread / saturated / corr(-H) |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for n, r in recs.items():
@@ -534,7 +576,7 @@ def table(recs: dict, step: int | None = None) -> str:
             continue
         L = len(g["rank"])
         pn = r["arm"].get("ref") or PLAIN.get((r["arm"].get("craft"), r["arm"].get("seed")))   # a head arm reads against its reference run
-        base = recs.get(pn) if pn in recs else recs.get("c-bare-s3")
+        base = recs.get(pn) if pn else recs.get("c-bare-s3")
         b = _at(base, g["step"]) if base else None
         d = "-" if (b is None or g.get("val_bpb") is None or b.get("val_bpb") is None) else f"{g['val_bpb'] - b['val_bpb']:+.4f}"
         h = (r.get("exit_memory") or {}).get("exit") or {}
@@ -546,7 +588,8 @@ def table(recs: dict, step: int | None = None) -> str:
             fx = a.get("mode") or (f"head AdamW {a['head_wd']}" if "head_wd" in a else "none")
         hd = g.get("head")
         ho = "-" if not hd else f"{hd['w_h_fro']:.1f} / {hd['loudness']:.2f}"
-        ht = "-" if not hd or "toggle_bits" not in hd else f"{hd['toggle_bits']:+.4f}"
+        ht = "-" if not hd or "toggle_bits" not in hd else f"{hd['toggle_bits']:+.4f}" + (
+            f" ({hd['toggle_perbyte_bits']:+.4f})" if "toggle_perbyte_bits" in hd else "")
         dl = "-" if not hd or "dial_log_std" not in hd else f"{hd['dial_log_std']:.3f} / {hd['dial_sat']:.2f} / {hd['dial_corr_entropy']:+.2f}"
         rows.append(f"| {n} | {fx} | {g['step']:,} | {g['val_bpb'] if g.get('val_bpb') is not None else float('nan'):.4f} | {d} | "
                     f"{g['share_u'][str(L - 1)]:.3f} | {g['share_u']['nf']:.3f} | {g['bank']['share_own_mean']:.3f} / {g['bank']['size']:.3g} | "
