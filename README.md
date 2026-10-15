@@ -104,6 +104,8 @@ arms move the output layer's readout to AdamW at decay 0, 0.1 and 1.2 from the p
 read from the repo beside them)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_head_decay_lead_s4.ipynb)
 (the same change on the lead body and on Castor's second seed, each against its own plain run)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_lastfix_resume_pdc_bare.ipynb)
+(the lead body's plain screen run resumed from its saved state near step 4,000 to its end, the first screen's notebook with that arm alone)
 
 Then:
 
