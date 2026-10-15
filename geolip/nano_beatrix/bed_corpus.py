@@ -10,13 +10,36 @@ import time
 
 import numpy as np
 
+HELD_NAME = "heldout_fineweb_edu_head2048.jsonl"
+SKIP = 2048
+
+
+def write_heldout(out: str, ds=None) -> str:
+    """The reserved head (the first 2,048 rows of fineweb-edu sample-10BT, which every training stream skips: the library's val head) as
+    OUT/heldout_fineweb_edu_head2048.jsonl, one {"text"} a line, when absent (0.1.26: a gauge-only reader needs this file alone).
+    ds: the opened streaming split (build passes its own). -> the path."""
+    import json
+    held = os.path.join(out, HELD_NAME)
+    if os.path.exists(held):
+        return held
+    os.makedirs(out, exist_ok=True)
+    if ds is None:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        from datasets import load_dataset  # noqa: E402
+        ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+    tmp = held + ".part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for row in ds.select_columns(["text"]).take(SKIP):
+            f.write(json.dumps({"text": row["text"]}) + "\n")
+    os.replace(tmp, held)                              # whole or absent: a cut-off write never passes for the head
+    return held
+
 
 def build(out: str, target: int = 160_000_000) -> None:
     """Write the corpus (bed_corpus.bin + offsets) and, when absent, the held-out head into `out` (the bed's <out>/bed folder)."""
     os.environ.pop("HF_HUB_OFFLINE", None)
     OUT = out
     TARGET = int(target)
-    SKIP = 2048
     os.makedirs(OUT, exist_ok=True)
     T0 = time.time()
 
@@ -29,12 +52,9 @@ def build(out: str, target: int = 160_000_000) -> None:
 
     log(f"opening fineweb-edu sample-10BT (streaming), skipping the reserved head of {SKIP:,} rows; target {TARGET / 1e6:.0f} MB")
     ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
-    HELD = os.path.join(OUT, "heldout_fineweb_edu_head2048.jsonl")
+    HELD = os.path.join(OUT, HELD_NAME)
     if not os.path.exists(HELD):                       # the reserved head, written once beside the corpus (the trainer looks in OUT and OUT/bed)
-        import json
-        with open(HELD, "w", encoding="utf-8") as f:
-            for row in ds.select_columns(["text"]).take(SKIP):
-                f.write(json.dumps({"text": row["text"]}) + "\n")
+        write_heldout(OUT, ds)
         log(f"held-out head written: {SKIP:,} rows -> {HELD}")
     ds = ds.select_columns(["text"]).skip(SKIP)
     chunks, offs, total, n_docs, n_seen = [], [0], 0, 0, 0

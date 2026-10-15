@@ -18,6 +18,8 @@ Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=
 Framed rows: --frames=dyn [--sizes=32,128,256 --frame_records=4 --nest=0.3 --overlap=0.0 --ask=any --sized=1 --sliced=32] (bed_frames.py;
 --sized=1 names every frame's size in its open tag, --sliced=32 builds every larger frame as closed 32-byte slices; both off by default)
 [--gauge_asks=nested,overlap]: after the main gauge, the held-out fetch asked each named question strictly (the diet may ask any)
+[--gauge_only=1 --init=TAG]: a gauge read of a stored craft at this run's context and settings: no step, no training corpus, no weights
+written; the record (tag ending _gauge) carries gauge_only (0.1.26; the nano v1 crafts' interval checks, nano_v1.py)
 A pair run: [--pair=ARM2 --xc=one|mutual --xc_pos=value|all --xc_w=1 --xc_from=0 --pair_init=TAG2]: a second craft trains beside the
 first on the very same rows, each with its own Adam and the same schedule, plus a cross term: the KL from one craft's next-byte
 distribution (held fixed) to the other's, at the asked values' bytes or at every byte, a byte's term weighted like its own target; "one":
@@ -52,6 +54,10 @@ try:
     from . import bed_pair  # noqa: E402  (the package)
 except ImportError:                                      # run as a file: the folder is on the path (above)
     import bed_pair  # noqa: E402
+try:
+    from .bodies import craft_cfg as body_cfg  # noqa: E402  (the package; 0.1.26: the arm table lives in bodies.py)
+except ImportError:                                      # run as a file: the folder is on the path (above)
+    from bodies import craft_cfg as body_cfg  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -106,6 +112,13 @@ BED = os.path.join(OUT, "bed")
 os.makedirs(BED, exist_ok=True)
 TAG = run_tag(ARGS)        # the record and weights names: one function with the runner's resume (names.run_tag)
 INIT = ARGS.get("init", "")        # a previous run's weights folder under DIR/bed: its config.json sets the craft, the context may change
+# 0.1.26: a GAUGE READ of a stored craft (the nano v1 crafts' interval checks, nano_v1.py): no training step; every gauge of the record
+# runs on the --init weights at this run's context and settings; the training corpus is not read, no weights are written (the record's
+# weights field names the init's), the record carries gauge_only (its tag ends _gauge)
+GAUGE_ONLY = ARGS.get("gauge_only", "0") == "1"
+if GAUGE_ONLY:
+    assert INIT and "pair" not in ARGS and ARGS.get("steps", "0") == "0", "--gauge_only=1 reads one stored craft (--init), with no steps"
+    STEPS = 0
 # 0.1.24: the pair run (module docstring). The partner is built from the run's seed like this arm, so with --xc_w=0 each craft starts,
 # reads its rows and trains exactly as it would alone: the parity the pair's comparisons with solo runs rest on.
 PAIR = ARGS.get("pair", "")
@@ -133,39 +146,9 @@ def log(msg):
 
 # ------------------------------------------------------------------ the arms
 def craft_cfg(arm: str) -> AlephLMConfig:
-    attn, bank = arm.split("-")
-    L = 6
-    base = dict(name=f"bed-{arm}", d_model=256, n_layers=L, n_heads=8, context=CTX, hub_layers=(), hub_K=32, hub_D=16, tau=0.1,
-                bank_experts=7, bank_ff=256, head_K=64, head_D=16, gate_init=-3.0, hub_chunk=128)
-    A = {"sm": {}, "smr": dict(attn_rotary=True), "smrn": dict(attn_rotary=True, pos_table=False),
-         "hub": dict(hub_layers=tuple(range(L))), "hubr": dict(hub_layers=tuple(range(L)), hub_rotary=True),
-         "hubrn": dict(hub_layers=tuple(range(L)), hub_rotary=True, pos_table=False),
-         "hubd": dict(hub_layers=tuple(range(L)), hub_dual=True),
-         "alt": dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True),
-         "altn": dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_rotary=True)}
-    A["castor"] = A["smr"]            # the twins' names: Castor = the rotary softmax body (the mortal twin, the growing memory)
-    A["pollux"] = A["altn"]           # Pollux = the all-rotary alternating body (the immortal twin, the constant decode memory)
-    # the dual-hub bodies: each hub keeps two address masses, one rotary (sharp near) and one plain (distance-free, far reach); with the
-    # dense planted records the dual hub recalled the full value at every distance where a rotary-only hub lost the far records
-    A["hubdb"] = dict(A["hubd"], hub_K=64, hub_D=32, hub_const=2)        # six dual hubs on the bigger address (two books of 64 in 32)
-    A["altd"] = dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_dual=True)   # Pollux's layout with dual hubs
-    A["d5s1"] = dict(hub_layers=(0, 1, 2, 4, 5), attn_rotary=True, hub_dual=True)        # five dual hubs, one rotary softmax block (3)
-    A["d4s2"] = dict(hub_layers=(0, 2, 4, 5), attn_rotary=True, hub_dual=True)           # four dual hubs, two rotary softmax blocks (1, 3)
-    # Canon layers (a causal kernel-4 convolution with a residual on each block's mixer and bank inputs, born zero; arXiv 2512.17351)
-    A["altdc"] = dict(A["altd"], canon="AC")
-    A["hubdc"] = dict(A["hubd"], canon="AC")
-    A["polluxc"] = dict(A["altn"], canon="AC")
-    Bk = {"free": "", "fixed": "fixed", "both": "add"}
-    assert attn in A and bank in Bk, f"unknown arm {arm!r}: attention in {sorted(A)}, bank in {sorted(Bk)}"
-    extra = {}
-    if "rotary_base" in ARGS:
-        extra["rotary_base"] = float(ARGS["rotary_base"])
-    if "hub_rotary_frac" in ARGS:
-        extra["hub_rotary_frac"] = float(ARGS["hub_rotary_frac"])
-    for k in ("hub_K", "hub_D", "hub_const"):          # the hub's address size (the capacity question)
-        if k in ARGS:
-            extra[k] = int(ARGS[k])
-    return AlephLMConfig(**{**base, **A[attn], **extra}, bank_byte_table=Bk[bank])
+    """The arm's config at this run's context: the table is bodies.py's (0.1.26; the nano v1 crafts build from it too); the run's
+    hub_K / hub_D / hub_const / rotary_base / hub_rotary_frac override the body's (the capacity screens)."""
+    return body_cfg(arm, CTX, ARGS)
 
 
 # ------------------------------------------------------------------ the planted record
@@ -402,10 +385,14 @@ def frame_row(rng, src, strict=False, ask_as=None):
 
 # ------------------------------------------------------------------ data
 N_REC = int(ARGS.get("records", "1"))        # records per planted row (1 = plant(); >1 = compose_row, the dense recon regime)
-corpus = np.fromfile(os.path.join(BED, "bed_corpus.bin"), dtype=np.uint8)
-offs = np.load(os.path.join(BED, "bed_corpus_offsets.npy"))
-packed = np.insert(corpus, offs[1:], np.uint8(DOC))           # DOC after every document, as the packer does
-log(f"corpus {len(corpus) / 1e6:.1f} MB, {len(offs) - 1:,} documents; packed {len(packed) / 1e6:.1f} MB")
+if GAUGE_ONLY:                                                # a gauge read draws no training row (the held-out file only)
+    corpus = offs = packed = None
+    log("gauge only: the training corpus is not read")
+else:
+    corpus = np.fromfile(os.path.join(BED, "bed_corpus.bin"), dtype=np.uint8)
+    offs = np.load(os.path.join(BED, "bed_corpus_offsets.npy"))
+    packed = np.insert(corpus, offs[1:], np.uint8(DOC))           # DOC after every document, as the packer does
+    log(f"corpus {len(corpus) / 1e6:.1f} MB, {len(offs) - 1:,} documents; packed {len(packed) / 1e6:.1f} MB")
 heldout = []
 HELD = [p for p in (os.path.join(OUT, "heldout_fineweb_edu_head2048.jsonl"), os.path.join(BED, "heldout_fineweb_edu_head2048.jsonl")) if os.path.exists(p)]
 assert HELD, f"no heldout_fineweb_edu_head2048.jsonl in {OUT} or {BED} (bed_corpus.py writes it beside the corpus)"
@@ -538,8 +525,8 @@ t_train = time.time()
 for _c in crafts:
     _c.model.train()
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
-_pool = ThreadPoolExecutor(max_workers=1) if PREFETCH else None       # one worker, submitted in order: the planted census stays exact
-_next = _pool.submit(batch, 0) if PREFETCH else None
+_pool = ThreadPoolExecutor(max_workers=1) if PREFETCH and STEPS else None   # one worker, submitted in order: the planted census stays exact
+_next = _pool.submit(batch, 0) if _pool is not None else None
 for step in range(STEPS):
     for _c in crafts:
         for g in _c.opt.param_groups:
@@ -855,15 +842,16 @@ def finish(c: Craft) -> tuple:
         if formation["failure"]:
             log(f"FLAG formation failure: the near band sits at {'-' if nb is None else f'{nb:.2f}'} bits against the uniform {formation['uniform_bits']:.2f}"
                 f" ({REGISTER}) and the whole value reads 0 in every lookup group; the record carries it, the run ends normally")
-    # the weights + the record
-    wdir = os.path.join(BED, c.tag)
-    os.makedirs(wdir, exist_ok=True)
-    from safetensors.torch import save_file
-    save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, os.path.join(wdir, "model.safetensors"))
-    json.dump(c.cfg.to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+    # the weights + the record (a gauge read writes no weights: they are the init's, unchanged)
+    wdir = os.path.join(BED, c.init if GAUGE_ONLY else c.tag)
+    if not GAUGE_ONLY:
+        os.makedirs(wdir, exist_ok=True)
+        from safetensors.torch import save_file
+        save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, os.path.join(wdir, "model.safetensors"))
+        json.dump(c.cfg.to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
-             config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=STEPS * MB * CTX / train_s,
-             final_loss_ema=c.ema, final_bpb_ema=c.ema / LN2, heldout_bpb=bits, heldout_bpb_by_class=by_cls, heldout_bpb_by_position=by_pos, dispatch_off_bpb=bits_off,
+             config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),
+             final_loss_ema=c.ema, final_bpb_ema=(None if c.ema is None else c.ema / LN2), heldout_bpb=bits, heldout_bpb_by_class=by_cls, heldout_bpb_by_position=by_pos, dispatch_off_bpb=bits_off,
              records_planted_mean=planted_mean, cues=len(ROW_CUES),
              dispatch_off_by_class=by_cls_off, fetch=fetch_res, dispatch_census=census, curve=c.curve, wall_s=time.time() - T0,
              frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch, fetch_by_frame_bank_off=frame_fetch_bank_off, canary=canary, formation=formation, plain_collapse=collapse,
@@ -872,6 +860,8 @@ def finish(c: Craft) -> tuple:
         R["stage"] = ARGS["stage"]           # 0.1.22: a curriculum block's stage name (its tag carries it in place of the starting craft's)
     if GAUGE_ASKS:
         R["fetch_by_frame_asks"] = frame_fetch_asks   # 0.1.23: {ask: the fetch groups asked strictly, or None when no plan carried the feature}
+    if GAUGE_ONLY:
+        R["gauge_only"] = True                       # 0.1.26: a gauge read of the init's weights (no step; no weights written)
     return R, os.path.join(BED, f"bed_{c.tag}.json")
 
 

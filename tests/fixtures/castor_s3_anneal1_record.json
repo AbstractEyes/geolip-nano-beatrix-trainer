@@ -1,0 +1,508 @@
+{
+ "arm": "castor-both",
+ "seed": 3,
+ "smoke": false,
+ "steps": 4000,
+ "micro_batch": 8,
+ "ctx": 4096,
+ "lr": 0.001,
+ "warmup": 100,
+ "p_plant": 0.75,
+ "records": 1,
+ "params": 9215057,
+ "init": "castor-both_s3_L4000_ctx4096_frdyn_cap_mode_sized_sl32_sz32-128-256-512-1024_r16_n60_o30_askany_p75_stB5",
+ "config": {
+  "name": "bed-castor-both",
+  "d_model": 256,
+  "n_layers": 6,
+  "n_heads": 8,
+  "context": 4096,
+  "vocab_size": 256,
+  "tokenizer": "byte-trigram",
+  "hub_layers": [],
+  "hub_K": 32,
+  "hub_D": 16,
+  "tau": 0.1,
+  "bank_experts": 7,
+  "bank_ff": 256,
+  "head_K": 64,
+  "head_D": 16,
+  "gate_init": -3.0,
+  "tie_embeddings": false,
+  "hub_chunk": 128,
+  "hub_const": 1,
+  "hub_ckpt": 0,
+  "fusion": null,
+  "qk_norm": "",
+  "attn_fp32": false,
+  "attn_kernel": "sdpa",
+  "lookup_arm_sites": [],
+  "lookup_arm_depth": 1,
+  "attn_rotary": true,
+  "hub_rotary": false,
+  "rotary_base": 10000.0,
+  "hub_rotary_frac": 1.0,
+  "hub_dual": false,
+  "pos_table": true,
+  "bank_byte_table": "add",
+  "bank_last_fix": "",
+  "fix_rho": 0.0625,
+  "fix_warm": 200,
+  "fix_clamp": [
+   0.25,
+   4.0
+  ],
+  "canon": ""
+ },
+ "tokens": 131072000,
+ "train_minutes": 2.4467873613039655,
+ "tok_per_s": 892816.9925518705,
+ "final_loss_ema": 0.962187253536258,
+ "final_bpb_ema": 1.3881427790833312,
+ "heldout_bpb": 1.3869986851342722,
+ "heldout_bpb_by_class": {
+  "lower": 1.3884592301438439,
+  "upper": 4.57315628361537,
+  "digit": 3.2990607469417563,
+  "space": 0.37301202043212595,
+  "newline": 2.170526074256949,
+  "punct": 3.0503280529390544,
+  "high": 2.143352323414584
+ },
+ "heldout_bpb_by_position": {
+  "row": {
+   "0-64": 2.084518932164437,
+   "64-256": 1.460003189629274,
+   "256-1024": 1.3640589254278412,
+   "1024-2048": 1.3623684021091658,
+   "2048-4096": 1.3792745792435313,
+   "4096+": null
+  },
+  "row_n": {
+   "0-64": 8192,
+   "64-256": 24576,
+   "256-1024": 98304,
+   "1024-2048": 131072,
+   "2048-4096": 262144,
+   "4096+": 0
+  }
+ },
+ "dispatch_off_bpb": 3.6811562580729174,
+ "records_planted_mean": 0.75153125,
+ "cues": 5,
+ "dispatch_off_by_class": {
+  "lower": 3.7382315529914045,
+  "upper": 8.599866572072438,
+  "digit": 8.568861090091074,
+  "space": 1.8012454010410108,
+  "newline": 5.303417359184162,
+  "punct": 4.793931243251177,
+  "high": 8.785436369559859
+ },
+ "fetch": {
+  "64": {
+   "n": 64,
+   "value_bits": 19.316549481322376,
+   "first_byte": 0.203125,
+   "all_five": 0.03125
+  },
+  "256": {
+   "n": 64,
+   "value_bits": 22.297231871524104,
+   "first_byte": 0.03125,
+   "all_five": 0.0
+  },
+  "512": {
+   "n": 64,
+   "value_bits": 30.09238888300675,
+   "first_byte": 0.015625,
+   "all_five": 0.0
+  },
+  "896": {
+   "n": 64,
+   "value_bits": 46.011113903273156,
+   "first_byte": 0.03125,
+   "all_five": 0.0
+  }
+ },
+ "wall_s": 153.78626370429993,
+ "frames": {
+  "mode": "dyn",
+  "register": "caption",
+  "tags": "mode",
+  "n_lookup": 2,
+  "n_bulk": 0,
+  "facts": 0,
+  "ask": "any",
+  "sizes": [
+   32,
+   128,
+   256,
+   512,
+   1024
+  ],
+  "frame_records": 4,
+  "nest": 0.3,
+  "overlap": 0.0,
+  "sized": true,
+  "sliced": 32
+ },
+ "heldout_bits_by_frame": {
+  "by_kind_size_segment": {
+   "data/32/open": {
+    "bits": 0.11192621669761613,
+    "n": 6668
+   },
+   "data/32/head": {
+    "bits": 1.4819180084935617,
+    "n": 26672
+   },
+   "data/32/body": {
+    "bits": 1.763751972970882,
+    "n": 70014
+   },
+   "data/32/close": {
+    "bits": 0.0002655364380466061,
+    "n": 3334
+   },
+   "data/256/open": {
+    "bits": 4.247559977107996,
+    "n": 126
+   },
+   "data/256/close": {
+    "bits": 6.73866374337155e-05,
+    "n": 63
+   },
+   "think/32/open": {
+    "bits": 0.08968049868104842,
+    "n": 2424
+   },
+   "think/32/head": {
+    "bits": 1.5530094437905444,
+    "n": 9696
+   },
+   "think/32/body": {
+    "bits": 1.4443845615951776,
+    "n": 25452
+   },
+   "think/32/close": {
+    "bits": 8.696721861770423e-05,
+    "n": 1212
+   },
+   "think/1024/open": {
+    "bits": 5.241501129665011,
+    "n": 38
+   },
+   "think/1024/close": {
+    "bits": 4.372072281600049e-05,
+    "n": 19
+   },
+   "data/512/open": {
+    "bits": 4.1572087603223835,
+    "n": 102
+   },
+   "data/512/close": {
+    "bits": 0.00014726092413952272,
+    "n": 51
+   },
+   "think/512/open": {
+    "bits": 5.269743024544661,
+    "n": 46
+   },
+   "think/512/close": {
+    "bits": 0.00044861241717306517,
+    "n": 23
+   },
+   "data/128/open": {
+    "bits": 4.23409659404829,
+    "n": 104
+   },
+   "data/128/close": {
+    "bits": 0.00200838965373129,
+    "n": 52
+   },
+   "think/256/open": {
+    "bits": 5.013461168054922,
+    "n": 50
+   },
+   "think/256/close": {
+    "bits": 4.05183163057365e-06,
+    "n": 25
+   },
+   "data/1024/open": {
+    "bits": 4.2751100157285284,
+    "n": 102
+   },
+   "data/1024/close": {
+    "bits": 1.9373083096773453e-05,
+    "n": 51
+   },
+   "think/128/open": {
+    "bits": 5.031696359954048,
+    "n": 58
+   },
+   "think/128/close": {
+    "bits": 5.836575864052845e-05,
+    "n": 29
+   }
+  },
+  "by_kind_depth": {
+   "data/depth1": {
+    "bits": 2.4275998457409207,
+    "n": 3051
+   },
+   "data/depth2": {
+    "bits": 1.5168514329376412,
+    "n": 104288
+   },
+   "think/depth1": {
+    "bits": 2.350658274634075,
+    "n": 896
+   },
+   "think/depth2": {
+    "bits": 1.3337140129854312,
+    "n": 38176
+   }
+  },
+  "outside": {
+   "bits": 1.3906383381097553,
+   "n": 640021
+  }
+ },
+ "fetch_by_frame": {
+  "data/256/depth0": {
+   "n": 39,
+   "value_bits": 0.9132866721679542,
+   "first_byte": 1.0,
+   "full_value": 0.8717948717948718,
+   "dist": 478.56410256410254
+  },
+  "data/512/depth0": {
+   "n": 30,
+   "value_bits": 2.3406909757070613,
+   "first_byte": 0.9666666666666667,
+   "full_value": 0.7,
+   "dist": 793.2
+  },
+  "data/64/depth1": {
+   "n": 3,
+   "value_bits": 0.03678383321778277,
+   "first_byte": 1.0,
+   "full_value": 1.0,
+   "dist": 332.6666666666667
+  },
+  "data/128/depth0": {
+   "n": 33,
+   "value_bits": 0.5567141883219136,
+   "first_byte": 1.0,
+   "full_value": 0.8787878787878788,
+   "dist": 233.93939393939394
+  },
+  "data/32/depth1": {
+   "n": 4,
+   "value_bits": 0.008134582546292478,
+   "first_byte": 1.0,
+   "full_value": 1.0,
+   "dist": 203.25
+  },
+  "data/32/depth0": {
+   "n": 40,
+   "value_bits": 0.7560270097592309,
+   "first_byte": 0.975,
+   "full_value": 0.875,
+   "dist": 133.05
+  },
+  "data/128/depth1": {
+   "n": 5,
+   "value_bits": 0.17380833967983797,
+   "first_byte": 1.0,
+   "full_value": 1.0,
+   "dist": 496.8
+  },
+  "data/1024/depth0": {
+   "n": 33,
+   "value_bits": 2.8068429495359757,
+   "first_byte": 1.0,
+   "full_value": 0.7575757575757576,
+   "dist": 1198.5151515151515
+  },
+  "data/256/depth1": {
+   "n": 5,
+   "value_bits": 0.024984130772671854,
+   "first_byte": 1.0,
+   "full_value": 1.0,
+   "dist": 588.6
+  }
+ },
+ "fetch_by_frame_bank_off": {
+  "data/256/depth0": {
+   "n": 39,
+   "value_bits": 41.60262324661865,
+   "first_byte": 0.02564102564102564,
+   "full_value": 0.0,
+   "dist": 478.56410256410254
+  },
+  "data/512/depth0": {
+   "n": 30,
+   "value_bits": 46.735307776718706,
+   "first_byte": 0.06666666666666667,
+   "full_value": 0.0,
+   "dist": 793.2
+  },
+  "data/64/depth1": {
+   "n": 3,
+   "value_bits": 47.97347444506783,
+   "first_byte": 0.0,
+   "full_value": 0.0,
+   "dist": 332.6666666666667
+  },
+  "data/128/depth0": {
+   "n": 33,
+   "value_bits": 37.59992497295816,
+   "first_byte": 0.030303030303030304,
+   "full_value": 0.0,
+   "dist": 233.93939393939394
+  },
+  "data/32/depth1": {
+   "n": 4,
+   "value_bits": 45.410369990668144,
+   "first_byte": 0.0,
+   "full_value": 0.0,
+   "dist": 203.25
+  },
+  "data/32/depth0": {
+   "n": 40,
+   "value_bits": 42.18383622332772,
+   "first_byte": 0.05,
+   "full_value": 0.0,
+   "dist": 133.05
+  },
+  "data/128/depth1": {
+   "n": 5,
+   "value_bits": 47.37006372934925,
+   "first_byte": 0.0,
+   "full_value": 0.0,
+   "dist": 496.8
+  },
+  "data/1024/depth0": {
+   "n": 33,
+   "value_bits": 48.21401375830476,
+   "first_byte": 0.0,
+   "full_value": 0.0,
+   "dist": 1198.5151515151515
+  },
+  "data/256/depth1": {
+   "n": 5,
+   "value_bits": 47.82791511695949,
+   "first_byte": 0.2,
+   "full_value": 0.0,
+   "dist": 588.6
+  }
+ },
+ "canary": {
+  "prefix_bytes": 5,
+  "frame_bytes": 32,
+  "frame_records": 1,
+  "register": "caption",
+  "scheme": "mode",
+  "sized": true,
+  "plain": {
+   "bits": 1.386998695883188,
+   "by_position": {
+    "0-64": 2.084518932164437,
+    "64-256": 1.460003189629274,
+    "256-1024": 1.3640589254278412,
+    "1024-2048": 1.3623684021091658,
+    "2048-4096": 1.3792745792435313,
+    "4096+": null
+   }
+  },
+  "tag": {
+   "bits": 1.3856607568508006,
+   "by_position": {
+    "0-64": 1.8664910703334865,
+    "64-256": 1.5117329143177274,
+    "256-1024": 1.3626569555024342,
+    "1024-2048": 1.3619842772006707,
+    "2048-4096": 1.379280204194057,
+    "4096+": null
+   }
+  },
+  "frame": {
+   "bits": 1.4038411503626649,
+   "by_position": {
+    "0-64": 2.808736411809854,
+    "64-256": 1.5728512204471055,
+    "256-1024": 1.3678280777965337,
+    "1024-2048": 1.3602720643598778,
+    "2048-4096": 1.3793829061704943,
+    "4096+": null
+   }
+  }
+ },
+ "formation": {
+  "register": "caption",
+  "uniform_bits": 4.700439718141092,
+  "margin": 0.2,
+  "near_band_value_bits_at_end": 0.08510155610442027,
+  "first_step_under": 101,
+  "at_the_rate": false,
+  "whole_value_zero_everywhere": false,
+  "failure": false,
+  "formed": true,
+  "floor": 0.05,
+  "min_trials": 8,
+  "groups_judged": 5,
+  "near_band_basis": "the last 400 steps"
+ },
+ "plain_collapse": {
+  "flag": false,
+  "threshold": 2.5,
+  "windows_over": [],
+  "worst_window": "64-256",
+  "worst_bits": 1.460003189629274
+ },
+ "weights": "bed/castor-both_s3_L4000_ctx4096_frdyn_cap_mode_sized_sl32_sz32-128-256-512-1024_r4_n30_o0_askany_p75_stanneal1/model.safetensors",
+ "stage": "anneal1",
+ "fetch_by_frame_asks": {
+  "nested": {
+   "data/256/depth1": {
+    "n": 53,
+    "value_bits": 1.8415692006486157,
+    "first_byte": 0.9622641509433962,
+    "full_value": 0.7735849056603774,
+    "dist": 746.7924528301887
+   },
+   "data/128/depth1": {
+    "n": 55,
+    "value_bits": 1.7361787913845694,
+    "first_byte": 0.9090909090909091,
+    "full_value": 0.7272727272727273,
+    "dist": 607.0181818181818
+   },
+   "data/32/depth1": {
+    "n": 37,
+    "value_bits": 0.7768480249637086,
+    "first_byte": 0.972972972972973,
+    "full_value": 0.8648648648648649,
+    "dist": 412.43243243243245
+   },
+   "data/64/depth1": {
+    "n": 47,
+    "value_bits": 0.7826308606346101,
+    "first_byte": 0.9787234042553191,
+    "full_value": 0.851063829787234,
+    "dist": 462.6808510638298
+   }
+  },
+  "overlap": {
+   "data/32/depth0": {
+    "n": 192,
+    "value_bits": 4.630920291493959,
+    "first_byte": 0.7239583333333334,
+    "full_value": 0.5625,
+    "dist": 963.4947916666666
+   }
+  }
+ }
+}

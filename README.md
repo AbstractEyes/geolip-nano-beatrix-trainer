@@ -18,6 +18,8 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/bed_runner.py` | runs a grid of arms in sequence on one card (the launch point for a rented card): the grid expands from comma lists, finished runs are remembered so a restart resumes, a stop file ends the grid between runs, each finished run can ship its record and weights to the Hub repo. From Python, `run(spec, out, push, parallel=N)` streams every run with a grid bar and a step bar per running child fed by the trainer's own progress lines; `parallel` shares the card between runs (a 9M craft takes ~5 GB a run) |
 | `geolip/nano_beatrix/bed_curriculum.py` | a curriculum train as chains of continuation blocks: each chain (an arm and a seed) goes through the stages in order, a stage runs in blocks, and each block's record decides by the stage's rule whether the stage takes another block or the chain moves on (the copy formed; the far reads still improving); the chains advance in rounds, one block at a time on the card; a restart replays the decisions from the records on disk or on the Hub; `run(STAGES, BASE, arms, seeds, out, push)` and `report(...)` (the boundary table) |
 | `geolip/nano_beatrix/bed_pair.py` | how alike two crafts are on the same held-out rows: the KL between their next-byte distributions each way, how often their greedy next bytes agree, the debiased linear CKA of their residual streams block by block; the helpers that read a stored pair the same way (`load_craft`, `heldout_rows`, `solo_twins`) and the pair notebook's table (`report`) |
+| `geolip/nano_beatrix/bodies.py` | the bed's bodies as one table: an arm name to the library config of its craft at a given context (`craft_cfg(arm, ctx)`); `bed_train` and `nano_v1` both build from it |
+| `geolip/nano_beatrix/nano_v1.py` | the nano v1 crafts: four bodies, each from the birth of its strongest bed run, trained through Beatrix 2s's diet (16.1B bytes, thirteen phases) by the library's own trainer, round-robin by phase, with the bed's gauges (`bed_train --gauge_only`) read into the same TensorBoard every 4,000 steps and at every phase boundary; the training streams composed in child processes, a few batches ahead, with the library stream's exact batches and resume positions; `run(out, hf_token, ...)`, `bench(...)`, `table(...)` |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
@@ -79,6 +81,14 @@ twins on seed 3). C2 prices every arm at each stage's rows on the card in hand a
 left; C4 renders each phase's boundary table:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_canon_train.ipynb)
 
+The nano v1 crafts, `colab/nano_v1_2s.ipynb`: four bodies (Pollux's layout with dual hubs and Canon layers, Pollux with Canon layers,
+Pollux's layout with dual hubs, and Castor as the baseline), each started from exactly the weights its strongest bed run started from,
+trained through Beatrix 2s's diet with the library's trainer and its curves (the health census, the full evals with the bits by
+position band) plus the bed's frame, scaling and window gauges at intervals. C2 benches every craft's step on the card in hand, picks
+the micro-batch shape and prints the length; C3 trains round-robin by phase and resumes from the repo; C4 shows the curves. The crafts'
+records go to [AbstractPhil/alephllm-nano-castor-pollux](https://huggingface.co/AbstractPhil/alephllm-nano-castor-pollux):
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2s.ipynb)
+
 Then:
 
 ```bash
@@ -93,6 +103,9 @@ e = 512, f = 1,024, g = 2,048), so the close is countable; `--sliced=32` (with `
 closed 32-byte slices back to back between its own open tag and END. Both are off by default, and the rows are then those of 0.1.20.
 `--gauge_asks=nested,overlap` asks the nested and the redefined-key questions strictly on their own held-out rows after the main gauge,
 whatever the training rows ask (`fetch_by_frame_asks` in the record).
+`--gauge_only=1 --init=<a stored craft's folder>` reads a stored craft with every gauge of the run's settings and trains nothing: no
+training corpus, no weights written; the record's tag ends `_gauge` and the record carries `gauge_only`. A gauge read of a stored block
+reproduces that block's record (448 of 451 values exactly, the rest within 5e-16).
 
 A pair run: `--pair=pollux-both [--xc=one|mutual --xc_pos=value|all --xc_w=1 --xc_from=0 --pair_init=<the partner's starting craft>]`
 trains a second craft beside `--arm` on the very same rows, each with its own Adam and the same schedule, plus a cross term: at the
@@ -117,6 +130,16 @@ pytest -q
 The frame composer's tests run on the CPU without a model.
 
 ## Status
+
+0.1.26 (2026-10-14): the nano v1 crafts. `nano_v1` trains four bodies from their bed births through Beatrix 2s's diet with the
+library's trainer (`colab/nano_v1_2s.ipynb`): the 2s recipe (Muon 0.02 on the trunk's matrices, Adam 0.0003 on the rest, 200 warmup
+steps then flat, clip 1.0, 262,144 bytes a step, 61,422 steps), round-robin by phase, the bed's gauges at intervals into the same
+TensorBoard. Each craft's start equals its bed run's start bit for bit (the seed, then the craft built at 1,024, the position rows past
+1,024 zero), checked against the stored configs and parameter counts. The arm table moved to `bodies.py` (the old and the new
+`craft_cfg` agree on all 432 configs: every attention form, bank form and extra at both contexts). `bed_train --gauge_only=1` reads a
+stored craft without training. The library pin moves to alephllm `b024c93` (`feat/canon-layers`, rc9: the model census reads dual
+hubs and passes the byte classes to a bank with the byte table, so the library trainer's health readout and full eval run on these
+bodies; every older form reads as before).
 
 0.1.25 (2026-10-14): the Canon bodies' notebook, and the arms added since 0.1.24. `colab/nano_canon_train.ipynb` runs the v4
 train's curriculum in phases (each phase a curriculum over its own chains, run to its end before the next): the twins on seed 4, both

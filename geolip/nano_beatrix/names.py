@@ -30,7 +30,8 @@ def run_tag(args: dict) -> str:
     tag ran to 259 characters); the record keeps the starting craft (init). The stage name must be unique within its chain."""
     arm, seed = args["arm"], int(args.get("seed", "1"))
     smoke = args.get("smoke", "0") == "1"
-    steps = int(args.get("steps", "20" if smoke else "3000"))
+    gauge = args.get("gauge_only", "0") == "1"                # 0.1.26: a gauge read of a stored craft (no step): the tag ends _gauge
+    steps = 0 if gauge else int(args.get("steps", "20" if smoke else "3000"))
     ctx = int(args.get("ctx", "1024"))
     p_plant = float(args.get("plant", "0.25"))
     frames = args.get("frames", "")
@@ -63,4 +64,5 @@ def run_tag(args: dict) -> str:
             + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "") + hp
             + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr + pr
             + (f"_st{args['stage']}" if args.get("stage") else                              # 0.1.22: a curriculum block names its stage
-               (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else "")))  # a continued run names its starting craft
+               (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else ""))   # a continued run names its starting craft
+            + ("_gauge" if gauge else ""))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geolip-nano-beatrix-trainer"
-version = "0.1.25"
+version = "0.1.26"
 description = "The nano Beatrix trainer: small byte-level aleph crafts trained from birth to measure what they hold (planted records, frames, byte experts) and how fast they train"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,7 +16,7 @@ dependencies = [
   "safetensors==0.8.0",
   "huggingface_hub==1.31.0",
   "tqdm==4.70.1",
-  "geolip-alephllm @ git+https://github.com/AbstractEyes/alephllm@d26b40d",
+  "geolip-alephllm @ git+https://github.com/AbstractEyes/alephllm@b024c93",
 ]
 
 [project.optional-dependencies]
