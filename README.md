@@ -118,6 +118,12 @@ block's dominant direction at a quarter of its output in the screen. The same fo
 records go to the same repo under the `.1` names, beside the v1 folders, which stay as they were:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_1.ipynb)
 
+Before and after the frames, `colab/nano_v1_1_frames.ipynb`: the 2s diet holds none of the nano bed's framed rows, so each finished
+v1.1 craft continues from its exact final state for one more phase of 1.0 billion bytes, framed three rows in four (`-fr`), beside the
+same continuation with every row plain (`-ct`); the two arms read the same text row for row, and each starts with a read of the v1.1
+craft's end (the before):
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_1_frames.ipynb)
+
 The deciding tests again with AdamW, `colab/nano_bed_adamw.ipynb`: the screen showed the output layer's growth drives the last block's
 big direction, and every test that chose the twins' bodies and frames ran on the bed's pure Adam. The notebook runs them again with AdamW
 (decoupled decay 0.1 on every weight that maps the stream; the rest at decay 0) in seven parts that share no run, so each card takes
@@ -168,6 +174,19 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.35 (2026-10-15): the frames continuation (`frames_data.py`, `nano_v1.CRAFTS_CONT`, `colab/nano_v1_1_frames.ipynb`): each nano
+v1.1 craft continued from its last boundary (the exact training state: fp32 weights and both optimizers, placed at step 61,422) through
+one appended phase of 1.0 billion bytes, framed three rows in four with the nano bed's framed rows (the sliced frame at 32 bytes, eight
+records a frame, the caption register, frames up to 1,024 bytes, nesting 0.6, a key defined twice in 0.3 of the rows), beside the same
+continuation with every row plain (the control). The two arms draw every row from the same corpus position with the same seed, so they
+read the same text row for row and differ only by the frames; a row is exactly 4,096 bytes, one packed block with its document byte,
+and a resumed stream skips its consumed rows without composing them. The crafts `nano-<body>-v1.1-fr` and `nano-<body>-v1.1-ct`;
+each one's first boundary row is the source craft's end, read by the same gauges (the "before"). Tests: the framed rows equal the bed's
+own (`bed_train.draw_plan` / `frame_row` lifted from the file, 60 seeds), one row a block, the paired text, the resume without
+composition, the fineweb-edu holdout, registering only adds names, the eight crafts and their plans, the exact start (the real trainer
+on the CPU: weights and both optimizers bit for bit). The library at rc12 8904037 computes one v1.1 step of every nano body bit for bit
+as rc10 186434b does (loss, gradients, the weights after the step), so the continuation of a v1.1 run trained under rc10 is exact.
 
 0.1.34 (2026-10-15): the head's dial screen (`lastfix_screen.py`'s head arms, `colab/nano_head_dial.ipynb`; the library at rc12
 8904037, `AlephLMConfig.head_mode`). With the readout on AdamW the output layer's aleph read stays at its birth (its toggle +0.0003 /

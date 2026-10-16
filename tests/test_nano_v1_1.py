@@ -13,7 +13,7 @@ V11 = list(nano_v1.CRAFTS_V11)
 
 
 def test_the_v11_crafts_are_the_v1_crafts_under_a_new_name():
-    assert V11 == [f"{n}.1" for n in V1] and set(nano_v1.ALL) == set(V1) | set(V11)
+    assert V11 == [f"{n}.1" for n in V1] and set(nano_v1.ALL) == set(V1) | set(V11) | set(nano_v1.CRAFTS_CONT)   # 0.1.35: the continuations
     for n in V1:
         a, b = nano_v1.CRAFTS[n], nano_v1.CRAFTS_V11[f"{n}.1"]
         assert {k: b[k] for k in a} == a                                         # the same body, seed, code and text

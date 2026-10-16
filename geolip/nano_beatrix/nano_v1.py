@@ -58,6 +58,7 @@ import numpy as np
 import torch
 
 from .bodies import craft_cfg
+from .frames_data import CONTROL_MIX, CORPUS_ENV, FRAMES_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
@@ -83,7 +84,14 @@ GAUGE_EVERY = 4000              # steps (two full evals); and every phase bounda
 READOUT = ("head.w_h.", "head.w_s.")                     # the output layer's two readout matrices (their biases stay undecayed)
 V11_TRAIN = dict(decay_params=READOUT, decay_wd=0.1)      # the readout on AdamW at the Adam rate, decoupled decay 0.1, instead of Muon
 CRAFTS_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS.items()}
-ALL = {**CRAFTS, **CRAFTS_V11}
+# 0.1.35: the frames continuation (before and after the frames, one seed). Each v1.1 craft continues from its last boundary (the exact
+# state: fp32 weights and both optimizers) through one appended phase of CONT_TOKENS: framed three rows in four (-fr), or every row
+# plain (-ct, the control). The two arms read the same text row for row (frames_data.py), so they differ only by the frames.
+CONT_TOKENS = 1_000_000_000
+CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continuation", CONTROL_MIX)}
+CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
+               for n, c in CRAFTS.items() for arm in ("fr", "ct")}
+ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT}
 
 
 def train_of(name: str) -> dict:
@@ -144,8 +152,35 @@ def diet(scale: float = 1.0) -> list:
     return phases
 
 
+def diet_of(name: str, scale: float = 1.0) -> list:
+    """A craft's plan: the 2s diet, and for a continuation craft its appended phase (CONT_TOKENS, scaled with the diet)."""
+    phases = diet(scale)
+    arm = ALL[name].get("cont")
+    if arm:
+        pname, ds = CONT_PHASE[arm]
+        phases.append(dict(name=pname, dataset=ds, planned_tokens=max(1, int(CONT_TOKENS * scale)), status="planned"))
+    return phases
+
+
+def diet_steps(scale: float, tokens_per_step: int) -> int:
+    """The steps of the 2s diet at this scale and step size (the trainer closes a phase on whole steps)."""
+    return sum(math.ceil(ph["planned_tokens"] / tokens_per_step) for ph in diet(scale))
+
+
+def cont_init(name: str, tokens_per_step: int, scale: float = 1.0, repo: str = REPO, cont_from: str | None = None) -> dict:
+    """A continuation craft's start: its source craft's last boundary state (resume/boundary_<last phase>_step<steps>.pt) in the hub
+    repo, or under a local runs folder (cont_from: <cont_from>/<source>/resume/...; a toy run), at the step the source ended."""
+    c = ALL[name]
+    steps = diet_steps(scale, tokens_per_step)
+    rel = f"resume/boundary_{diet(scale)[-1]['name']}_step{steps}.pt"
+    spec = dict(step=steps, tokens_per_step=tokens_per_step, source=c["source"])
+    if cont_from:
+        return dict(spec, payload=os.path.join(cont_from, c["source"], *rel.split("/")))
+    return dict(spec, payload=rel, repo=repo, prefix=c["source"])
+
+
 def preset(name: str, birth_file: str, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO, diet_scale: float = 1.0,
-           **train_over):
+           cont_from: str | None = None, **train_over):
     """The library preset of a v1 craft: the body at context 4,096 named for the craft (its prefix in the repo), the 2s recipe, the 2s
     diet, the weights-only start from the birth file at step 0. The craft's version sets its recipe fields (train_of: a v1.1 craft's
     readout on AdamW); train_over: TrainConfig fields to override (a smoke run's cadences)."""
@@ -156,8 +191,9 @@ def preset(name: str, birth_file: str, micro_batch: int = 16, grad_accum: int = 
         assert micro_batch * grad_accum * CTX == TOKENS_PER_STEP, f"the 2s step is {TOKENS_PER_STEP:,} tokens"
     tc = TrainConfig(micro_batch=micro_batch, grad_accum=grad_accum, governor="", head_addr_frozen=False, phase_seed_offset=True,
                      **{**train_of(name), **train_over})
-    return Preset(model=cfg, train=tc, hf_repo=repo, curriculum=diet(diet_scale), data_scale=1.0,
-                  init_from={"file": birth_file, "step": 0})
+    init = (cont_init(name, micro_batch * grad_accum * CTX, diet_scale, repo, cont_from) if ALL[name].get("cont")
+            else {"file": birth_file, "step": 0})
+    return Preset(model=cfg, train=tc, hf_repo=repo, curriculum=diet_of(name, diet_scale), data_scale=1.0, init_from=init)
 
 
 def bench(name: str, birth_file: str, micro_batch: int, grad_accum: int, steps: int = 15, warm: int = 5, device: str = "cuda") -> dict:
@@ -326,6 +362,32 @@ def make_trainer(preset_obj, hf_token: str | None, out_dir: str, process_streams
     from geolip.alephllm.train.trainer import Trainer
 
     class V1Trainer(Trainer):
+        def _init_from_checkpoint(self, spec):
+            if "payload" not in spec:
+                return super()._init_from_checkpoint(spec)
+            # 0.1.35: an exact continuation: the source run's boundary state (fp32 weights and both optimizers) placed at its step;
+            # the library's weights-only start does the placement (the fresh manifest, the cursor), then the optimizers are restored
+            from safetensors.torch import save_file
+            path = spec["payload"] if "repo" not in spec else self.hub.fetch(spec["repo"], f"{spec['prefix']}/{spec['payload']}")
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            assert int(payload["step"]) == int(spec["step"]), (f"the source state is at step {payload['step']:,}, "
+                                                                f"not {spec['step']:,}")
+            src = (payload.get("manifest") or {}).get("phases") or []
+            assert src and all(ph.get("status") == "done" for ph in src), "the source run has not finished its diet"
+            os.makedirs(out_dir, exist_ok=True)
+            tmp = os.path.join(out_dir, f"{self.cfg.name}_cont_start.safetensors")
+            save_file({k: v.detach().float().contiguous() for k, v in payload["model"].items()}, tmp)
+            super()._init_from_checkpoint(dict(file=tmp, step=int(spec["step"]), tokens_per_step=int(spec["tokens_per_step"])))
+            os.remove(tmp)
+            for opt, st in zip(self.optimizers, payload["optimizers"]):
+                opt.load_state_dict(st)
+            where = path if "repo" not in spec else f"{spec['repo']}/{spec['prefix']}/{spec['payload']}"
+            self.manifest.init_from.update(source=where, weights="the fp32 masters of the source's boundary state",
+                                           optimizers="carried from the source's boundary state (Muon momentum, the Adam/AdamW moments)")
+            self.manifest.note(f"CONTINUATION at step {self.step:,} from {where}: the exact training state (fp32 weights, both "
+                               f"optimizers); the appended phase '{self.manifest.phases[-1]['name']}' opens here")
+            print(f"[v1] {self.cfg.name}: continued from {where} at step {self.step:,} (weights and both optimizers)", flush=True)
+
         def _open_stream(self):
             if not process_streams:
                 return super()._open_stream()
@@ -496,7 +558,8 @@ def unrecorded_boundary(trainer, rows: list) -> tuple:
 
 def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO,
         gauge_every: int = GAUGE_EVERY, gauge_cmd=None, max_hours: float | None = None, process_streams: bool = True,
-        diet_scale: float = 1.0, device=None, gauge_gb: float = 10.0, **train_over) -> dict:
+        diet_scale: float = 1.0, device=None, gauge_gb: float = 10.0, cont_from: str | None = None, frames_corpus: str | None = None,
+        frames_corpus_bytes: float = 1.0e9, **train_over) -> dict:
     """Train the v1 crafts through the diet, round-robin by phase. out: the local folder (births, runs, the bed's gauge folder);
     hf_token: None = local only (no hub record, no uploads); max_hours: this session's wall budget (a stop between or inside phases is
     a pause: the next call resumes from the hub); gauge_gb: the bed gauge child's card budget. -> {craft: [one entry a boundary: phase,
@@ -504,8 +567,14 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
     from .bed_corpus import write_heldout
     names = list(names or CRAFTS)
     t_end = None if max_hours is None else time.time() + max_hours * 3600
-    births = {n: write_birth(n, os.path.join(out, "births")) for n in names}
+    births = {n: (None if ALL[n].get("cont") else write_birth(n, os.path.join(out, "births"))) for n in names}
     write_heldout(os.path.join(out, "bed"))
+    if any(ALL[n].get("cont") for n in names):          # 0.1.35: the frames corpus, reached by the stream children
+        from .bed_corpus import build as build_corpus
+        folder = frames_corpus or os.path.join(out, "frames_corpus")
+        if not os.path.exists(os.path.join(folder, "bed_corpus.bin")):
+            build_corpus(folder, int(frames_corpus_bytes))
+        os.environ[CORPUS_ENV] = folder
     hist_p = os.path.join(out, "v1_boundaries.json")
     hist = json.load(open(hist_p, encoding="utf-8")) if os.path.exists(hist_p) else {n: [] for n in names}
     gauged = {n: set() for n in names}
@@ -539,9 +608,9 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
     trainers, failed = {}, {}
     for n in names:
-        p = preset(n, births[n], micro_batch, grad_accum, repo, diet_scale, **train_over)
+        p = preset(n, births[n], micro_batch, grad_accum, repo, diet_scale, cont_from, **train_over)
         t = make_trainer(p, hf_token, os.path.join(out, "runs"), process_streams, hook_for(n), device)
-        if t.step == 0 and t.manifest.init_from and not any("BIRTH:" in str(x) for x in (t.manifest.notes or [])):
+        if births[n] and t.step == 0 and t.manifest.init_from and not any("BIRTH:" in str(x) for x in (t.manifest.notes or [])):
             c = ALL[n]
             t.manifest.note(f"BIRTH: the nano bed's birth of {c['arm']} seed {c['seed']} (torch.manual_seed then the CPU build at context "
                             f"{BIRTH_CTX}, the position rows {BIRTH_CTX}..{CTX - 1} zero): the start of its strongest v4 bed run; {c['body']}")
@@ -601,8 +670,8 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 
 def version_of(names) -> str:
-    """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft, else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 for n in names) else "v1"
+    """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
+    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT for n in names) else "v1"
 
 
 def card_in_training(names=None) -> str:
@@ -655,6 +724,34 @@ HEADLINE = ("bed/text/heldout_bits", "bed/frame/copy_whole", "bed/frame/nested_w
 
 def c_arm(n: str) -> str:
     return ALL[n]["arm"]
+
+
+CONT_READS = (("val bits a byte", "val_bpb", 4), ("copy", "bed/frame/copy_whole", 2), ("nested", "bed/frame/nested_whole", 2),
+              ("redefined key", "bed/frame/redefined_key_whole", 2), ("1,024-byte frame", "bed/scaling/frame_1024_whole", 2),
+              ("planted at 3,584 bytes (bits)", "bed/window/planted_3584_bits", 1))
+
+
+def cont_table(hist: dict) -> str:
+    """The frames continuation read before and after (markdown): per body and read, the source craft's end (the first row of its
+    continuation crafts: the same weights), the end of the frames arm, the end of the control, and the frames arm minus the control."""
+    rows = ["| body | read | before (v1.1's end) | after, frames | after, control | frames minus control |", "|---|---|---|---|---|---|"]
+
+    def at(entries, phase):
+        return next((e for e in entries if e.get("phase") == phase), None)
+
+    def get(e, k):
+        return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
+    last = diet()[-1]["name"]
+    for n in CRAFTS:
+        fr, ct = hist.get(f"{n}.1-fr") or [], hist.get(f"{n}.1-ct") or []
+        before = at(fr, last) or at(ct, last)
+        a_fr, a_ct = at(fr, CONT_PHASE["fr"][0]), at(ct, CONT_PHASE["ct"][0])
+        for label, k, nd in CONT_READS:
+            b, x, y = get(before, k), get(a_fr, k), get(a_ct, k)
+            f = ["-" if v is None else f"{v:.{nd}f}" for v in (b, x, y)]
+            d = "-" if x is None or y is None else f"{x - y:+.{nd}f}"
+            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {d} |")
+    return "\n".join(rows)
 
 
 def table(hist: dict) -> str:
