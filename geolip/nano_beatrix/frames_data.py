@@ -265,3 +265,9 @@ def register() -> None:
 
 
 register()
+
+def next_grid(pos: int, length: int, grid: int = CARRY["grid"]) -> int:
+    """The first grid point at or after an insertion of `length` bytes at `pos` (0.1.38): every training carry sits on the row's
+    64-byte grid as the row stands with its earlier carries in it, so the reading-with-notes gauge reads the grid of the row as it now
+    stands after writing its own carry (0.1.37 stepped off the grid by the carry's length and never opened a second carry)."""
+    return -(-(pos + length) // grid) * grid

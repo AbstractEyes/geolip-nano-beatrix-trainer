@@ -104,6 +104,24 @@ def test_insert_carry_keeps_the_window_and_moves_the_question():
     assert r[q_now] == CUE and bytes(r[q_now + 1:q_now + 1 + len(m["key"])]) == m["key"].encode()
 
 
+def test_the_gauge_reads_the_grid_after_its_own_carry():
+    """0.1.38: every training carry sits on the row's 64-byte grid as the row stands (the test above); the reading-with-notes gauge must
+    read that grid after writing its own carry. 0.1.37 stepped p += len(carry), then += 64: off the grid by the carry's length for the
+    rest of the row (Pollux canon's -cf arm at 62,000 and 64,000 steps: exactly one carry in every opening row, never a second)."""
+    g = fd.CARRY["grid"]
+    for size in fd.CARRY["early_sizes"]:
+        cb = bf.frame_bytes(size, fd.CARRY["sliced"])
+        assert cb % g, "the carry's length is not a multiple of the grid: the old step left the grid"
+        p = 640
+        for _ in range(6):                                                                     # six carries in a row, each read on the grid
+            nxt = fd.next_grid(p, cb, g)
+            assert nxt % g == 0 and p + cb <= nxt < p + cb + g
+            p = nxt + 7 * g                                                                    # some grid steps of text, then the next carry
+    assert fd.next_grid(640, 64, 64) == 704 and fd.next_grid(640, 35, 64) == 704 and fd.next_grid(640, 67, 64) == 768
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "geolip", "nano_beatrix", "bed_train.py"), encoding="utf-8").read()
+    assert "p[i] = fd.next_grid(p[i], len(gen), g) - g" in src and "p[i] += len(gen)" not in src       # the gauge's step after an insertion
+
+
 def test_the_carry_stream_reads_the_frames_arms_text_row_for_row(corpus):
     packed = fd.load_corpus(corpus)
     framed_seen = plain_seen = 0

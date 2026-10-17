@@ -175,6 +175,12 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.38 (2026-10-17): the reading-with-notes gauge reads the 64-byte grid of the row AS IT STANDS after writing its own carry
+(`frames_data.next_grid`): every training carry sits on that grid, and 0.1.37 stepped off it by the carry's length after a row's
+first carry, so the first -cf arm's mid-run gauges opened exactly one carry in every opening row and never a second; gauges read
+with 0.1.37 (`carry` blocks dated before this release) are re-read with this one. `colab/nano_v1_1_carry.ipynb` pins v0.1.38.
+Nothing else changes.
+
 0.1.37 (2026-10-17): THE SELF-WRITTEN FRAMES PROTOTYPE, first instance the CARRY FRAME: `frames_data.carry_row` (one early lookup frame,
 carries on the 64-byte grid restating it, the question far; the generator `nano-frames-carry` and its mix at the frames dose, the same
 text row for row as the frames arm and the control), the `-cf` continuation crafts beside `-fr` and `-ct` (`nano_v1.CRAFTS_CONT`),

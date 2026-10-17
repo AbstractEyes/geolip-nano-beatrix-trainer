@@ -874,7 +874,7 @@ def carry_gauge():
             if metas[i]["key"].encode() in gen:
                 latest[i] = p[i]
             inserted[i] += len(gen)
-            p[i] += len(gen)
+            p[i] = fd.next_grid(p[i], len(gen), g) - g          # the next read on the grid of the row as it now stands (0.1.38); the common step below lands it
         for i in active:
             p[i] += g
         active = [i for i in active if p[i] < metas[i]["q0"] + inserted[i] - g and inserted[i] < tail_room[i]]
