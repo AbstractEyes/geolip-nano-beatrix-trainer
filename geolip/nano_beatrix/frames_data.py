@@ -162,8 +162,21 @@ def carry_row(rng, src: bytes, form: dict = CARRY, ctx: int = ROW_CTX, carries: 
     meta = dict(v0=v0, vlen=len(val), dist=v0 - truth[0], key=key.decode(), truth_frame=truth[2], truth_depth=truth[3],
                 n_defs=len(state["defs"][key]), source="frame", frames=state["frames"], scheme=form["tags"], register=form["register"],
                 ctx=ctx, q0=q0, sized=True, sliced=int(form["sliced"]), early_size=size, early_start=early_start, early_end=early_end,
-                early_keys=[k.decode() for k in keys], carries=written, planned=positions, grid=form["grid"])
+                early_keys=[k.decode() for k in keys], early_vals=[v.decode() for v in vals], carries=written, planned=positions, grid=form["grid"])
     return row, meta
+
+
+PLAIN_START = 128    # 0.1.39: the plain-row read's first grid point (the carry rows' early frames end between 41 and 137 bytes: their first read is at 64, 128 or 192)
+
+
+def plain_row(rng, src: bytes, ctx: int = ROW_CTX) -> bytes:
+    """THE PLAIN ROW (0.1.39, the gate screen's premise): DOC and ctx bytes of the source taken as the carry row takes its text (bf.Filler at a
+    drawn offset), no early frame, no carries, no question; the gauge reads it on the grid from PLAIN_START over the carry rows' span and
+    records what the model opens where no question follows."""
+    fill = bf.Filler(src, int(rng.integers(0, max(1, len(src) - 1))))
+    row = bytes([DOC]) + fill.take(ctx)
+    assert len(row) == ctx + 1
+    return row
 
 
 def insert_carry(row: bytearray, pos: int, gen: bytes, ctx: int = ROW_CTX) -> None:

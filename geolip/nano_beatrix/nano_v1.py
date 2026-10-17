@@ -462,7 +462,11 @@ def gauge_scalars(rec: dict) -> dict:
         if isinstance(c, dict):
             put(f"bed/canary/{kind}_bits", c.get("bits"))
     for k, v in (rec.get("carry") or {}).items():          # 0.1.37: reading with notes (bed_train.carry_gauge)
-        put(f"bed/carry/{k}", v)
+        if isinstance(v, (int, float)):                      # 0.1.39: the block also names its dump files
+            put(f"bed/carry/{k}", v)
+    for k, v in (rec.get("carry_plain") or {}).items():    # 0.1.39: the plain-row read (no question: its counts and the open probability)
+        if isinstance(v, (int, float)):
+            put(f"bed/carry_plain/{k}", v)
     put("bed/gauge_seconds", rec.get("wall_s"))
     return out
 
@@ -535,7 +539,7 @@ def _bed_gauge(trainer, name, out, gauge_cmd, gauge_gb):
 
 
 def gauge_stored(name: str, step: int, out: str, repo: str = REPO, carry: bool = True, gauge_cmd=None, gauge_gb: float = 10.0,
-                 token=None) -> dict:
+                 token=None, extra: dict | None = None) -> dict:
     """0.1.37: the bed's gauge read of a STORED craft (its checkpoint at `step` in the hub repo, the bf16 file; the public repos read
     tokenless), with the carry gauge (reading with notes) when `carry`: the weights to <out>/bed/<init> in the bed's folder form, the
     child command as bed_gauge's, the record read back. A record already on disk is returned as it is. -> the record."""
@@ -548,6 +552,8 @@ def gauge_stored(name: str, step: int, out: str, repo: str = REPO, carry: bool =
     args = gauge_args(name, init, out)
     if carry:
         args["carry_gauge"] = "1"
+    if extra:                                            # 0.1.39: the child's extra arguments (carry_rows, carry_dump, carry_plain, ...)
+        args.update({k: str(v) for k, v in extra.items()})
     rec_path = os.path.join(bed, f"bed_{run_tag(args)}.json")
     if os.path.exists(rec_path):
         return json.load(open(rec_path, encoding="utf-8"))

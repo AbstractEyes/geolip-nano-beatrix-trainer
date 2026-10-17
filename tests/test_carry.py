@@ -178,3 +178,33 @@ def test_the_table_and_the_scalars_carry_the_carry_arm():
     far = next(l for l in t.split("\n") if "far question, own carries" in l)
     assert far.split("|")[5].strip() == "0.60" and far.split("|")[4].strip() == "-"
     assert not any("| nano-pollux-canon-v1 |" in l for l in t.split("\n"))                   # a body without rows is left out
+
+
+def test_the_early_values_ride_in_the_meta_and_the_plain_row_is_text_only():
+    """0.1.39: the per-row dump needs the early records as (key, value); the plain-row read needs a row with no frame and no question."""
+    for s in range(24):
+        row, m = fd.carry_row(np.random.default_rng([s, 1]), text(s), carries=False)
+        assert len(m["early_vals"]) == len(m["early_keys"]) >= 1
+        seg = row[m["early_start"]:m["early_end"]]
+        for k, v in zip(m["early_keys"], m["early_vals"]):
+            assert bytes([CUE]) + k.encode() + bytes([SEP]) + v.encode() in seg                   # each early record, key then value, in the frame
+        assert m["early_vals"][m["early_keys"].index(m["key"])].encode() == row[m["v0"]:m["v0"] + m["vlen"]]   # no carries: the early value is the truth
+        pr = fd.plain_row(np.random.default_rng([s, 2]), text(s))
+        assert len(pr) == fd.ROW_BYTES and pr[0] == DOC and DATA not in pr and CUE not in pr and END not in pr
+    assert fd.PLAIN_START % fd.CARRY["grid"] == 0 and 64 <= fd.PLAIN_START <= 192
+
+
+def test_the_tag_carries_the_row_count_and_the_plain_read_and_the_scalars_skip_the_dump():
+    base = nano_v1.gauge_args("nano-castor-v1.1-cf", nano_v1.gauge_init("nano-castor-v1.1-cf", 65237), "/tmp/x")
+    assert run_tag(base).endswith("_carry_gauge")
+    assert run_tag(dict(base, carry_rows="192")) == run_tag(base)                                  # the default leaves the tag alone
+    assert run_tag(dict(base, carry_rows="1024")).endswith("_carry_rows1024_gauge")
+    assert run_tag(dict(base, carry_plain="1")).endswith("_carry_plain_gauge")
+    assert run_tag(dict(base, carry_rows="1024", carry_plain="1", carry_dump="1")).endswith("_carry_rows1024_plain_gauge")   # the dump leaves the tag alone
+    nb = dict(base)
+    nb.pop("carry_gauge")
+    assert "_plain" not in run_tag(dict(nb, carry_plain="1")) and "_rows" not in run_tag(dict(nb, carry_rows="1024"))   # the pieces belong to the carry gauge
+    sc = nano_v1.gauge_scalars({"heldout_bpb": 1.2, "carry": {"full_value": 0.5, "value_bits": None, "dump": {"jsonl": "x", "npy": "y"}},
+                                "carry_plain": {"carries_per_row": 1.5, "n": 192, "start": 128, "full_value": None}})
+    assert sc["bed/carry/full_value"] == 0.5 and "bed/carry/dump" not in sc and "bed/carry/value_bits" not in sc
+    assert sc["bed/carry_plain/carries_per_row"] == 1.5 and sc["bed/carry_plain/start"] == 128.0 and "bed/carry_plain/full_value" not in sc

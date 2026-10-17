@@ -175,6 +175,16 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.39 (2026-10-17): the reading-with-notes gauge gains a per-row dump (`--carry_dump=1`: beside its record,
+`bed_<tag>_rows.jsonl`, one line a row with the early records, the asked key and value, every grid read with the open byte's
+probability, every carry as generated and as inserted, the latest positions holding the key and any carry, the answer as generated
+and the value's per-byte bits; and `bed_<tag>_rows.npy`, the rows as the model left them), a plain-row read (`--carry_plain=1`:
+held-out text with no early frame and no question, read on the same grid over the same span; the record's `carry_plain` block and
+its own `_plain` dump), and a row count (`--carry_rows=N`, default 192; the first 192 rows of any N are the 192-row read's rows).
+`nano_v1.gauge_stored(..., extra={...})` passes such arguments to the child; the run tag carries `_rowsN` and `_plain` when set.
+`frames_data.carry_row`'s meta adds `early_vals`. Defaults unchanged: a 192-row record reads as before.
+`colab/nano_v1_1_carry.ipynb` pins v0.1.39.
+
 0.1.38 (2026-10-17): the reading-with-notes gauge reads the 64-byte grid of the row AS IT STANDS after writing its own carry
 (`frames_data.next_grid`): every training carry sits on that grid, and 0.1.37 stepped off it by the carry's length after a row's
 first carry, so the first -cf arm's mid-run gauges opened exactly one carry in every opening row and never a second; gauges read

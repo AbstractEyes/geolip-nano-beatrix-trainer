@@ -71,4 +71,6 @@ def run_tag(args: dict) -> str:
             + (f"_st{args['stage']}" if args.get("stage") else                              # 0.1.22: a curriculum block names its stage
                (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else ""))   # a continued run names its starting craft
             + ("_carry" if args.get("carry_gauge") == "1" else "")               # 0.1.37: a gauge read with the carry gauge (reading with notes)
+            + (("_rows" + str(args.get("carry_rows"))) if args.get("carry_gauge") == "1" and str(args.get("carry_rows") or "192") != "192" else "")   # 0.1.39: the row count when not 192
+            + ("_plain" if args.get("carry_gauge") == "1" and args.get("carry_plain") == "1" else "")                                   # 0.1.39: the plain-row read
             + ("_gauge" if gauge else ""))

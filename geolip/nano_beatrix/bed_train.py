@@ -127,6 +127,9 @@ INIT = ARGS.get("init", "")        # a previous run's weights folder under DIR/b
 # weights field names the init's), the record carries gauge_only (its tag ends _gauge)
 GAUGE_ONLY = ARGS.get("gauge_only", "0") == "1"
 CARRY_GAUGE = ARGS.get("carry_gauge", "0") == "1"   # 0.1.37: reading with notes on the carry rows (frames_data.CARRY); the tag ends _carry
+CARRY_ROWS = int(ARGS.get("carry_rows", "192"))     # 0.1.39: the rows read (the first 192 of any count are the 192-row read's rows)
+CARRY_DUMP = ARGS.get("carry_dump", "0") == "1"     # 0.1.39: the per-row dump beside the record (bed_<tag>_rows.jsonl + .npy)
+CARRY_PLAIN = ARGS.get("carry_plain", "0") == "1"   # 0.1.39: the plain-row read as well (the record's carry_plain block; the tag carries _plain)
 if GAUGE_ONLY:
     assert INIT and "pair" not in ARGS and ARGS.get("steps", "0") == "0", "--gauge_only=1 reads one stored craft (--init), with no steps"
     STEPS = 0
@@ -808,7 +811,7 @@ def canary_gauge():
 
 
 @torch.no_grad()
-def carry_gauge():
+def carry_gauge(plain: bool = False):
     """READING WITH NOTES (0.1.37, the self-written frames prototype; plans/2026-10-17_self_frames_prototype_plan.md): the carry row
     without its carries (frames_data.carry_row, carries=False: one early lookup frame, a far question), read in grid steps (64 bytes)
     from the early frame's end. At each grid point the model's greedy next byte decides: the frame's open byte (DATA) opens a carry,
@@ -818,19 +821,33 @@ def carry_gauge():
     value. -> n, value_bits, first_byte, full_value, carries_per_row, rows_with_carries, carry_exact (the share of carries equal to the
     early frame byte for byte), open_prob (the open byte's mean probability at the grid points), dist_latest (the question's mean
     distance to the latest definition of its key: a carry holding the key when one was written, else the early frame), dist_early (the
-    question's mean distance to the early frame)."""
+    question's mean distance to the early frame).
+    0.1.38: after an insertion the next read is the next grid point of the row as it now stands (frames_data.next_grid).
+    0.1.39: CARRY_ROWS rows (the held-out documents in file order; the first 192 are the eval and fetch documents, so a longer read
+    contains the 192-row read); `plain` reads frames_data.plain_row instead (no early frame, no question: the same grid from
+    PLAIN_START over the same span; the value fields are None); CARRY_DUMP writes beside the record one JSON line a row (the early
+    records, the asked key and value, every grid read with the open byte's probability, every carry as generated and as inserted, the
+    latest positions holding the key and any carry, the answer as generated, the value's per-byte bits) and the rows as the model left
+    them (uint8 [n, CTX + 1] .npy); the block names both files under `dump`."""
     from geolip.nano_beatrix import frames_data as fd
     from geolip.alephllm.data.special_tokens import DATA, END
     form = fd.CARRY
-    rng = np.random.default_rng([SEED, 5151])
-    rows, metas, early = [], [], []
-    for doc in eval_docs + fetch_docs:
-        r, m = fd.carry_row(rng, bytes([DOC]) + doc, form, CTX, carries=False)
-        rows.append(bytearray(r))
-        metas.append(m)
-        early.append(r[m["early_start"]:m["early_end"]])
     g = form["grid"]
     max_gen = bf.frame_bytes(max(form["early_sizes"]), form["sliced"]) + 1
+    docs = heldout[:CARRY_ROWS]
+    assert len(docs) == CARRY_ROWS, f"carry_rows {CARRY_ROWS} exceeds the held-out file's {len(heldout)} documents"
+    rng = np.random.default_rng([SEED, 5151])
+    rows, metas, early = [], [], []
+    q_lo = CTX + 1 - form["late"]
+    for doc in docs:
+        if plain:
+            r = fd.plain_row(rng, bytes([DOC]) + doc, CTX)
+            m = dict(early_start=None, early_end=fd.PLAIN_START, q0=q_lo, v0=None, vlen=0, key=None, early_keys=[], early_vals=[])
+        else:
+            r, m = fd.carry_row(rng, bytes([DOC]) + doc, form, CTX, carries=False)
+        rows.append(bytearray(r))
+        metas.append(m)
+        early.append(b"" if plain else r[m["early_start"]:m["early_end"]])
 
     def greedy(prompts: list) -> tuple:
         """The greedy next byte and the open byte's probability at the end of every prompt (right-padded batches of 16, each row read
@@ -851,13 +868,20 @@ def carry_gauge():
         return out_b, out_p
     n = len(rows)
     p = [-(-m["early_end"] // g) * g for m in metas]
-    inserted, opened, exact_n, latest = [0] * n, [0] * n, 0, [m["early_start"] for m in metas]
-    tail_room = [CTX + 1 - (m["v0"] + m["vlen"] + 1) for m in metas]
+    inserted, opened, exact_n = [0] * n, [0] * n, 0
+    latest = [m["early_start"] for m in metas]                        # the latest position holding the asked key (plain: None)
+    latest_any = [None] * n                                            # the latest carry of any kind (0.1.39)
+    tail_room = [(form["late"] if plain else CTX + 1 - (m["v0"] + m["vlen"] + 1)) for m in metas]
+    q_end = [m["q0"] for m in metas]
+    reads = [[] for _ in range(n)]                                     # 0.1.39: every grid read (position, the open byte's probability)
+    carries = [[] for _ in range(n)]                                   # 0.1.39: every carry as generated and as inserted
     probs = []
     active = [i for i in range(n)]
     while active:                                                   # every active row reads its next grid point in one batched tick
         nb, pr = greedy([bytes(rows[i][:p[i]]) for i in active])
         probs += pr
+        for i, pp in zip(active, pr):
+            reads[i].append((p[i], float(pp)))
         openers = [i for i, b in zip(active, nb) if b == DATA]
         gens = {i: bytearray([DATA]) for i in openers}
         live = list(openers)
@@ -867,55 +891,81 @@ def carry_gauge():
                 gens[i].append(int(b))
             live = [i for i in live if len(gens[i]) < max_gen and gens[i][-1] != END]
         for i in openers:
-            gen = bytes(gens[i][:min(len(gens[i]), tail_room[i] - inserted[i])])
+            full = bytes(gens[i])
+            gen = full[:min(len(full), tail_room[i] - inserted[i])]
             fd.insert_carry(rows[i], p[i], gen, CTX)
             opened[i] += 1
             exact_n += int(gen == early[i])
-            if metas[i]["key"].encode() in gen:
+            if not plain and metas[i]["key"].encode() in gen:
                 latest[i] = p[i]
+            latest_any[i] = p[i]
+            carries[i].append(dict(pos=p[i], generated=full.decode("latin-1"), inserted=gen.decode("latin-1"),
+                                   ended_on_end=bool(full and full[-1] == END), cut=len(gen) < len(full)))
             inserted[i] += len(gen)
             p[i] = fd.next_grid(p[i], len(gen), g) - g          # the next read on the grid of the row as it now stands (0.1.38); the common step below lands it
         for i in active:
             p[i] += g
-        active = [i for i in active if p[i] < metas[i]["q0"] + inserted[i] - g and inserted[i] < tail_room[i]]
+        active = [i for i in active if p[i] < q_end[i] + inserted[i] - g and inserted[i] < tail_room[i]]
     n_car, with_car, exact = sum(opened), sum(1 for o in opened if o), exact_n
-    d_latest, d_early = [], []
-    for i, m in enumerate(metas):
-        m["q_now"], m["v_now"] = m["q0"] + inserted[i], m["v0"] + inserted[i]
-        d_latest.append(m["q_now"] - latest[i])
-        d_early.append(m["q_now"] - m["early_start"])
-    # the value at the question, on the model's own rows
-    bits, first, full = [], 0, 0
-    gen = [b"" for _ in rows]
-    for i, m in enumerate(metas):
-        v, L = m["v_now"], m["vlen"]
-        x = torch.tensor(np.frombuffer(bytes(rows[i][:v + L]), dtype=np.uint8).astype(np.int64), device=DEV)[None]
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            lp = F.log_softmax(model(x[:, :-1])[0][0].float(), dim=-1)
-        pos = torch.arange(v - 1, v - 1 + L, device=DEV)
-        bits.append(float(-lp[pos, x[0, 1:][pos]].sum()) / LN2)
-    for _ in range(max(m["vlen"] for m in metas)):
-        prompts = [bytes(rows[i][:metas[i]["v_now"]]) + gen[i] for i in range(len(rows))]
-        L = max(len(pm) for pm in prompts)
-        xb = np.full((len(rows), L), 32, dtype=np.uint8)
-        for i, pm in enumerate(prompts):
-            xb[i, :len(pm)] = np.frombuffer(pm, dtype=np.uint8)
-        for i0 in range(0, len(rows), 16):
+    res = dict(n=n, carries_per_row=n_car / n, rows_with_carries=with_car / n, carry_exact=(exact / n_car if n_car else 0.0),
+               open_prob=float(np.mean(probs)) if probs else 0.0, grid=g, max_gen=max_gen, rows=CARRY_ROWS, plain=plain)
+    bits_rows, gen, first_ok, full_ok = [[] for _ in rows], [b"" for _ in rows], [False] * n, [False] * n
+    if plain:
+        res.update(value_bits=None, first_byte=None, full_value=None, dist_latest=None, dist_early=None, start=fd.PLAIN_START)
+        for i, m in enumerate(metas):
+            m["q_now"], m["v_now"] = q_end[i] + inserted[i], None
+    else:
+        d_latest, d_early = [], []
+        for i, m in enumerate(metas):
+            m["q_now"], m["v_now"] = m["q0"] + inserted[i], m["v0"] + inserted[i]
+            d_latest.append(m["q_now"] - latest[i])
+            d_early.append(m["q_now"] - m["early_start"])
+        # the value at the question, on the model's own rows
+        for i, m in enumerate(metas):
+            v, L = m["v_now"], m["vlen"]
+            x = torch.tensor(np.frombuffer(bytes(rows[i][:v + L]), dtype=np.uint8).astype(np.int64), device=DEV)[None]
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                lg = model(torch.tensor(xb[i0:i0 + 16].astype(np.int64), device=DEV))[0].float()
-            last = torch.tensor([len(pm) - 1 for pm in prompts[i0:i0 + 16]], device=DEV)
-            nxt = lg[torch.arange(lg.shape[0], device=DEV), last].argmax(-1).cpu().numpy()
-            for j, i in enumerate(range(i0, min(i0 + 16, len(rows)))):
-                if len(gen[i]) < metas[i]["vlen"]:
-                    gen[i] += bytes([int(nxt[j])])
-    for i, m in enumerate(metas):
-        truth = bytes(rows[i][m["v_now"]:m["v_now"] + m["vlen"]])
-        first += int(gen[i][:1] == truth[:1])
-        full += int(gen[i][:m["vlen"]] == truth)
-    n = len(rows)
-    return dict(n=n, value_bits=float(np.mean(bits)), first_byte=first / n, full_value=full / n, carries_per_row=n_car / n,
-                rows_with_carries=with_car / n, carry_exact=(exact / n_car if n_car else 0.0), open_prob=float(np.mean(probs)) if probs else 0.0,
-                dist_latest=float(np.mean(d_latest)), dist_early=float(np.mean(d_early)), grid=g, max_gen=max_gen)
+                lp = F.log_softmax(model(x[:, :-1])[0][0].float(), dim=-1)
+            pos = torch.arange(v - 1, v - 1 + L, device=DEV)
+            bits_rows[i] = [float(b) for b in (-lp[pos, x[0, 1:][pos]] / LN2).tolist()]
+        for _ in range(max(m["vlen"] for m in metas)):
+            prompts = [bytes(rows[i][:metas[i]["v_now"]]) + gen[i] for i in range(len(rows))]
+            L = max(len(pm) for pm in prompts)
+            xb = np.full((len(rows), L), 32, dtype=np.uint8)
+            for i, pm in enumerate(prompts):
+                xb[i, :len(pm)] = np.frombuffer(pm, dtype=np.uint8)
+            for i0 in range(0, len(rows), 16):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    lg = model(torch.tensor(xb[i0:i0 + 16].astype(np.int64), device=DEV))[0].float()
+                last = torch.tensor([len(pm) - 1 for pm in prompts[i0:i0 + 16]], device=DEV)
+                nxt = lg[torch.arange(lg.shape[0], device=DEV), last].argmax(-1).cpu().numpy()
+                for j, i in enumerate(range(i0, min(i0 + 16, len(rows)))):
+                    if len(gen[i]) < metas[i]["vlen"]:
+                        gen[i] += bytes([int(nxt[j])])
+        first = full = 0
+        for i, m in enumerate(metas):
+            truth = bytes(rows[i][m["v_now"]:m["v_now"] + m["vlen"]])
+            first_ok[i], full_ok[i] = gen[i][:1] == truth[:1], gen[i][:m["vlen"]] == truth
+            first += int(first_ok[i])
+            full += int(full_ok[i])
+        res.update(value_bits=float(np.mean([sum(b) for b in bits_rows])), first_byte=first / n, full_value=full / n,
+                   dist_latest=float(np.mean(d_latest)), dist_early=float(np.mean(d_early)))
+    if CARRY_DUMP:                                                     # 0.1.39: the per-row dump beside the record
+        suffix = "_plain" if plain else ""
+        jp = os.path.join(BED, f"bed_{TAG}_rows{suffix}.jsonl")
+        npp = os.path.join(BED, f"bed_{TAG}_rows{suffix}.npy")
+        np.save(npp, np.stack([np.frombuffer(bytes(r), dtype=np.uint8) for r in rows]))
+        with open(jp, "w", encoding="utf-8") as f:
+            for i, m in enumerate(metas):
+                truth = None if plain else bytes(rows[i][m["v_now"]:m["v_now"] + m["vlen"]]).decode("latin-1")
+                f.write(json.dumps(dict(row=i, plain=plain, early_start=m.get("early_start"), early_end=m.get("early_end"),
+                                        early_records=[[k, v] for k, v in zip(m.get("early_keys", []), m.get("early_vals", []))],
+                                        key=m.get("key"), truth=truth, q0=m.get("q0"), q_now=m.get("q_now"), v_now=m.get("v_now"), vlen=m.get("vlen"),
+                                        reads=reads[i], carries=carries[i], latest_key_pos=(None if plain else latest[i]), latest_carry_pos=latest_any[i],
+                                        inserted=inserted[i], answer=(None if plain else gen[i].decode("latin-1")), bits=bits_rows[i],
+                                        whole=bool(full_ok[i]), first=bool(first_ok[i]))) + "\n")
+        res["dump"] = dict(jsonl=os.path.basename(jp), npy=os.path.basename(npp))
+    return res
 
 
 def finish(c: Craft) -> tuple:
@@ -961,6 +1011,10 @@ def finish(c: Craft) -> tuple:
             log(f"fetch by frame, asked {_a}: not read ({e})")
     canary, formation = (canary_gauge(), bf.formation(c.curve, REGISTER, frame_fetch)) if FRAMES else (None, None)
     carry = carry_gauge() if CARRY_GAUGE else None      # 0.1.37: reading with notes
+    carry_plain = carry_gauge(plain=True) if (CARRY_GAUGE and CARRY_PLAIN) else None     # 0.1.39: the plain-row read
+    if carry_plain:
+        log(f"plain-row read (no frame, no question; from {carry_plain['start']}): carries a row {carry_plain['carries_per_row']:.2f} (rows with one "
+            f"{carry_plain['rows_with_carries']:.2f}, open prob {carry_plain['open_prob']:.4f}) on {carry_plain['n']} rows")
     if carry:
         log(f"carry gauge (reading with notes, grid {carry['grid']}): n {carry['n']} whole value {carry['full_value']:.3f} first {carry['first_byte']:.3f} "
             f"bits {carry['value_bits']:.2f}; carries a row {carry['carries_per_row']:.2f} (rows with one {carry['rows_with_carries']:.2f}, exact copies "
@@ -996,6 +1050,8 @@ def finish(c: Craft) -> tuple:
         R["gauge_only"] = True                       # 0.1.26: a gauge read of the init's weights (no step; no weights written)
     if CARRY_GAUGE:
         R["carry"] = carry                           # 0.1.37: reading with notes (the carry gauge)
+        if carry_plain is not None:
+            R["carry_plain"] = carry_plain           # 0.1.39: the plain-row read
     if WD:
         R["optimizer"] = dict(name="AdamW", wd=WD, wd_set=WD_SET, betas=list(bed_optim.BETAS), eps=bed_optim.EPS, **c.decay)   # 0.1.31
     return R, os.path.join(BED, f"bed_{c.tag}.json")
