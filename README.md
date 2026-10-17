@@ -175,6 +175,10 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.36 (2026-10-16): the package's own version string, left at 0.1.34 by the 0.1.35 release while pyproject said 0.1.35, now 0.1.36
+in both; `colab/nano_v1_1_frames.ipynb` pins v0.1.36 (its C1 version assert read the stale string and would have refused to run
+after installing v0.1.35). Nothing else changes.
+
 0.1.35 (2026-10-15): the frames continuation (`frames_data.py`, `nano_v1.CRAFTS_CONT`, `colab/nano_v1_1_frames.ipynb`): each nano
 v1.1 craft continued from its last boundary (the exact training state: fp32 weights and both optimizers, placed at step 61,422) through
 one appended phase of 1.0 billion bytes, framed three rows in four with the nano bed's framed rows (the sliced frame at 32 bytes, eight
