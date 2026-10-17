@@ -175,6 +175,13 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.37 (2026-10-17): THE SELF-WRITTEN FRAMES PROTOTYPE, first instance the CARRY FRAME: `frames_data.carry_row` (one early lookup frame,
+carries on the 64-byte grid restating it, the question far; the generator `nano-frames-carry` and its mix at the frames dose, the same
+text row for row as the frames arm and the control), the `-cf` continuation crafts beside `-fr` and `-ct` (`nano_v1.CRAFTS_CONT`),
+`bed_train --carry_gauge=1` (reading with notes: the model opens its own carries at the grid; the value scored at the far question on
+its own row; the record's `carry` block, `bed/carry/*` scalars, the tag piece `_carry`), `nano_v1.gauge_stored` (a stored craft's gauge
+read from the Hub), `cont_table`'s carry column, `colab/nano_v1_1_carry.ipynb`. Nothing existing changes its rows or its names.
+
 0.1.36 (2026-10-16): the package's own version string, left at 0.1.34 by the 0.1.35 release while pyproject said 0.1.35, now 0.1.36
 in both; `colab/nano_v1_1_frames.ipynb` pins v0.1.36 (its C1 version assert read the stale string and would have refused to run
 after installing v0.1.35). Nothing else changes.

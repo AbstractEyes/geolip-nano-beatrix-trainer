@@ -126,6 +126,7 @@ INIT = ARGS.get("init", "")        # a previous run's weights folder under DIR/b
 # runs on the --init weights at this run's context and settings; the training corpus is not read, no weights are written (the record's
 # weights field names the init's), the record carries gauge_only (its tag ends _gauge)
 GAUGE_ONLY = ARGS.get("gauge_only", "0") == "1"
+CARRY_GAUGE = ARGS.get("carry_gauge", "0") == "1"   # 0.1.37: reading with notes on the carry rows (frames_data.CARRY); the tag ends _carry
 if GAUGE_ONLY:
     assert INIT and "pair" not in ARGS and ARGS.get("steps", "0") == "0", "--gauge_only=1 reads one stored craft (--init), with no steps"
     STEPS = 0
@@ -806,6 +807,117 @@ def canary_gauge():
     return out
 
 
+@torch.no_grad()
+def carry_gauge():
+    """READING WITH NOTES (0.1.37, the self-written frames prototype; plans/2026-10-17_self_frames_prototype_plan.md): the carry row
+    without its carries (frames_data.carry_row, carries=False: one early lookup frame, a far question), read in grid steps (64 bytes)
+    from the early frame's end. At each grid point the model's greedy next byte decides: the frame's open byte (DATA) opens a carry,
+    generated greedily to END (at most the longest early frame plus one byte), inserted at the grid point with the row's tail cut by the
+    same length (the window stays CTX + 1 bytes, the question moves right; the insertions stay within the tail's filler). Then the value
+    is scored at the question on the model's own row as the frame gauges score it: teacher-forced bits, the greedy first byte, the whole
+    value. -> n, value_bits, first_byte, full_value, carries_per_row, rows_with_carries, carry_exact (the share of carries equal to the
+    early frame byte for byte), open_prob (the open byte's mean probability at the grid points), dist_latest (the question's mean
+    distance to the latest definition of its key: a carry holding the key when one was written, else the early frame), dist_early (the
+    question's mean distance to the early frame)."""
+    from geolip.nano_beatrix import frames_data as fd
+    from geolip.alephllm.data.special_tokens import DATA, END
+    form = fd.CARRY
+    rng = np.random.default_rng([SEED, 5151])
+    rows, metas, early = [], [], []
+    for doc in eval_docs + fetch_docs:
+        r, m = fd.carry_row(rng, bytes([DOC]) + doc, form, CTX, carries=False)
+        rows.append(bytearray(r))
+        metas.append(m)
+        early.append(r[m["early_start"]:m["early_end"]])
+    g = form["grid"]
+    max_gen = bf.frame_bytes(max(form["early_sizes"]), form["sliced"]) + 1
+
+    def greedy(prompts: list) -> tuple:
+        """The greedy next byte and the open byte's probability at the end of every prompt (right-padded batches of 16, each row read
+        at its own last position: the frame gauges' form)."""
+        out_b, out_p = [], []
+        for i0 in range(0, len(prompts), 16):
+            chunk = prompts[i0:i0 + 16]
+            L = max(len(pm) for pm in chunk)
+            xb = np.full((len(chunk), L), 32, dtype=np.uint8)
+            for j, pm in enumerate(chunk):
+                xb[j, :len(pm)] = np.frombuffer(pm, dtype=np.uint8)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                lg = model(torch.tensor(xb.astype(np.int64), device=DEV))[0].float()
+            last = torch.tensor([len(pm) - 1 for pm in chunk], device=DEV)
+            at = lg[torch.arange(len(chunk), device=DEV), last]
+            out_b += at.argmax(-1).cpu().tolist()
+            out_p += F.softmax(at, -1)[:, DATA].cpu().tolist()
+        return out_b, out_p
+    n = len(rows)
+    p = [-(-m["early_end"] // g) * g for m in metas]
+    inserted, opened, exact_n, latest = [0] * n, [0] * n, 0, [m["early_start"] for m in metas]
+    tail_room = [CTX + 1 - (m["v0"] + m["vlen"] + 1) for m in metas]
+    probs = []
+    active = [i for i in range(n)]
+    while active:                                                   # every active row reads its next grid point in one batched tick
+        nb, pr = greedy([bytes(rows[i][:p[i]]) for i in active])
+        probs += pr
+        openers = [i for i, b in zip(active, nb) if b == DATA]
+        gens = {i: bytearray([DATA]) for i in openers}
+        live = list(openers)
+        while live:                                                 # the openers write their carries together, byte by byte, to END
+            nxt, _ = greedy([bytes(rows[i][:p[i]]) + bytes(gens[i]) for i in live])
+            for i, b in zip(live, nxt):
+                gens[i].append(int(b))
+            live = [i for i in live if len(gens[i]) < max_gen and gens[i][-1] != END]
+        for i in openers:
+            gen = bytes(gens[i][:min(len(gens[i]), tail_room[i] - inserted[i])])
+            fd.insert_carry(rows[i], p[i], gen, CTX)
+            opened[i] += 1
+            exact_n += int(gen == early[i])
+            if metas[i]["key"].encode() in gen:
+                latest[i] = p[i]
+            inserted[i] += len(gen)
+            p[i] += len(gen)
+        for i in active:
+            p[i] += g
+        active = [i for i in active if p[i] < metas[i]["q0"] + inserted[i] - g and inserted[i] < tail_room[i]]
+    n_car, with_car, exact = sum(opened), sum(1 for o in opened if o), exact_n
+    d_latest, d_early = [], []
+    for i, m in enumerate(metas):
+        m["q_now"], m["v_now"] = m["q0"] + inserted[i], m["v0"] + inserted[i]
+        d_latest.append(m["q_now"] - latest[i])
+        d_early.append(m["q_now"] - m["early_start"])
+    # the value at the question, on the model's own rows
+    bits, first, full = [], 0, 0
+    gen = [b"" for _ in rows]
+    for i, m in enumerate(metas):
+        v, L = m["v_now"], m["vlen"]
+        x = torch.tensor(np.frombuffer(bytes(rows[i][:v + L]), dtype=np.uint8).astype(np.int64), device=DEV)[None]
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            lp = F.log_softmax(model(x[:, :-1])[0][0].float(), dim=-1)
+        pos = torch.arange(v - 1, v - 1 + L, device=DEV)
+        bits.append(float(-lp[pos, x[0, 1:][pos]].sum()) / LN2)
+    for _ in range(max(m["vlen"] for m in metas)):
+        prompts = [bytes(rows[i][:metas[i]["v_now"]]) + gen[i] for i in range(len(rows))]
+        L = max(len(pm) for pm in prompts)
+        xb = np.full((len(rows), L), 32, dtype=np.uint8)
+        for i, pm in enumerate(prompts):
+            xb[i, :len(pm)] = np.frombuffer(pm, dtype=np.uint8)
+        for i0 in range(0, len(rows), 16):
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                lg = model(torch.tensor(xb[i0:i0 + 16].astype(np.int64), device=DEV))[0].float()
+            last = torch.tensor([len(pm) - 1 for pm in prompts[i0:i0 + 16]], device=DEV)
+            nxt = lg[torch.arange(lg.shape[0], device=DEV), last].argmax(-1).cpu().numpy()
+            for j, i in enumerate(range(i0, min(i0 + 16, len(rows)))):
+                if len(gen[i]) < metas[i]["vlen"]:
+                    gen[i] += bytes([int(nxt[j])])
+    for i, m in enumerate(metas):
+        truth = bytes(rows[i][m["v_now"]:m["v_now"] + m["vlen"]])
+        first += int(gen[i][:1] == truth[:1])
+        full += int(gen[i][:m["vlen"]] == truth)
+    n = len(rows)
+    return dict(n=n, value_bits=float(np.mean(bits)), first_byte=first / n, full_value=full / n, carries_per_row=n_car / n,
+                rows_with_carries=with_car / n, carry_exact=(exact / n_car if n_car else 0.0), open_prob=float(np.mean(probs)) if probs else 0.0,
+                dist_latest=float(np.mean(d_latest)), dist_early=float(np.mean(d_early)), grid=g, max_gen=max_gen)
+
+
 def finish(c: Craft) -> tuple:
     """One craft's gauges, then its weights. -> (its record, the record's path); the caller writes the record (a pair's records carry
     the pair's reads, taken after both crafts' gauges)."""
@@ -848,6 +960,12 @@ def finish(c: Craft) -> tuple:
             frame_fetch_asks[_a] = None
             log(f"fetch by frame, asked {_a}: not read ({e})")
     canary, formation = (canary_gauge(), bf.formation(c.curve, REGISTER, frame_fetch)) if FRAMES else (None, None)
+    carry = carry_gauge() if CARRY_GAUGE else None      # 0.1.37: reading with notes
+    if carry:
+        log(f"carry gauge (reading with notes, grid {carry['grid']}): n {carry['n']} whole value {carry['full_value']:.3f} first {carry['first_byte']:.3f} "
+            f"bits {carry['value_bits']:.2f}; carries a row {carry['carries_per_row']:.2f} (rows with one {carry['rows_with_carries']:.2f}, exact copies "
+            f"{carry['carry_exact']:.2f}, open probability at the grid {carry['open_prob']:.3f}); the question's distance to the latest definition "
+            f"{carry['dist_latest']:.0f} (to the early frame {carry['dist_early']:.0f})")
     if FRAMES:
         nb = formation["near_band_value_bits_at_end"]
         log("canary rows (bits a byte): " + " | ".join(f"{k} {canary[k]['bits']:.3f}" for k in ("plain", "tag", "frame"))
@@ -876,6 +994,8 @@ def finish(c: Craft) -> tuple:
         R["fetch_by_frame_asks"] = frame_fetch_asks   # 0.1.23: {ask: the fetch groups asked strictly, or None when no plan carried the feature}
     if GAUGE_ONLY:
         R["gauge_only"] = True                       # 0.1.26: a gauge read of the init's weights (no step; no weights written)
+    if CARRY_GAUGE:
+        R["carry"] = carry                           # 0.1.37: reading with notes (the carry gauge)
     if WD:
         R["optimizer"] = dict(name="AdamW", wd=WD, wd_set=WD_SET, betas=list(bed_optim.BETAS), eps=bed_optim.EPS, **c.decay)   # 0.1.31
     return R, os.path.join(BED, f"bed_{c.tag}.json")

@@ -58,7 +58,7 @@ import numpy as np
 import torch
 
 from .bodies import craft_cfg
-from .frames_data import CONTROL_MIX, CORPUS_ENV, FRAMES_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
+from .frames_data import CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
@@ -88,9 +88,10 @@ CRAFTS_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS.i
 # state: fp32 weights and both optimizers) through one appended phase of CONT_TOKENS: framed three rows in four (-fr), or every row
 # plain (-ct, the control). The two arms read the same text row for row (frames_data.py), so they differ only by the frames.
 CONT_TOKENS = 1_000_000_000
-CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continuation", CONTROL_MIX)}
+CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continuation", CONTROL_MIX),
+              "cf": ("carry_continuation", CARRY_MIX)}       # 0.1.37: the carry rows (the self-written frames prototype)
 CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
-               for n, c in CRAFTS.items() for arm in ("fr", "ct")}
+               for n, c in CRAFTS.items() for arm in ("fr", "ct", "cf")}
 ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT}
 
 
@@ -460,13 +461,18 @@ def gauge_scalars(rec: dict) -> dict:
     for kind, c in (rec.get("canary") or {}).items():
         if isinstance(c, dict):
             put(f"bed/canary/{kind}_bits", c.get("bits"))
+    for k, v in (rec.get("carry") or {}).items():          # 0.1.37: reading with notes (bed_train.carry_gauge)
+        put(f"bed/carry/{k}", v)
     put("bed/gauge_seconds", rec.get("wall_s"))
     return out
 
 
 def gauge_args(name: str, init: str, out: str) -> dict:
     c = ALL[name]
-    return dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
+    args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
+    if c.get("cont") == "cf":
+        args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge)
+    return args
 
 
 def bed_gauge(trainer, name: str, out: str, gauge_cmd=None, gauge_gb: float = 10.0, keep_weights: bool = False) -> dict | None:
@@ -526,6 +532,40 @@ def _bed_gauge(trainer, name, out, gauge_cmd, gauge_gb):
           f"bits a byte; the copy (whole value, pooled over the frames) {p.get('full_value', float('nan')):.2f}; "
           f"{len(sc)} scalars to TensorBoard", flush=True)
     return rec
+
+
+def gauge_stored(name: str, step: int, out: str, repo: str = REPO, carry: bool = True, gauge_cmd=None, gauge_gb: float = 10.0,
+                 token=None) -> dict:
+    """0.1.37: the bed's gauge read of a STORED craft (its checkpoint at `step` in the hub repo, the bf16 file; the public repos read
+    tokenless), with the carry gauge (reading with notes) when `carry`: the weights to <out>/bed/<init> in the bed's folder form, the
+    child command as bed_gauge's, the record read back. A record already on disk is returned as it is. -> the record."""
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file, save_file
+    c = ALL[name]
+    init = gauge_init(name, step)
+    bed = os.path.join(out, "bed")
+    wdir = os.path.join(bed, init)
+    args = gauge_args(name, init, out)
+    if carry:
+        args["carry_gauge"] = "1"
+    rec_path = os.path.join(bed, f"bed_{run_tag(args)}.json")
+    if os.path.exists(rec_path):
+        return json.load(open(rec_path, encoding="utf-8"))
+    os.makedirs(wdir, exist_ok=True)
+    if not os.path.exists(os.path.join(wdir, "model.safetensors")):
+        ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
+        save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
+        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+    total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
+    cmd = list(gauge_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.bed_train"]) + [f"--{k}={v}" for k, v in args.items()]
+    env = dict(os.environ, BATTERY_GPU_FRAC=str(min(0.6, max(0.05, gauge_gb / total))), PYTHONIOENCODING="utf-8")
+    env.pop("HF_TOKEN", None)
+    os.makedirs(os.path.join(bed, "gauge_logs"), exist_ok=True)
+    log_path = os.path.join(bed, "gauge_logs", f"{init}{'_carry' if carry else ''}.log")
+    with open(log_path, "w", encoding="utf-8") as lf:
+        rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, timeout=7200).returncode
+    assert rc == 0 and os.path.exists(rec_path), f"the gauge read of {name} at {step:,} failed (exit {rc}); its log: {log_path}"
+    return json.load(open(rec_path, encoding="utf-8"))
 
 
 # ------------------------------------------------------------------ the run
@@ -718,7 +758,9 @@ data's share-alike and non-commercial terms, as Beatrix 2s's does.
 
 V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run (the folders without the .1) the readout kept growing under\nMuon and the last block's output gathered onto a single direction within its first thousand steps; that run was stopped and\nits folders stay as they were.")
 
-HEADLINE = ("bed/text/heldout_bits", "bed/frame/copy_whole", "bed/frame/nested_whole", "bed/frame/redefined_key_whole",
+HEADLINE = ("bed/carry/full_value", "bed/carry/first_byte", "bed/carry/value_bits", "bed/carry/carries_per_row", "bed/carry/rows_with_carries",
+            "bed/carry/carry_exact", "bed/carry/open_prob", "bed/carry/dist_latest",            # 0.1.37: reading with notes, when the record carries it
+            "bed/text/heldout_bits", "bed/frame/copy_whole", "bed/frame/nested_whole", "bed/frame/redefined_key_whole",
             "bed/scaling/frame_1024_whole", "bed/window/planted_2048_bits", "bed/window/planted_3584_bits")
 
 
@@ -728,13 +770,16 @@ def c_arm(n: str) -> str:
 
 CONT_READS = (("val bits a byte", "val_bpb", 4), ("copy", "bed/frame/copy_whole", 2), ("nested", "bed/frame/nested_whole", 2),
               ("redefined key", "bed/frame/redefined_key_whole", 2), ("1,024-byte frame", "bed/scaling/frame_1024_whole", 2),
-              ("planted at 3,584 bytes (bits)", "bed/window/planted_3584_bits", 1))
+              ("planted at 3,584 bytes (bits)", "bed/window/planted_3584_bits", 1),
+              ("far question, own carries (whole value)", "bed/carry/full_value", 2), ("carries written a row", "bed/carry/carries_per_row", 1))
 
 
 def cont_table(hist: dict) -> str:
-    """The frames continuation read before and after (markdown): per body and read, the source craft's end (the first row of its
-    continuation crafts: the same weights), the end of the frames arm, the end of the control, and the frames arm minus the control."""
-    rows = ["| body | read | before (v1.1's end) | after, frames | after, control | frames minus control |", "|---|---|---|---|---|---|"]
+    """The continuation reads before and after (markdown): per body and read, the source craft's end (the first row of its
+    continuation crafts: the same weights), the end of the frames arm, of the carry arm (0.1.37) and of the control, and each
+    arm minus the control; a read no arm carries is left out."""
+    rows = ["| body | read | before (v1.1's end) | after, frames | after, carry | after, control | frames minus control | carry minus control |",
+            "|---|---|---|---|---|---|---|---|"]
 
     def at(entries, phase):
         return next((e for e in entries if e.get("phase") == phase), None)
@@ -743,14 +788,17 @@ def cont_table(hist: dict) -> str:
         return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
     last = diet()[-1]["name"]
     for n in CRAFTS:
-        fr, ct = hist.get(f"{n}.1-fr") or [], hist.get(f"{n}.1-ct") or []
-        before = at(fr, last) or at(ct, last)
-        a_fr, a_ct = at(fr, CONT_PHASE["fr"][0]), at(ct, CONT_PHASE["ct"][0])
+        fr, ct, cf = hist.get(f"{n}.1-fr") or [], hist.get(f"{n}.1-ct") or [], hist.get(f"{n}.1-cf") or []
+        before = at(fr, last) or at(ct, last) or at(cf, last)
+        a_fr, a_ct, a_cf = at(fr, CONT_PHASE["fr"][0]), at(ct, CONT_PHASE["ct"][0]), at(cf, CONT_PHASE["cf"][0])
         for label, k, nd in CONT_READS:
-            b, x, y = get(before, k), get(a_fr, k), get(a_ct, k)
-            f = ["-" if v is None else f"{v:.{nd}f}" for v in (b, x, y)]
-            d = "-" if x is None or y is None else f"{x - y:+.{nd}f}"
-            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {d} |")
+            b, x, z, y = get(before, k), get(a_fr, k), get(a_cf, k), get(a_ct, k)
+            if b is None and x is None and z is None and y is None:
+                continue
+            f = ["-" if v is None else f"{v:.{nd}f}" for v in (b, x, z, y)]
+            d1 = "-" if x is None or y is None else f"{x - y:+.{nd}f}"
+            d2 = "-" if z is None or y is None else f"{z - y:+.{nd}f}"
+            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {d1} | {d2} |")
     return "\n".join(rows)
 
 

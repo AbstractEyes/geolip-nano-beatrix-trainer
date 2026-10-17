@@ -131,10 +131,10 @@ def test_the_mixes_validate_on_the_fineweb_holdout_and_registering_only_adds():
     assert dict(streams.REGISTRY) == before[0] and dict(curriculum.CURRICULUM_MIXES) == before[1]
 
 
-def test_the_eight_continuation_crafts_and_their_plans():
+def test_the_continuation_crafts_and_their_plans():
     C = nano_v1.CRAFTS_CONT
-    assert list(C) == [f"{n}.1-{a}" for n in nano_v1.CRAFTS for a in ("fr", "ct")]
-    assert len({c["tag"] for c in C.values()}) == 2 and all(C[n]["source"] in nano_v1.CRAFTS_V11 for n in C)
+    assert list(C) == [f"{n}.1-{a}" for n in nano_v1.CRAFTS for a in ("fr", "ct", "cf")]    # 0.1.37: the carry arm beside the two
+    assert len({c["tag"] for c in C.values()}) == 3 and all(C[n]["source"] in nano_v1.CRAFTS_V11 for n in C)
     inits = {nano_v1.gauge_init(n, 62000) for n in nano_v1.ALL}
     assert len(inits) == len(nano_v1.ALL)                                      # no two crafts share a gauge folder
     assert nano_v1.diet_steps(1.0, 262144) == 61422
@@ -142,7 +142,7 @@ def test_the_eight_continuation_crafts_and_their_plans():
     for n in C:
         ph = nano_v1.diet_of(n)
         assert len(ph) == 14 and ph[:13] == nano_v1.diet() and ph[-1]["planned_tokens"] == nano_v1.CONT_TOKENS
-        assert ph[-1]["dataset"] == (fd.FRAMES_MIX if C[n]["cont"] == "fr" else fd.CONTROL_MIX)
+        assert ph[-1]["dataset"] == {"fr": fd.FRAMES_MIX, "ct": fd.CONTROL_MIX, "cf": fd.CARRY_MIX}[C[n]["cont"]]   # 0.1.37: the carry mix
         placed = cursor_at_step(ph, 61422, 262144)
         assert all(p["status"] == "done" for p in placed[:13]) and placed[-1]["status"] == "active" and placed[-1]["tokens_done"] == 0
         spec = nano_v1.cont_init(n, 262144)
@@ -159,9 +159,9 @@ def test_the_before_and_after_table():
             "nano-castor-v1.1-ct": [dict(phase="anneal_mix", val_bpb=1.30, bed=bed),
                                     dict(phase="control_continuation", val_bpb=1.29, bed={"bed/frame/copy_whole": 0.12})]}
     t = nano_v1.cont_table(hist)
-    assert "| nano-castor-v1 | val bits a byte | 1.3000 | 1.3100 | 1.2900 | +0.0200 |" in t
-    assert "| nano-castor-v1 | copy | 0.10 | 0.80 | 0.12 | +0.68 |" in t
-    assert "| nano-castor-v1 | nested | 0.05 | - | - | - |" in t and "| nano-pollux-canon-v1 | copy | - | - | - | - |" in t
+    assert "| nano-castor-v1 | val bits a byte | 1.3000 | 1.3100 | - | 1.2900 | +0.0200 | - |" in t      # 0.1.37: the carry column between
+    assert "| nano-castor-v1 | copy | 0.10 | 0.80 | - | 0.12 | +0.68 | - |" in t
+    assert "| nano-castor-v1 | nested | 0.05 | - | - | - | - | - |" in t and "| nano-pollux-canon-v1 |" not in t   # a body without rows is left out
 
 
 def test_the_continuation_writes_the_before_row_free():
