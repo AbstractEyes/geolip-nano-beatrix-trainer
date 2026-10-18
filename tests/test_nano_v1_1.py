@@ -80,6 +80,16 @@ def test_the_two_versions_gauge_records_never_share_a_name():
     assert a != b and "v11c_4000" in b
 
 
+def test_an_arm_knows_its_body_its_chain_and_its_start():
+    """0.1.43: the names the packages and the card use."""
+    assert nano_v1.body_of("nano-pollux-dual-v1.1-cf-nt") == "nano-pollux-dual-v1.1" and nano_v1.body_of("nano-castor-v1.1") == "nano-castor-v1.1"
+    assert nano_v1.arm_text("nano-castor-v1.1") is None and nano_v1.arm_text("nano-castor-v1.1-fr") == "frames"
+    assert nano_v1.arm_text("nano-pollux-dual-v1.1-fr-cf") == "frames, then carry" and nano_v1.arm_text("nano-pollux-dual-v1.1-cf-nt") == "carry, then notes"
+    assert nano_v1.start_step("nano-castor-v1.1") == 0 and nano_v1.start_step("nano-castor-v1.1-cf") == 61422
+    assert nano_v1.start_step("nano-pollux-dual-v1.1-cf-nt") == 65237 and nano_v1.start_step("nano-pollux-dual-v1.1-fr-cf") == 65237
+    assert nano_v1.version_of(["nano-pollux-dual-v1.1-cf-nt"]) == "v1.1" and nano_v1.version_of(["nano-castor-v1"]) == "v1"
+
+
 def test_the_cards_name_the_version_and_the_v1_card_is_unchanged():
     v1 = nano_v1.card_in_training()
     assert "Castor and Pollux, v1\n" in v1 and "v1.1" not in v1 and "colab/nano_v1_2s.ipynb" in v1

@@ -110,6 +110,30 @@ def train_of(name: str) -> dict:
     return dict(ALL[name].get("train") or {})
 
 
+ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes"}      # 0.1.43: a continuation kind in plain words
+
+
+def body_of(name: str) -> str:
+    """0.1.43: the body a craft is a continuation of: the craft itself for a body, else its source's body (the chain followed to its end)."""
+    c = ALL[name]
+    return body_of(c["source"]) if c.get("source") else name
+
+
+def arm_text(name: str) -> str | None:
+    """0.1.43: a craft's continuation chain in plain words ('carry'; 'frames, then carry'; 'carry, then notes'); None for a body."""
+    parts, n = [], name
+    while ALL[n].get("source"):
+        parts.append(ARM_TEXT[ALL[n]["cont"]])
+        n = ALL[n]["source"]
+    return ", then ".join(reversed(parts)) or None
+
+
+def start_step(name: str, tokens_per_step: int = TOKENS_PER_STEP) -> int:
+    """0.1.43: the step a craft's own training started at: its source's planned end (plan_steps), 0 for a body born in the bed."""
+    c = ALL[name]
+    return plan_steps(c["source"], tokens_per_step) if c.get("source") else 0
+
+
 def gauge_init(name: str, step: int) -> str:
     """The folder the bed's gauge reads a craft's weights from, also its record's starting-craft piece: v1<code>_<step> for a v1 craft,
     v11<code>_<step> for a v1.1 craft (so the two versions' records never share a name)."""
@@ -745,7 +769,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 def version_of(names) -> str:
     """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT for n in names) else "v1"
+    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 for n in names) else "v1"
 
 
 def card_in_training(names=None) -> str:

@@ -23,7 +23,7 @@ drives them, as `geolip.nano_beatrix`. What the bed produces (weights, run recor
 | `geolip/nano_beatrix/lastfix_screen.py` | the last block's write under a bound, screened on the v1 bodies before their train: each arm (a body, a start, one of the library's `bank_last_fix` forms or none) trains through the start of the 2s diet with the 2s recipe; every 500 steps the full eval and the big-direction reads (the share of each block's output on the last block's mean direction, the last bank write's share and size, every block's rank, the final norm's gain and bias against the direction, the output layer's size and loudness) into the run's TensorBoard; at the end the drift memory on random bytes; the second stage's arms put the output layer's readout on AdamW (`TrainConfig.decay_params`); `run(out, hf_token, names)`, `table(records)`; 0.1.34: the head's dial arms (the library's `head_mode`: the aleph read as the output layer's confidence dial, a bounded per-position scale on the readout's logits born at 1), each at the v1.1 recipe against the readout-on-AdamW run of its body and start, with the head's toggle in bits, the dial's spread, saturation and correlation with the prediction's entropy, and the head address's health in the reads |
 | `geolip/nano_beatrix/bed_optim.py` | the bed's optimizer: pure Adam by default (every run before 0.1.31), or AdamW with decoupled decay on a named set of weights (`mat`: every weight that maps the stream; `head`: the output layer's two readouts), every other parameter at decay 0 (Adam's update exactly); `bed_train --wd=0.1 [--wd_set=mat]`; the run's name and record carry it |
 | `geolip/nano_beatrix/bed_rerun.py` | the bed's deciding tests again with AdamW in place of the pure Adam they ran on: every test's settings verbatim from its notebook, in parts that share no run (one part a card); `plan`, `price`, `run`, and `read` (each run beside the pure-Adam run of the same settings) |
-| `geolip/nano_beatrix/automodel.py` | the finished crafts as transformers AutoModel packages in their repo: the library's model files vendored with the wrapper (`hf_template/modeling_nano_beatrix.py`) at the repo's top and in each craft's folder, each craft's config and final weights (bf16, and the fp32 variant), and the gates every package passes before anything is pushed (exact parity with the library; a transformers load in a process where the library cannot be imported); `release(out, repo, crafts, token)` |
+| `geolip/nano_beatrix/automodel.py` | the finished crafts (the four bodies and, since 0.1.43, every continuation arm; `crafts.json` at the repo's top indexes them and each config says what its model is) as transformers AutoModel packages in their repo: the library's model files vendored with the wrapper (`hf_template/modeling_nano_beatrix.py`) at the repo's top and in each craft's folder, each craft's config and final weights (bf16, and the fp32 variant), and the gates every package passes before anything is pushed (exact parity with the library; a transformers load in a process where the library cannot be imported); `release(out, repo, crafts, token)` |
 
 The arms: an attention form (softmax with a learned position table, softmax with rotary, the splat hub with its aleph address, the
 hub with rotary on its codes, the dual hub with two masses, hub and softmax blocks alternating) times a bank form (the aleph address
@@ -174,6 +174,18 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.43 (2026-10-18): THE AUTOMODEL COVERS EVERY CRAFT FOLDER. `automodel.release(out, repo, crafts=None, token)` packages every
+craft folder the repo holds (the four bodies and their continuation arms; `final_files` takes the resume state of the last phase
+done); each `config.json` carries `craft` (the model's name, its body, its arm in plain words, what it continued from, the step
+its own training started at, the phase and step its weights ended on, the bytes seen) and `activated` (the mechanisms its body
+switches on: the hub blocks, dual hubs, rotary codes, the softmax blocks, the Canon layers, the expert bank and its byte table,
+the last block's bound, the head's mode, the position table), so `model.config.craft` says what a loaded model is; `crafts.json`
+at the repo's top indexes every packaged folder with its end reads (the last boundary row, or a later protocol's re-read of the
+end checkpoint from a `regauge_*/` folder, which wins; `end_reads`); the card renders the continuation arms body by body from the
+same facts (what each arm trains on, the steps, the bed's reads, the note arm's own columns) and the bodies' table stays the
+bodies'. `nano_v1.body_of`, `arm_text` ('frames, then carry'), `start_step`; `version_of` knows every arm family.
+`colab/nano_v1_1_release.ipynb` runs the release (the gates run on the CPU; a write token); tests.
 
 0.1.42 (2026-10-18): the note row's question takes its room from the real record's own length (0.1.41 drew it from the bed's
 synthetic record length, so a key and value up to 10 bytes longer overran the window by up to 8 bytes in the first preflight); a
