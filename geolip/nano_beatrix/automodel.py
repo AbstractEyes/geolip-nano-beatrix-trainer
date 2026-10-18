@@ -176,14 +176,35 @@ def activated(mc: dict) -> dict:
                 head_mode=(mc.get("head_mode") or None), position_table=bool(mc.get("pos_table")))
 
 
+def complete_config(craft: str, mc: dict) -> tuple:
+    """0.1.47: the craft's model config with every field the library knows. A manifest written by an older library lacks the fields added
+    since (the head's mode and dial on the v1.1 bodies, trained before 0.1.4x): for a craft in nano_v1's table the fields come from the
+    bodies table (bodies.craft_cfg at the v1 context, the config the trainer and the gauges build the model from), which must agree with
+    the manifest on every field the manifest has; for a craft outside the table from the library's defaults. -> (the config, the fields
+    filled, where they came from)."""
+    from geolip.alephllm.presets import AlephLMConfig
+    from .bodies import craft_cfg
+    from .nano_v1 import ALL, CTX
+    norm = lambda v: json.loads(json.dumps(v))
+    if craft in ALL:                                   # a known craft: the table is the reference and must agree with the manifest
+        base, source = craft_cfg(ALL[craft]["arm"], CTX).to_dict(), "the bodies table (bodies.craft_cfg at the v1 context)"
+        differ = {k: [mc[k], base[k]] for k in mc if k in base and k not in ("name", "hub_ckpt") and norm(mc[k]) != norm(base[k])}
+        assert not differ, f"{craft}: the manifest's model config disagrees with {source}: {differ}"
+    else:                                              # any other craft: its own values stand; only the fields it lacks are filled
+        base, source = AlephLMConfig().to_dict(), "the library's defaults (AlephLMConfig)"
+    filled = sorted(k for k in base if k not in mc)
+    return dict(base, **mc), filled, source
+
+
 def stage_config(craft: str, manifest: str, root: str, gates: str) -> dict:
-    """The craft's config.json from its run's manifest (0.1.43: with `craft` and `activated`, what the model is), and the code copied
-    into its folder byte for byte."""
+    """The craft's config.json from its run's manifest (0.1.43: with `craft` and `activated`, what the model is; 0.1.47: completed with
+    the fields the manifest predates), and the code copied into its folder byte for byte."""
     out = os.path.join(root, craft)
     os.makedirs(out, exist_ok=True)
     man = json.load(open(manifest, encoding="utf-8"))
     mc = dict(man["model_config"])
     assert mc["name"] == craft and mc.get("fusion") is None, (mc["name"], craft)
+    mc, filled, source = complete_config(craft, mc)
     cfg = dict(mc, hub_ckpt=0)
     cfg.update(craft=identity(craft, man), activated=activated(mc))   # 0.1.43: a loaded model says what it is
     cfg.update(model_type="nano-beatrix", architectures=["NanoBeatrixForCausalLM"],
@@ -194,7 +215,7 @@ def stage_config(craft: str, manifest: str, root: str, gates: str) -> dict:
     for f in CODE:
         shutil.copyfile(os.path.join(root, f), os.path.join(out, f))
     same = hashes(out, CODE) == hashes(root, CODE)
-    return gate(os.path.join(gates, craft), "config", same, config=cfg, code_equals_the_top=same,
+    return gate(os.path.join(gates, craft), "config", same, config=cfg, filled=filled, filled_from=source, code_equals_the_top=same,
                 sha256=hashes(out, CODE + ["config.json"]))
 
 

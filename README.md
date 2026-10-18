@@ -175,6 +175,13 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.47 (2026-10-18): `automodel.complete_config`: a manifest written by an older library lacks the model-config fields added since
+(the v1.1 bodies, trained before the head's mode and dial existed, have no `head_mode`; the first local release stopped at the
+parity stage with a KeyError). For a craft in nano_v1's table the missing fields come from the bodies table (`bodies.craft_cfg` at
+the v1 context, the config the trainer and the gauges build the model from), which must agree with the manifest on every field the
+manifest has (a disagreement fails the config gate); for a craft outside the table from the library's defaults. The config gate's
+record names the fields filled and their source. `colab/nano_v1_1_release.ipynb` pins v0.1.47; tests.
+
 0.1.46 (2026-10-18): the parity gate's record carries the device as its own field (0.1.45 put it among the weight files' entries,
 where readers expect one entry a file; `test_a_tiny_craft_passes_config_weights_and_parity` failed and 0.1.45 was tagged over it);
 `colab/nano_v1_1_release.ipynb` pins v0.1.46.

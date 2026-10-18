@@ -143,6 +143,34 @@ def test_the_config_says_what_the_model_is(tmp_path):
     assert AM.activated({"n_layers": 6, "hub_layers": [], "attn_rotary": True})["attention"] == "rotary softmax in every block"
 
 
+def test_a_manifest_from_an_older_library_is_completed(tmp_path):
+    """0.1.47: the fields a manifest predates are filled: from the defaults for a craft outside the table, from the bodies table for one
+    inside, which must agree with the manifest on every field it has."""
+    runs, run = _run(tmp_path)
+    man = json.load(open(run / "manifest.json", encoding="utf-8"))
+    gone = [k for k in ("head_mode", "head_dial_band", "head_dial_rho") if k in man["model_config"]]
+    assert gone, "the library has no such field to drop"
+    for k in gone:
+        del man["model_config"][k]
+    json.dump(man, open(run / "manifest.json", "w", encoding="utf-8"))
+    root = tmp_path / "pkg"
+    AM.stage_code(str(root), str(root / "gates"))
+    rec = AM.stage_config(CRAFT, str(run / "manifest.json"), str(root), str(root / "gates"))
+    assert rec["filled"] == sorted(gone) and "defaults" in rec["filled_from"]
+    AM.stage_weights(CRAFT, str(run), str(root), str(root / "gates"))
+    assert AM.stage_parity(CRAFT, str(root), str(tmp_path / "work"), str(root / "gates"))["pass"]
+    from geolip.nano_beatrix.bodies import craft_cfg
+    from geolip.nano_beatrix.nano_v1 import CTX
+    full = craft_cfg("castor-both", CTX).to_dict()
+    partial = {k: v for k, v in full.items() if k not in gone}
+    partial["name"] = "nano-castor-v1.1"
+    cfg, filled, src = AM.complete_config("nano-castor-v1.1", partial)
+    assert filled == sorted(gone) and "bodies table" in src and all(cfg[k] == full[k] for k in gone) and cfg["name"] == "nano-castor-v1.1"
+    partial["tau"] = 0.5
+    with pytest.raises(AssertionError, match="disagrees"):
+        AM.complete_config("nano-castor-v1.1", partial)
+
+
 def test_the_card_names_each_model_and_how_to_load_it():
     from geolip.nano_beatrix.nano_v1 import CRAFTS, CRAFTS_V11, HEADLINE
     hist = {n: [{"phase": "anneal_mix", "step": 61422, "tokens": 16.1e9, "val_bpb": 1.2345, "bed": {k: 0.5 for k in HEADLINE}}]
