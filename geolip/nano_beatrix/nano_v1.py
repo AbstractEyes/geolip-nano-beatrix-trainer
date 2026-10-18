@@ -58,7 +58,7 @@ import numpy as np
 import torch
 
 from .bodies import craft_cfg
-from .frames_data import CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
+from .frames_data import CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
@@ -89,7 +89,8 @@ CRAFTS_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS.i
 # plain (-ct, the control). The two arms read the same text row for row (frames_data.py), so they differ only by the frames.
 CONT_TOKENS = 1_000_000_000
 CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continuation", CONTROL_MIX),
-              "cf": ("carry_continuation", CARRY_MIX)}       # 0.1.37: the carry rows (the self-written frames prototype)
+              "cf": ("carry_continuation", CARRY_MIX),       # 0.1.37: the carry rows (the self-written frames prototype)
+              "nt": ("note_continuation", NOTE_MIX)}         # 0.1.41: the note rows (form A, second instance: a fact of the text framed)
 CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
                for n, c in CRAFTS.items() for arm in ("fr", "ct", "cf")}
 # 0.1.40: the frames-then-carry arm (one seed): the frames craft's end state (fp32 weights and both optimizers at step 65,237 at the 2s
@@ -97,7 +98,11 @@ CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=
 # carries. Its plan is its source's whole plan plus the carry phase (69,052 steps); that phase sits one slot later than the -cf arm's, so
 # it reads the same mix and dose in a different shuffle (the library offsets a phase's stream seed by its position in the plan).
 CRAFTS_CONT2 = {f"{n}.1-fr-cf": dict(c, train=V11_TRAIN, tag="v11frcf", source=f"{n}.1-fr", cont="cf") for n, c in CRAFTS.items()}
-ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2}
+# 0.1.41: the note arms (one seed): -nt from the diet's end (the single-phase form), -cf-nt from the carry arm's end state (the body that
+# already writes carries learns WHAT to write: the fact the text states); both run the note phase (NOTE_MIX, CONT_TOKENS).
+CRAFTS_NOTE = {f"{n}.1-nt": dict(c, train=V11_TRAIN, tag="v11nt", source=f"{n}.1", cont="nt") for n, c in CRAFTS.items()}
+CRAFTS_NOTE2 = {f"{n}.1-cf-nt": dict(c, train=V11_TRAIN, tag="v11cfnt", source=f"{n}.1-cf", cont="nt") for n, c in CRAFTS.items()}
+ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2}
 
 
 def train_of(name: str) -> dict:
@@ -480,6 +485,14 @@ def gauge_scalars(rec: dict) -> dict:
     for k, v in (rec.get("carry_plain") or {}).items():    # 0.1.39: the plain-row read (no question: its counts and the open probability)
         if isinstance(v, (int, float)):
             put(f"bed/carry_plain/{k}", v)
+    for blk in ("note_self", "note_planted"):              # 0.1.41: the note rows (bed_train.carry_gauge(note=...)), with the whole value by distance
+        b = rec.get(blk) or {}
+        for k, v in b.items():
+            if isinstance(v, (int, float)):
+                put(f"bed/{blk}/{k}", v)
+        for bin_, d in (b.get("by_dist") or {}).items():
+            for k in ("full_value", "first_byte", "value_bits", "n"):
+                put(f"bed/{blk}/{bin_}_{k}", (d or {}).get(k))
     put("bed/gauge_seconds", rec.get("wall_s"))
     return out
 
@@ -487,8 +500,10 @@ def gauge_scalars(rec: dict) -> dict:
 def gauge_args(name: str, init: str, out: str) -> dict:
     c = ALL[name]
     args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
-    if c.get("cont") == "cf":
+    if c.get("cont") in ("cf", "nt"):
         args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge)
+    if c.get("cont") == "nt":
+        args["note_gauge"] = "1"                         # 0.1.41: the note arm's reads add the note rows, given and self-written (the tag ends _carry_note_gauge)
     return args
 
 
@@ -777,7 +792,9 @@ data's share-alike and non-commercial terms, as Beatrix 2s's does.
 
 V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run (the folders without the .1) the readout kept growing under\nMuon and the last block's output gathered onto a single direction within its first thousand steps; that run was stopped and\nits folders stay as they were.")
 
-HEADLINE = ("bed/carry/full_value", "bed/carry/first_byte", "bed/carry/value_bits", "bed/carry/carries_per_row", "bed/carry/rows_with_carries",
+HEADLINE = ("bed/note_self/full_value", "bed/note_self/far_ge2048_full_value", "bed/note_self/near_lt1024_full_value", "bed/note_self/carries_per_row",
+            "bed/note_self/rows_with_key", "bed/note_self/carry_exact", "bed/note_planted/full_value", "bed/note_planted/far_ge2048_full_value",   # 0.1.41: the note rows
+            "bed/carry/full_value", "bed/carry/first_byte", "bed/carry/value_bits", "bed/carry/carries_per_row", "bed/carry/rows_with_carries",
             "bed/carry/carry_exact", "bed/carry/open_prob", "bed/carry/dist_latest",            # 0.1.37: reading with notes, when the record carries it
             "bed/text/heldout_bits", "bed/frame/copy_whole", "bed/frame/nested_whole", "bed/frame/redefined_key_whole",
             "bed/scaling/frame_1024_whole", "bed/window/planted_2048_bits", "bed/window/planted_3584_bits")

@@ -175,6 +175,20 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.41 (2026-10-18): THE NOTE ROW, the second instance of the self-written frames: the frame's content is a fact the text itself
+states. `frames_data.extract_facts` finds definitional facts in a row's own text by fixed patterns (a definition, an abbreviation,
+a quantity, a capital, a place, the founding year of an institution; no pattern reads a person's name with a birth, an age or an
+address), `frames_data.note_row` writes one 32-byte lookup frame holding the fact at the first 64-byte grid point after the
+sentence that states it, carries restating it on the grid every 384 to 640 bytes, and the question in the last 512 bytes asking
+the key; the question's distance to the fact follows where the fact falls, so one data form trains the near and the far read; a
+text with no usable fact stays plain. The stream `nano-frames-note` and its mix `nano-frames-note-mix`; the crafts
+`nano-<body>-v1.1-nt` (from the diet's end) and `nano-<body>-v1.1-cf-nt` (from the carry arm's end state), one note phase of 1.0
+billion bytes. The reading-with-notes gauge gains two note modes (`--note_gauge=1`, the record's `note_planted` and `note_self`
+blocks, the tag's `_note`): the note given with the carries the body's own, and the note absent so the body must notice the fact
+and write it; each reports the whole value by the question's distance to the fact, the rows whose own note held the key, and the
+per-row dump. `colab/nano_v1_1_notes.ipynb` (one body by default; its preflight reads the start state in both modes before any
+training) pins v0.1.41; tests.
+
 0.1.40 (2026-10-17): THE FRAMES-THEN-CARRY ARM: a second-stage continuation craft a body, `nano-<body>-v1.1-fr-cf`
 (`nano_v1.CRAFTS_CONT2`), starts from the frames arm's end state (the exact state: fp32 weights and both optimizers at step
 65,237) and runs the carry phase (1.0 billion bytes, 3,815 steps, to 69,052), so a body that already reads a frame within a

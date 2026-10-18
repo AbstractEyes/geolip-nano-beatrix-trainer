@@ -130,6 +130,7 @@ CARRY_GAUGE = ARGS.get("carry_gauge", "0") == "1"   # 0.1.37: reading with notes
 CARRY_ROWS = int(ARGS.get("carry_rows", "192"))     # 0.1.39: the rows read (the first 192 of any count are the 192-row read's rows)
 CARRY_DUMP = ARGS.get("carry_dump", "0") == "1"     # 0.1.39: the per-row dump beside the record (bed_<tag>_rows.jsonl + .npy)
 CARRY_PLAIN = ARGS.get("carry_plain", "0") == "1"   # 0.1.39: the plain-row read as well (the record's carry_plain block; the tag carries _plain)
+NOTE_GAUGE = ARGS.get("note_gauge", "0") == "1"     # 0.1.41: the note rows (frames_data.NOTE): the note given and the note self-written; the tag carries _note
 if GAUGE_ONLY:
     assert INIT and "pair" not in ARGS and ARGS.get("steps", "0") == "0", "--gauge_only=1 reads one stored craft (--init), with no steps"
     STEPS = 0
@@ -811,7 +812,7 @@ def canary_gauge():
 
 
 @torch.no_grad()
-def carry_gauge(plain: bool = False):
+def carry_gauge(plain: bool = False, note: str | None = None):
     """READING WITH NOTES (0.1.37, the self-written frames prototype; plans/2026-10-17_self_frames_prototype_plan.md): the carry row
     without its carries (frames_data.carry_row, carries=False: one early lookup frame, a far question), read in grid steps (64 bytes)
     from the early frame's end. At each grid point the model's greedy next byte decides: the frame's open byte (DATA) opens a carry,
@@ -831,23 +832,39 @@ def carry_gauge(plain: bool = False):
     them (uint8 [n, CTX + 1] .npy); the block names both files under `dump`."""
     from geolip.nano_beatrix import frames_data as fd
     from geolip.alephllm.data.special_tokens import DATA, END
-    form = fd.CARRY
+    form = fd.NOTE if note else fd.CARRY
     g = form["grid"]
-    max_gen = bf.frame_bytes(max(form["early_sizes"]), form["sliced"]) + 1
-    docs = heldout[:CARRY_ROWS]
-    assert len(docs) == CARRY_ROWS, f"carry_rows {CARRY_ROWS} exceeds the held-out file's {len(heldout)} documents"
+    max_gen = (bf.frame_bytes(form["size"], form["sliced"]) if note else bf.frame_bytes(max(form["early_sizes"]), form["sliced"])) + 1
     rng = np.random.default_rng([SEED, 5151])
     rows, metas, early = [], [], []
     q_lo = CTX + 1 - form["late"]
-    for doc in docs:
-        if plain:
-            r = fd.plain_row(rng, bytes([DOC]) + doc, CTX)
-            m = dict(early_start=None, early_end=fd.PLAIN_START, q0=q_lo, v0=None, vlen=0, key=None, early_keys=[], early_vals=[])
-        else:
-            r, m = fd.carry_row(rng, bytes([DOC]) + doc, form, CTX, carries=False)
-        rows.append(bytearray(r))
-        metas.append(m)
-        early.append(b"" if plain else r[m["early_start"]:m["early_end"]])
+    n_scanned = 0
+    if note:                                                           # 0.1.41: the note rows: held-out documents with a usable fact, in file order
+        assert note in ("self", "planted"), note
+        for doc in heldout:
+            if len(rows) >= CARRY_ROWS:
+                break
+            n_scanned += 1
+            rm = fd.note_row(rng, bytes([DOC]) + doc, form, CTX, notes=(note == "planted"), carries=False)
+            if rm is None:
+                continue
+            r, m = rm
+            rows.append(bytearray(r))
+            metas.append(m)
+            early.append(m["note_bytes"])                              # the note as the composer writes it: the exactness reference in both modes
+        assert len(rows) == CARRY_ROWS, f"only {len(rows)} held-out documents of {n_scanned} hold a usable fact; carry_rows {CARRY_ROWS}"
+    else:
+        docs = heldout[:CARRY_ROWS]
+        assert len(docs) == CARRY_ROWS, f"carry_rows {CARRY_ROWS} exceeds the held-out file's {len(heldout)} documents"
+        for doc in docs:
+            if plain:
+                r = fd.plain_row(rng, bytes([DOC]) + doc, CTX)
+                m = dict(early_start=None, early_end=fd.PLAIN_START, q0=q_lo, v0=None, vlen=0, key=None, early_keys=[], early_vals=[])
+            else:
+                r, m = fd.carry_row(rng, bytes([DOC]) + doc, form, CTX, carries=False)
+            rows.append(bytearray(r))
+            metas.append(m)
+            early.append(b"" if plain else r[m["early_start"]:m["early_end"]])
 
     def greedy(prompts: list) -> tuple:
         """The greedy next byte and the open byte's probability at the end of every prompt (right-padded batches of 16, each row read
@@ -867,9 +884,10 @@ def carry_gauge(plain: bool = False):
             out_p += F.softmax(at, -1)[:, DATA].cpu().tolist()
         return out_b, out_p
     n = len(rows)
-    p = [-(-m["early_end"] // g) * g for m in metas]
+    p = [(-(-m["early_end"] // g) * g) if m.get("early_end") is not None else form["min_pos"] for m in metas]   # 0.1.41: a self row reads from min_pos
     inserted, opened, exact_n = [0] * n, [0] * n, 0
-    latest = [m["early_start"] for m in metas]                        # the latest position holding the asked key (plain: None)
+    latest = [(m["early_start"] if m.get("early_start") is not None else m.get("fact_end")) for m in metas]   # the latest position holding the asked key (plain: None; a self row: the fact itself)
+    init_latest = list(latest)
     latest_any = [None] * n                                            # the latest carry of any kind (0.1.39)
     tail_room = [(form["late"] if plain else CTX + 1 - (m["v0"] + m["vlen"] + 1)) for m in metas]
     q_end = [m["q0"] for m in metas]
@@ -908,7 +926,9 @@ def carry_gauge(plain: bool = False):
         active = [i for i in active if p[i] < q_end[i] + inserted[i] - g and inserted[i] < tail_room[i]]
     n_car, with_car, exact = sum(opened), sum(1 for o in opened if o), exact_n
     res = dict(n=n, carries_per_row=n_car / n, rows_with_carries=with_car / n, carry_exact=(exact / n_car if n_car else 0.0),
-               open_prob=float(np.mean(probs)) if probs else 0.0, grid=g, max_gen=max_gen, rows=CARRY_ROWS, plain=plain)
+               open_prob=float(np.mean(probs)) if probs else 0.0, grid=g, max_gen=max_gen, rows=CARRY_ROWS, plain=plain,
+               mode=("plain" if plain else (note or "carry")), n_scanned=(n_scanned if note else None),
+               rows_with_key=((sum(1 for i in range(n) if latest[i] != init_latest[i]) / n) if note else None))   # 0.1.41: a note of the body's own held the key
     bits_rows, gen, first_ok, full_ok = [[] for _ in rows], [b"" for _ in rows], [False] * n, [False] * n
     if plain:
         res.update(value_bits=None, first_byte=None, full_value=None, dist_latest=None, dist_early=None, start=fd.PLAIN_START)
@@ -919,7 +939,7 @@ def carry_gauge(plain: bool = False):
         for i, m in enumerate(metas):
             m["q_now"], m["v_now"] = m["q0"] + inserted[i], m["v0"] + inserted[i]
             d_latest.append(m["q_now"] - latest[i])
-            d_early.append(m["q_now"] - m["early_start"])
+            d_early.append(m["q_now"] - (m["early_start"] if m.get("early_start") is not None else m["fact_end"]))
         # the value at the question, on the model's own rows
         for i, m in enumerate(metas):
             v, L = m["v_now"], m["vlen"]
@@ -950,8 +970,15 @@ def carry_gauge(plain: bool = False):
             full += int(full_ok[i])
         res.update(value_bits=float(np.mean([sum(b) for b in bits_rows])), first_byte=first / n, full_value=full / n,
                    dist_latest=float(np.mean(d_latest)), dist_early=float(np.mean(d_early)))
+        if note:                                                       # 0.1.41: the whole value by the question's distance to the fact itself
+            res["by_dist"] = {}
+            for bname, lo, hi in (("near_lt1024", 0, 1024), ("mid_1024_2048", 1024, 2048), ("far_ge2048", 2048, 10 ** 9)):
+                idx = [i for i, m in enumerate(metas) if lo <= m["fact_dist"] < hi]
+                res["by_dist"][bname] = dict(n=len(idx), full_value=(float(np.mean([full_ok[i] for i in idx])) if idx else None),
+                                             first_byte=(float(np.mean([first_ok[i] for i in idx])) if idx else None),
+                                             value_bits=(float(np.mean([sum(bits_rows[i]) for i in idx])) if idx else None))
     if CARRY_DUMP:                                                     # 0.1.39: the per-row dump beside the record
-        suffix = "_plain" if plain else ""
+        suffix = "_plain" if plain else (f"_note_{note}" if note else "")
         jp = os.path.join(BED, f"bed_{TAG}_rows{suffix}.jsonl")
         npp = os.path.join(BED, f"bed_{TAG}_rows{suffix}.npy")
         np.save(npp, np.stack([np.frombuffer(bytes(r), dtype=np.uint8) for r in rows]))
@@ -962,7 +989,8 @@ def carry_gauge(plain: bool = False):
                                         early_records=[[k, v] for k, v in zip(m.get("early_keys", []), m.get("early_vals", []))],
                                         key=m.get("key"), truth=truth, q0=m.get("q0"), q_now=m.get("q_now"), v_now=m.get("v_now"), vlen=m.get("vlen"),
                                         reads=reads[i], carries=carries[i], latest_key_pos=(None if plain else latest[i]), latest_carry_pos=latest_any[i],
-                                        inserted=inserted[i], answer=(None if plain else gen[i].decode("latin-1")), bits=bits_rows[i],
+                                        inserted=inserted[i], fact_end=m.get("fact_end"), note_pos=m.get("note_pos"), fact_kind=m.get("fact_kind"),
+                                        fact_dist=m.get("fact_dist"), mode=res["mode"], answer=(None if plain else gen[i].decode("latin-1")), bits=bits_rows[i],
                                         whole=bool(full_ok[i]), first=bool(first_ok[i]))) + "\n")
         res["dump"] = dict(jsonl=os.path.basename(jp), npy=os.path.basename(npp))
     return res
@@ -1012,6 +1040,14 @@ def finish(c: Craft) -> tuple:
     canary, formation = (canary_gauge(), bf.formation(c.curve, REGISTER, frame_fetch)) if FRAMES else (None, None)
     carry = carry_gauge() if CARRY_GAUGE else None      # 0.1.37: reading with notes
     carry_plain = carry_gauge(plain=True) if (CARRY_GAUGE and CARRY_PLAIN) else None     # 0.1.39: the plain-row read
+    note_self = carry_gauge(note="self") if NOTE_GAUGE else None                          # 0.1.41: the note rows, the body writing its own notes
+    note_planted = carry_gauge(note="planted") if NOTE_GAUGE else None                    # 0.1.41: the note given (reading real-word frames)
+    for nm, blk in (("note self", note_self), ("note planted", note_planted)):
+        if blk:
+            log(f"{nm} ({blk['n']} rows of {blk['n_scanned']} scanned): whole value {blk['full_value']:.3f} first {blk['first_byte']:.3f} bits "
+                f"{blk['value_bits']:.2f}; notes a row {blk['carries_per_row']:.2f} (rows with one {blk['rows_with_carries']:.2f}, holding the key "
+                f"{blk['rows_with_key']:.2f}, exact {blk['carry_exact']:.2f}, open probability {blk['open_prob']:.3f}); by distance to the fact "
+                + " ".join(f"{b}: n {d['n']} whole {'-' if d['full_value'] is None else format(d['full_value'], '.2f')}" for b, d in blk["by_dist"].items()))
     if carry_plain:
         log(f"plain-row read (no frame, no question; from {carry_plain['start']}): carries a row {carry_plain['carries_per_row']:.2f} (rows with one "
             f"{carry_plain['rows_with_carries']:.2f}, open prob {carry_plain['open_prob']:.4f}) on {carry_plain['n']} rows")
@@ -1052,6 +1088,9 @@ def finish(c: Craft) -> tuple:
         R["carry"] = carry                           # 0.1.37: reading with notes (the carry gauge)
         if carry_plain is not None:
             R["carry_plain"] = carry_plain           # 0.1.39: the plain-row read
+    if NOTE_GAUGE:
+        R["note_self"] = note_self                   # 0.1.41: the note rows, the body writing its own notes
+        R["note_planted"] = note_planted             # 0.1.41: the note given
     if WD:
         R["optimizer"] = dict(name="AdamW", wd=WD, wd_set=WD_SET, betas=list(bed_optim.BETAS), eps=bed_optim.EPS, **c.decay)   # 0.1.31
     return R, os.path.join(BED, f"bed_{c.tag}.json")

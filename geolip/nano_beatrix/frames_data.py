@@ -18,6 +18,7 @@ folder reaches the stream's child process through the environment variable NANO_
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 
 import numpy as np
@@ -187,6 +188,138 @@ def insert_carry(row: bytearray, pos: int, gen: bytes, ctx: int = ROW_CTX) -> No
     assert len(row) == ctx + 1
 
 
+# ------------------------------------------------------------------ the note rows (0.1.41)
+# THE NOTE ROW (form A, second instance; plans/2026-10-18_note_row_plan.md): the frame's content is a fact the text itself states.
+# A deterministic extractor (extract_facts) finds definitional facts in the row's own text: a definition (X is a Y), an abbreviation
+# (Full Name (ABBR): the abbreviation asked, the name answered), a quantity, a capital, a place, the founding year of an institution.
+# No pattern reads a person's name with a birth, an age or an address: the facts are about terms, places, quantities and institutions.
+# The composer writes ONE 32-byte lookup frame holding the fact (key: value) at the first grid point after the sentence that states it,
+# carries restating it on the grid every carry_every bytes, and the question in the last `late` bytes asking the key. The question's
+# distance to the fact follows where the fact falls in the text, so one data form trains the near and the far read. notes=False builds
+# the gauge's SELF row (no note, no carries: the body must notice the fact and write it); notes=True, carries=False the PLANTED row (the
+# note given, the carries the body's own). A text with no usable fact gives None (the stream's row stays plain).
+NOTE = dict(register="caption", tags="mode", size=32, grid=64, carry_every=(384, 640), late=512, sized=True, sliced=32, min_pos=128,
+            key_max=20, val_max=20, rec_max=27)
+NOTE_MIX = "nano-frames-note-mix"
+_TERM = r"([A-Z][a-z]{2,}(?: (?:[A-Z][a-z]{2,}|[a-z]{2,})){0,2})"
+_UNITS = (r"km|kilometres|kilometers|miles|metres|meters|feet|kg|kilograms|tons|tonnes|percent|%|acres|hectares|million|billion|years"
+          r"|days|degrees|species|members|students|employees")
+_NOTE_PATTERNS = (
+    ("def", re.compile(_TERM + r" (?:is|are) (?:a|an|the) ([a-z]{3,})(?=[ ,.;:])")),
+    ("abbr", re.compile(r"([A-Z][a-z]{2,}(?: [A-Z][a-z]{2,}){1,3}) \(([A-Z]{2,6})\)")),
+    ("qty", re.compile(_TERM + r" (?:is|was|measures|covers|spans|weighs|has) (?:about |approximately |roughly |nearly |over |around |some )?"
+                       r"(\d[\d,]*(?:\.\d+)?(?: ?(?:" + _UNITS + r"))?)\b")),
+    ("capital", re.compile(r"[Tt]he capital (?:city )?of ([A-Z][a-z]{2,}(?: [A-Z][a-z]{2,})?) is ([A-Z][a-z]{2,}(?: [A-Z][a-z]{2,})?)\b")),
+    ("where", re.compile(_TERM + r" is (?:located|situated|found) in (?:the )?([A-Z][a-z]{2,}(?: [A-Z][a-z]{2,})?)\b")),
+    ("year", re.compile(_TERM + r" was (?:founded|established|built|completed|published|invented|discovered|opened|launched|introduced|created|formed) in (\d{4})\b")),
+)
+_NOTE_STOP = frozenset(("The This That These Those There Here It Its In On At For From With Into Over Under After Before During Since Until "
+                        "While However When Where Which What Who Whom Whose Why How If But And Also Although Because Though Thus Therefore "
+                        "Instead Perhaps Maybe Still Even Only Both All Any Each Every Some Many Most Other Another Such Much More Less New Old "
+                        "One Two Three First Second Third Finally Next Then Now Today Yesterday Tomorrow Our Your Their His Her My We You They "
+                        "He She As So Yes No Not Please Note See Use Like Unlike Once Again Often Sometimes Usually Always Never Above Below "
+                        "Following According Despite Without Within Among Between Through Across Around About Just Well Indeed Rather "
+                        "Nevertheless Meanwhile Moreover Furthermore Nonetheless Otherwise Yet Unless Whether Whereas").split())
+
+
+def extract_facts(text: bytes, form: dict = NOTE) -> list:
+    """The row's facts as a deterministic function of its text: [(end, key, value, kind)] in text order, one per key; end = the byte
+    after the part of the sentence that states the fact. A leading stop word (a sentence starter, a pronoun) is dropped from the term;
+    keys and values are ASCII letters, digits, spaces and a few marks within the frame's record room (key_max, val_max, rec_max)."""
+    s = text.decode("latin-1")
+    out, seen = [], set()
+    for kind, pat in _NOTE_PATTERNS:
+        for m in pat.finditer(s):
+            words = m.group(1).strip().split(" ")
+            while words and words[0] in _NOTE_STOP:                    # a leading stop word is not part of the term
+                words.pop(0)
+            term, other = " ".join(words), m.group(2).strip()
+            key, val = (other, term) if kind == "abbr" else (term, other)   # an abbreviation is asked, its name answered
+            if not key or not val or key in seen or key in _NOTE_STOP:
+                continue
+            if not (2 <= len(key) <= form["key_max"] and 1 <= len(val) <= form["val_max"] and len(key) + len(val) <= form["rec_max"]):
+                continue
+            if not all(c.isascii() and (c.isalnum() or c in " ,.%") for c in key + val):
+                continue
+            seen.add(key)
+            out.append((m.end(), key.encode(), val.encode(), kind))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
+def note_bytes(key: bytes, val: bytes, form: dict = NOTE) -> bytes:
+    """The note as the composer writes it: the sized lookup frame of form["size"] bytes holding the one record, its slack spaces
+    (deterministic given the record; the exactness reference of the gauge's two note modes)."""
+    state = dict(frames=[], defs={}, facts=None, key_iter=iter(()), fact_iter=None, sized=form["sized"], sliced=form["sliced"])
+    pad = bf.Filler(b" " * 4096, 0)
+    return bf.build_frame(np.random.default_rng(0), bf.spec("data", form["size"], records=1, keys=[key], values=[val]), 0, pad,
+                          form["register"], state)
+
+
+def note_row(rng, src: bytes, form: dict = NOTE, ctx: int = ROW_CTX, notes: bool = True, carries: bool = True):
+    """THE NOTE ROW (the section's head). -> (row of ctx + 1 bytes, meta) or None when the text holds no usable fact. meta: the carry
+    row's fields (v0, vlen, dist to the latest definition, key, q0, early_start / early_end = the note's span or None, early_keys,
+    early_vals, carries, planned, grid, ...) and the note form's: fact_end (the byte after the fact in the row), fact_kind, note_pos
+    (the grid point the note takes), fact_dist (the question's distance to the fact), note_bytes (the note as written), notes."""
+    fill = bf.Filler(src, int(rng.integers(0, max(1, len(src) - 1))))
+    head = bytes([DOC]) + bf.tag_bytes(form["register"], form["tags"]) + bytes([SEP]) + b"q" + bytes([SEP])
+    text = fill.take(ctx)
+    g, nb, H = form["grid"], bf.frame_bytes(form["size"], form["sliced"]), len(head)
+    q_lo = ctx + 1 - form["late"]
+    usable = [f for f in extract_facts(text, form) if H + f[0] >= form["min_pos"] and -(-(H + f[0]) // g) * g + nb + g <= q_lo]
+    if not usable:
+        return None
+    e, key, val, kind = usable[int(rng.integers(len(usable)))]
+    fact_end = H + e
+    note_pos = -(-fact_end // g) * g
+    rb = bf.capacity(ctx, "A", form["register"])["record_bytes"]
+    q0 = q_lo + int(rng.integers(g, form["late"] - (rb + 2) - 1))
+    lo, hi = form["carry_every"][0] // g, form["carry_every"][1] // g
+    positions, pos = [], note_pos + nb
+    while True:
+        pos = -(-pos // g) * g + int(rng.integers(lo, hi + 1)) * g
+        if pos + nb + g > q_lo:
+            break
+        positions.append(pos)
+        pos += nb
+    state = dict(frames=[], defs={}, facts=None, key_iter=iter(()), fact_iter=None, sized=form["sized"], sliced=form["sliced"])
+    pad = bf.Filler(b" " * 4096, 0)
+    out, cur = bytearray(head), [0]
+
+    def text_to(target: int) -> None:
+        need = target - len(out)
+        assert need >= 0, (target, len(out))
+        out.extend(text[cur[0]:cur[0] + need])
+        cur[0] += need
+
+    note_start = note_end = None
+    written = []
+    if notes:
+        text_to(note_pos)
+        note_start = len(out)
+        out += bf.build_frame(rng, bf.spec("data", form["size"], records=1, keys=[key], values=[val]), len(out), pad, form["register"], state)
+        note_end = len(out)
+        if carries:
+            for p_ in positions:
+                text_to(p_)
+                out += bf.build_frame(rng, bf.spec("data", form["size"], records=1, keys=[key], values=[val]), len(out), pad, form["register"], state)
+                written.append(p_)
+    text_to(q0)
+    out += bytes([CUE]) + key + bytes([SEP])
+    v0 = len(out)
+    out += val + bytes([END])
+    text_to(ctx + 1)
+    row = bytes(out)
+    assert len(row) == ctx + 1 and row[v0:v0 + len(val)] == val
+    latest = written[-1] if written else (note_start if notes else fact_end)
+    meta = dict(v0=v0, vlen=len(val), dist=v0 - latest, key=key.decode(), truth_frame=None, truth_depth=0, n_defs=(1 + len(written)) if notes else 0,
+                source="frame", frames=state["frames"], scheme=form["tags"], register=form["register"], ctx=ctx, q0=q0, sized=True,
+                sliced=int(form["sliced"]), early_size=form["size"], early_start=note_start, early_end=note_end, early_keys=[key.decode()],
+                early_vals=[val.decode()], carries=written, planned=positions, grid=g, fact_end=fact_end, fact_kind=kind, note_pos=note_pos,
+                fact_dist=q0 - fact_end, note_bytes=note_bytes(key, val, form), notes=notes)
+    return row, meta
+
+
 # ------------------------------------------------------------------ the corpus and the rows
 _CORPUS: dict = {}
 
@@ -211,7 +344,10 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
     rng = np.random.default_rng([seed, i])
     p = int(rng.integers(0, len(packed) - 2 * ROW_BYTES - 2))
     framed = bool(rng.random() < p_framed)
-    if framed and carry:
+    if framed and carry == "note":                                 # 0.1.41: the note rows; a text with no usable fact stays plain
+        nr = note_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
+        row, framed = (nr[0], True) if nr else (packed[p:p + ROW_BYTES].tobytes(), False)
+    elif framed and carry:
         row, _ = carry_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
     elif framed:
         row, _ = frame_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
@@ -261,12 +397,16 @@ def _rows_carry(seed):
     return rows(seed, P_FRAMED, CARRY, True)        # 0.1.37: the carry rows at the frames dose, the same text row for row
 
 
+def _rows_note(seed):
+    return rows(seed, P_FRAMED, NOTE, "note")       # 0.1.41: the note rows at the frames dose (a text without a usable fact stays plain)
+
+
 def register() -> None:
     """Add the generators and their mixes to the library's registries (names only added; an existing name is refused unless it is
     already ours)."""
     from geolip.alephllm.data import curriculum, streams
     for name, fn, mix in (("nano-frames-p75", _rows_p75, FRAMES_MIX), ("nano-frames-p0", _rows_p0, CONTROL_MIX),
-                          ("nano-frames-carry", _rows_carry, CARRY_MIX)):
+                          ("nano-frames-carry", _rows_carry, CARRY_MIX), ("nano-frames-note", _rows_note, NOTE_MIX)):
         gen = name.replace("-", "_")
         entry = dict(path=None, generator=gen, ids_rows=True)
         assert streams.REGISTRY.get(name, entry) == entry, f"{name} is already a different registry entry"

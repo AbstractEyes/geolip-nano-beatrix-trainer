@@ -73,4 +73,5 @@ def run_tag(args: dict) -> str:
             + ("_carry" if args.get("carry_gauge") == "1" else "")               # 0.1.37: a gauge read with the carry gauge (reading with notes)
             + (("_rows" + str(args.get("carry_rows"))) if args.get("carry_gauge") == "1" and str(args.get("carry_rows") or "192") != "192" else "")   # 0.1.39: the row count when not 192
             + ("_plain" if args.get("carry_gauge") == "1" and args.get("carry_plain") == "1" else "")                                   # 0.1.39: the plain-row read
+            + ("_note" if args.get("note_gauge") == "1" else "")                                                                      # 0.1.41: the note rows read
             + ("_gauge" if gauge else ""))
