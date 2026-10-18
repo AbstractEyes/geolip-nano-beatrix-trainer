@@ -175,6 +175,10 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.46 (2026-10-18): the parity gate's record carries the device as its own field (0.1.45 put it among the weight files' entries,
+where readers expect one entry a file; `test_a_tiny_craft_passes_config_weights_and_parity` failed and 0.1.45 was tagged over it);
+`colab/nano_v1_1_release.ipynb` pins v0.1.46.
+
 0.1.45 (2026-10-18): the AutoModel gates run on the card when one is visible (`automodel.device`): the parity stage and the load
 gate build and run their models on the same device and compare the logits on the CPU, so the exactness bars (vendored equals the
 library exactly; the loaded model within 1e-5 of the parity logits) are read between runs of the same kernels; the gate records

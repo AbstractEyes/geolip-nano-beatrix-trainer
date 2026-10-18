@@ -282,7 +282,7 @@ def stage_parity(craft: str, root: str, work: str, gates: str) -> dict:
     xs = fixed_inputs(int(pc["context"]))
     torch.save(xs, os.path.join(work, "ref_inputs.pt"))
     dev = device()
-    facts, ok = {"device": dev}, config_ok
+    facts, ok = {}, config_ok                           # one entry a weight file (the device is the gate's own field, 0.1.46)
     for tag, fname, _ in WEIGHTS:
         sd = {k[len("model."):]: (v.float() if v.is_floating_point() else v) for k, v in load_file(os.path.join(out, fname)).items()}
         mv, ml = V.AlephLM(cfg_v), LibAlephLM(cfg_l)
@@ -300,7 +300,7 @@ def stage_parity(craft: str, root: str, work: str, gates: str) -> dict:
         facts[tag] = {"file": fname, "vendored_vs_library_max_abs": worst, "parameters": sum(p.numel() for p in ml.parameters())}
         log(f"{craft} {tag}: vendored against the library on {dev}, max abs logit difference {worst} (must be 0.0)")
         ok = ok and worst == 0.0
-    return gate(os.path.join(gates, craft), "parity", ok, config_equal=config_ok, files=facts, sha256=hashes(out, PACKAGE))
+    return gate(os.path.join(gates, craft), "parity", ok, config_equal=config_ok, device=dev, files=facts, sha256=hashes(out, PACKAGE))
 
 
 def _load_once(src: str, subfolder: str | None, variant: str | None, from_hub: bool):
