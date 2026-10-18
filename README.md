@@ -175,6 +175,10 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.42 (2026-10-18): the note row's question takes its room from the real record's own length (0.1.41 drew it from the bed's
+synthetic record length, so a key and value up to 10 bytes longer overran the window by up to 8 bytes in the first preflight); a
+test forces the longest record over 300 draws. `colab/nano_v1_1_notes.ipynb` pins v0.1.42.
+
 0.1.41 (2026-10-18): THE NOTE ROW, the second instance of the self-written frames: the frame's content is a fact the text itself
 states. `frames_data.extract_facts` finds definitional facts in a row's own text by fixed patterns (a definition, an abbreviation,
 a quantity, a capital, a place, the founding year of an institution; no pattern reads a person's name with a birth, an age or an

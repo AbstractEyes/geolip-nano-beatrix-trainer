@@ -272,8 +272,8 @@ def note_row(rng, src: bytes, form: dict = NOTE, ctx: int = ROW_CTX, notes: bool
     e, key, val, kind = usable[int(rng.integers(len(usable)))]
     fact_end = H + e
     note_pos = -(-fact_end // g) * g
-    rb = bf.capacity(ctx, "A", form["register"])["record_bytes"]
-    q0 = q_lo + int(rng.integers(g, form["late"] - (rb + 2) - 1))
+    qlen = 1 + len(key) + 1 + len(val) + 1                             # CUE key SEP value END: the real record's own length (0.1.42)
+    q0 = q_lo + int(rng.integers(g, form["late"] - qlen - 1))        # the question and its value end at least two bytes inside the window
     lo, hi = form["carry_every"][0] // g, form["carry_every"][1] // g
     positions, pos = [], note_pos + nb
     while True:

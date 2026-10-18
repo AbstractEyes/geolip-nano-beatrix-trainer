@@ -109,6 +109,24 @@ def test_the_note_row_places_the_note_on_the_grid_after_the_fact_and_asks_its_ke
     assert fd.note_row(np.random.default_rng(0), text(9, 6000)) is None        # no fact, no row
 
 
+def test_the_longest_record_never_overruns_the_window():
+    """0.1.42: a key of 20 bytes and a value of 7 (the record room's 27) asked late in the window: 0.1.41 drew the question's offset from
+    the bed's synthetic record length and overran the row by up to 8 bytes (Phil's preflight, 2026-10-18 02:2x)."""
+    src = (b"Abcdefghijklmnopqrst is located in Uvwxyza. " + text(11, 60)) * 40
+    seen_late, built = False, 0
+    for seed in range(300):
+        r = fd.note_row(np.random.default_rng(seed), src)
+        if r is None:                                                          # the one key repeats: its first statement can fall before the first grid point
+            continue
+        built += 1
+        row, m = r
+        qlen = 1 + len(m["key"]) + 1 + m["vlen"] + 1
+        assert m["key"] == "Abcdefghijklmnopqrst" and m["vlen"] == 7 and len(row) == fd.ROW_CTX + 1
+        assert m["q0"] + qlen <= fd.ROW_CTX and row[m["v0"] + m["vlen"]] == END
+        seen_late |= m["q0"] + qlen > fd.ROW_CTX + 1 - 24                   # a draw that the old bound would have pushed past the window
+    assert seen_late and built >= 200, built
+
+
 def test_the_note_stream_stays_plain_without_a_fact_and_is_registered(corpus):
     from geolip.alephllm.data import curriculum, streams
     packed = fd.load_corpus(corpus)
