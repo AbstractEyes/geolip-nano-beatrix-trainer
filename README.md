@@ -175,6 +175,16 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.40 (2026-10-17): THE FRAMES-THEN-CARRY ARM: a second-stage continuation craft a body, `nano-<body>-v1.1-fr-cf`
+(`nano_v1.CRAFTS_CONT2`), starts from the frames arm's end state (the exact state: fp32 weights and both optimizers at step
+65,237) and runs the carry phase (1.0 billion bytes, 3,815 steps, to 69,052), so a body that already reads a frame within a
+thousand bytes of its question learns to write carries; `nano_v1.diet_of` follows a craft's source (a second-stage plan = the
+source's plan plus the carry phase), `cont_init` reads the source's own last boundary, `plan_steps` gives a craft's whole plan in
+steps, `cont2_table` the four-column read (frames end, after, the carry arm, the control). The carry phase sits one slot later in
+the plan than the -cf arm's, so it reads the same mix and dose in a different shuffle. `colab/nano_v1_1_frames_carry.ipynb` (one
+body by default) and `colab/nano_v1_1_carry.ipynb` pin v0.1.40; the carry notebook's end step now comes from `plan_steps` (the
+floor division before it read 65,236 where the stored final is 65,237). The first-stage arms read exactly as before; tests.
+
 0.1.39 (2026-10-17): the reading-with-notes gauge gains a per-row dump (`--carry_dump=1`: beside its record,
 `bed_<tag>_rows.jsonl`, one line a row with the early records, the asked key and value, every grid read with the open byte's
 probability, every carry as generated and as inserted, the latest positions holding the key and any carry, the answer as generated

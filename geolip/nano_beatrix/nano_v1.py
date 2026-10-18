@@ -92,7 +92,12 @@ CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continu
               "cf": ("carry_continuation", CARRY_MIX)}       # 0.1.37: the carry rows (the self-written frames prototype)
 CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
                for n, c in CRAFTS.items() for arm in ("fr", "ct", "cf")}
-ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT}
+# 0.1.40: the frames-then-carry arm (one seed): the frames craft's end state (fp32 weights and both optimizers at step 65,237 at the 2s
+# step) continued through the carry phase, so a body that already reads a frame within a thousand bytes of its question learns to write
+# carries. Its plan is its source's whole plan plus the carry phase (69,052 steps); that phase sits one slot later than the -cf arm's, so
+# it reads the same mix and dose in a different shuffle (the library offsets a phase's stream seed by its position in the plan).
+CRAFTS_CONT2 = {f"{n}.1-fr-cf": dict(c, train=V11_TRAIN, tag="v11frcf", source=f"{n}.1-fr", cont="cf") for n, c in CRAFTS.items()}
+ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2}
 
 
 def train_of(name: str) -> dict:
@@ -154,13 +159,21 @@ def diet(scale: float = 1.0) -> list:
 
 
 def diet_of(name: str, scale: float = 1.0) -> list:
-    """A craft's plan: the 2s diet, and for a continuation craft its appended phase (CONT_TOKENS, scaled with the diet)."""
-    phases = diet(scale)
+    """A craft's plan: the 2s diet, and for a continuation craft its source's whole plan (0.1.40: a second-stage craft inherits its
+    source's appended phase) plus its own appended phase (CONT_TOKENS, scaled with the diet)."""
     arm = ALL[name].get("cont")
-    if arm:
-        pname, ds = CONT_PHASE[arm]
-        phases.append(dict(name=pname, dataset=ds, planned_tokens=max(1, int(CONT_TOKENS * scale)), status="planned"))
+    if not arm:
+        return diet(scale)
+    phases = diet_of(ALL[name]["source"], scale)
+    pname, ds = CONT_PHASE[arm]
+    phases.append(dict(name=pname, dataset=ds, planned_tokens=max(1, int(CONT_TOKENS * scale)), status="planned"))
     return phases
+
+
+def plan_steps(name: str, tokens_per_step: int, scale: float = 1.0) -> int:
+    """0.1.40: the steps of a craft's whole plan (the diet and every appended phase) at this scale and step size: 61,422 for a v1.1
+    craft, 65,237 for a continuation craft and 69,052 for a frames-then-carry craft at the 2s step."""
+    return sum(math.ceil(ph["planned_tokens"] / tokens_per_step) for ph in diet_of(name, scale))
 
 
 def diet_steps(scale: float, tokens_per_step: int) -> int:
@@ -172,8 +185,8 @@ def cont_init(name: str, tokens_per_step: int, scale: float = 1.0, repo: str = R
     """A continuation craft's start: its source craft's last boundary state (resume/boundary_<last phase>_step<steps>.pt) in the hub
     repo, or under a local runs folder (cont_from: <cont_from>/<source>/resume/...; a toy run), at the step the source ended."""
     c = ALL[name]
-    steps = diet_steps(scale, tokens_per_step)
-    rel = f"resume/boundary_{diet(scale)[-1]['name']}_step{steps}.pt"
+    steps = plan_steps(c["source"], tokens_per_step, scale)                  # 0.1.40: the source's whole plan (its own phase included)
+    rel = f"resume/boundary_{diet_of(c['source'], scale)[-1]['name']}_step{steps}.pt"
     spec = dict(step=steps, tokens_per_step=tokens_per_step, source=c["source"])
     if cont_from:
         return dict(spec, payload=os.path.join(cont_from, c["source"], *rel.split("/")))
@@ -804,6 +817,35 @@ def cont_table(hist: dict) -> str:
             f = ["-" if v is None else f"{v:.{nd}f}" for v in (b, x, z, y)]
             d1 = "-" if x is None or y is None else f"{x - y:+.{nd}f}"
             d2 = "-" if z is None or y is None else f"{z - y:+.{nd}f}"
+            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {d1} | {d2} |")
+    return "\n".join(rows)
+
+
+def cont2_table(hist: dict) -> str:
+    """0.1.40: the frames-then-carry reads (markdown): per body and read, the frames arm's end (the -fr-cf craft's first row: the same
+    weights), the end of the frames-then-carry arm, of the carry arm and of the control, then frames-then-carry minus the frames end
+    (what the carry phase did to a frames body) and minus the carry arm (what a frames start did for the carry skill); a read no arm
+    carries is left out."""
+    rows = ["| body | read | frames end (the start) | after frames-then-carry | carry arm | control | minus the frames end | minus the carry arm |",
+            "|---|---|---|---|---|---|---|---|"]
+
+    def at(entries, phase):
+        return next((e for e in entries if e.get("phase") == phase), None)
+
+    def get(e, k):
+        return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
+    fr_end, cf_end, ct_end = CONT_PHASE["fr"][0], CONT_PHASE["cf"][0], CONT_PHASE["ct"][0]
+    for n in CRAFTS:
+        fc, fr = hist.get(f"{n}.1-fr-cf") or [], hist.get(f"{n}.1-fr") or []
+        cf, ct = hist.get(f"{n}.1-cf") or [], hist.get(f"{n}.1-ct") or []
+        start, after, a_cf, a_ct = at(fc, fr_end) or at(fr, fr_end), at(fc, cf_end), at(cf, cf_end), at(ct, ct_end)
+        for label, k, nd in CONT_READS:
+            s, a, z, y = get(start, k), get(after, k), get(a_cf, k), get(a_ct, k)
+            if s is None and a is None and z is None and y is None:
+                continue
+            f = ["-" if v is None else f"{v:.{nd}f}" for v in (s, a, z, y)]
+            d1 = "-" if a is None or s is None else f"{a - s:+.{nd}f}"
+            d2 = "-" if a is None or z is None else f"{a - z:+.{nd}f}"
             rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {d1} | {d2} |")
     return "\n".join(rows)
 
