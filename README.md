@@ -175,6 +175,16 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.50 (2026-10-18): document-start plain rows in the mixed phase, and a preflight fix. A read of every final's cost over the
+first 64 bytes of a plain held-out document found the framed streams' head tax to be the opening: their plain rows are slices
+taken mid-document and never begin with DOC, so a window-initial DOC announced a frame with probability 1.0 and a plain document's
+first byte cost 17 to 22 bits against 5 to 6 for the controls (a third to a half of a framed phase's text cost).
+`frames_data.MIXED` gains `p_doc_start = 0.5`: half of the mixed phase's plain rows begin at a document boundary (`doc_start_row`:
+DOC and the document from its first byte), the other half keep the mid-document start the diet's windows have; the frames, carry
+and note streams are unchanged byte for byte. The arm notebooks' preflight smoke reads the first craft's own start step (a list
+mixing `-cf-nt` and `-nt` arms took the last arm's step and asked the Hub for a checkpoint that does not exist). The notebooks pin
+v0.1.50; tests.
+
 0.1.49 (2026-10-18): THE MIXED-PHASE ARM. The frames-then-carry arm lost the near read in the carry phase's first 0.2 billion
 bytes (the data form, not the habit), and the register fade showed a register's lookup survives a framed phase only if that
 register is in the mix. `frames_data.MIXED`: a framed row (the bed's dose; the same coin and text position as every other arm's

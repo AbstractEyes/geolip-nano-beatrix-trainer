@@ -22,13 +22,13 @@ def test_the_draw_follows_the_form_and_only_its_own_generator():
     regs = {r: sum(x == r for _, x in draws) / len(draws) for r in ("caption", "math", "code")}
     assert abs(carry - 2 / 3) < 0.03 and abs(regs["caption"] - 0.5) < 0.03 and abs(regs["math"] - 0.25) < 0.03 and abs(regs["code"] - 0.25) < 0.03
     assert fd.mixed_draw(np.random.default_rng([7, 5, 2])) == fd.mixed_draw(np.random.default_rng([7, 5, 2]))      # deterministic per row
-    assert fd.MIXED["carry"] is fd.CARRY and fd.MIXED["frames"] is fd.FORM and sum(w for _, w in fd.MIXED["registers"]) == 1.0
+    assert fd.MIXED["carry"] is fd.CARRY and fd.MIXED["frames"] is fd.FORM and sum(w for _, w in fd.MIXED["registers"]) == 1.0 and fd.MIXED["p_doc_start"] == 0.5
 
 
 def test_the_mixed_stream_keeps_the_text_the_coin_and_the_other_arms_rows(corpus):  # noqa: F811
     packed = fd.load_corpus(corpus)
     seen = {"carry": set(), "frames": set()}
-    plain = 0
+    plain = doc_start = 0
     for i in range(80):
         a, fa = fd.row_bytes(packed, 7, i, fd.P_FRAMED)                               # the frames arm's row
         b, fb = fd.row_bytes(packed, 7, i, fd.P_FRAMED, fd.CARRY, carry=True)        # the carry arm's row
@@ -36,7 +36,12 @@ def test_the_mixed_stream_keeps_the_text_the_coin_and_the_other_arms_rows(corpus
         assert fm == fa == fb and len(m) == fd.ROW_BYTES                               # the same coin, the same position
         if not fm:
             plain += 1
-            assert m == a == b                                                         # a plain row is the control's row
+            if np.random.default_rng([7, i, 2]).random() < fd.MIXED["p_doc_start"]:                 # 0.1.50: a document-start plain row
+                doc_start += 1
+                assert m[0] == DOC and m == fd.doc_start_row(packed, int(np.random.default_rng([7, i]).integers(0, len(packed) - 2 * fd.ROW_BYTES - 2)))
+                assert m != a or a[0] == DOC
+            else:
+                assert m == a == b                                                     # a plain row is the control's row
             continue
         kind, reg = fd.mixed_draw(np.random.default_rng([7, i, 2]))
         seen[kind].add(reg)
@@ -46,9 +51,25 @@ def test_the_mixed_stream_keeps_the_text_the_coin_and_the_other_arms_rows(corpus
         else:
             assert m != a and m != b
     assert plain and seen["carry"] >= {"caption", "math"} and seen["frames"] >= {"caption"} and (seen["carry"] | seen["frames"]) == {"caption", "math", "code"}
+    assert 0 < doc_start < plain                                                       # both plain starts occur
     g = fd.rows(7, fd.P_FRAMED, fd.MIXED, "mixed")
     first = next(g)["ids"]
     assert first.shape == (fd.ROW_BYTES,) and first.dtype == np.int64
+
+
+def test_a_document_start_row_begins_with_doc_and_the_other_streams_never_change(corpus):  # noqa: F811
+    packed = fd.load_corpus(corpus)
+    starts = np.flatnonzero(packed == DOC)
+    p = int(starts[3]) - 100
+    row = fd.doc_start_row(packed, p)
+    assert row[0] == DOC and row == packed[int(starts[3]):int(starts[3]) + fd.ROW_BYTES].tobytes() and DOC not in row[1:50]
+    assert fd.doc_start_row(packed, int(starts[-1]) + 1) == packed[int(starts[-1]) + 1:int(starts[-1]) + 1 + fd.ROW_BYTES].tobytes() or len(packed) - int(starts[-1]) > fd.ROW_BYTES
+    for i in range(30):                                                                 # the frames, control, carry and note streams: no document-start rows
+        a, fa = fd.row_bytes(packed, 11, i, fd.P_FRAMED)
+        c, _ = fd.row_bytes(packed, 11, i, 0.0)
+        b, _ = fd.row_bytes(packed, 11, i, fd.P_FRAMED, fd.CARRY, carry=True)
+        if not fa:
+            assert a == b == c == packed[int(np.random.default_rng([11, i]).integers(0, len(packed) - 2 * fd.ROW_BYTES - 2)):][:fd.ROW_BYTES].tobytes()
 
 
 def test_a_math_carry_row_holds_digit_values_and_a_code_frames_row_hex():

@@ -209,7 +209,11 @@ NOTE_MIX = "nano-frames-note-mix"
 # and the register, so the composer's own generator is untouched: a caption carry row here is the carry arm's row i byte for byte, a
 # caption frames row the frames arm's. The phase is 1.5 billion bytes (nano_v1.CONT_TOKENS_OF), so its carry rows total the carry
 # arm's 0.75 billion (the far habit's dose kept) while the frames rows add 0.375 billion.
-MIXED = dict(p_carry=2 / 3, registers=(("caption", 0.5), ("math", 0.25), ("code", 0.25)), carry=CARRY, frames=FORM)
+# 0.1.50: p_doc_start. The first-64 read (journal 2026-10-18 14:4x) found the framed streams' head tax to be the opening: a plain row is
+# a slice taken mid-document and never begins with DOC, so a window-initial DOC announced a frame with probability 1.0 and a plain
+# document's first byte cost 17 to 22 bits against 5 to 6 for the controls. Half of the mixed phase's plain rows begin at a document
+# boundary (DOC + the document from its first byte); the other half keep the mid-document start the diet's windows have.
+MIXED = dict(p_carry=2 / 3, registers=(("caption", 0.5), ("math", 0.25), ("code", 0.25)), carry=CARRY, frames=FORM, p_doc_start=0.5)
 MIXED_MIX = "nano-frames-mixed-mix"
 _TERM = r"([A-Z][a-z]{2,}(?: (?:[A-Z][a-z]{2,}|[a-z]{2,})){0,2})"
 _UNITS = (r"km|kilometres|kilometers|miles|metres|meters|feet|kg|kilograms|tons|tonnes|percent|%|acres|hectares|million|billion|years"
@@ -334,6 +338,23 @@ def note_row(rng, src: bytes, form: dict = NOTE, ctx: int = ROW_CTX, notes: bool
 _CORPUS: dict = {}
 
 
+_DOC_STARTS = {}
+
+
+def doc_start_row(packed: np.ndarray, p: int) -> bytes:
+    """0.1.50: the plain row that begins at the first document boundary at or after p (the packer's DOC byte, then the next document
+    from its first byte); the row at p itself when no whole row fits after that boundary."""
+    key = id(packed)
+    if key not in _DOC_STARTS:
+        _DOC_STARTS[key] = np.flatnonzero(packed == DOC)
+    starts = _DOC_STARTS[key]
+    j = int(np.searchsorted(starts, p))
+    if j < len(starts) and int(starts[j]) + ROW_BYTES <= len(packed):
+        d = int(starts[j])
+        return packed[d:d + ROW_BYTES].tobytes()
+    return packed[p:p + ROW_BYTES].tobytes()
+
+
 def mixed_draw(rng, form: dict = MIXED) -> tuple:
     """0.1.49: the kind and the register of one framed row of the mixed phase, from the row's third generator ([seed, i, 2]).
     -> ('carry' | 'frames', register)."""
@@ -382,6 +403,8 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
         row, _ = frame_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
     else:
         row = packed[p:p + ROW_BYTES].tobytes()
+        if carry == "mixed" and form.get("p_doc_start") and np.random.default_rng([seed, i, 2]).random() < form["p_doc_start"]:
+            row = doc_start_row(packed, p)                         # 0.1.50: the mixed phase's document-start plain rows (the third generator's coin)
     assert len(row) == ROW_BYTES, len(row)
     return row, framed
 
