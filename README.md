@@ -175,6 +175,11 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.44 (2026-10-18): the load gate's child interpreter runs with UTF-8 standard streams (`-X utf8`, `PYTHONIOENCODING`, the
+streams reconfigured to backslash-replace): on a Windows console (cp1252) the gate's log line, which carries the model's greedy
+bytes, ended the child with a UnicodeEncodeError after the load had passed, so the gate read FAIL for a reason that was not the
+model's. Found running the gate locally under transformers 5.20.1; `colab/nano_v1_1_release.ipynb` pins v0.1.44.
+
 0.1.43 (2026-10-18): THE AUTOMODEL COVERS EVERY CRAFT FOLDER. `automodel.release(out, repo, crafts=None, token)` packages every
 craft folder the repo holds (the four bodies and their continuation arms; `final_files` takes the resume state of the last phase
 done); each `config.json` carries `craft` (the model's name, its body, its arm in plain words, what it continued from, the step

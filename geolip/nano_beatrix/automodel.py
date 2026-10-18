@@ -360,8 +360,8 @@ def stage_load(craft: str, root: str, work: str, gates: str, from_hub: bool = Fa
 
 def load_child(craft: str, root: str, work: str, gates: str, tf_pkgs: str | None = None, from_hub: bool = False) -> None:
     """The load gate in a fresh interpreter that runs this file as a script (never the package: the library stays unimported)."""
-    cmd = [sys.executable, os.path.abspath(__file__), "load", craft, root, work, gates, tf_pkgs or "", "hub" if from_hub else ""]
-    env = dict(os.environ)
+    cmd = [sys.executable, "-X", "utf8", os.path.abspath(__file__), "load", craft, root, work, gates, tf_pkgs or "", "hub" if from_hub else ""]
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")   # 0.1.44: the greedy bytes in the gate's log line are not cp1252 (a Windows console)
     env.pop("HF_TOKEN", None)
     rc = subprocess.call(cmd, env=env)
     g = "hubload" if from_hub else "load"
@@ -688,6 +688,9 @@ if __name__ == "__main__":
     # the load gate's child: python automodel.py load <craft> <root> <work> <gates> [tf_pkgs] [hub]
     if sys.path and os.path.abspath(sys.path[0]) == os.path.dirname(os.path.abspath(__file__)):
         sys.path.pop(0)                                # the package's folder is not a place to import from
+    for stream in (sys.stdout, sys.stderr):            # 0.1.44: the log line carries the model's greedy bytes; never let the console's codec end the gate
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     a = sys.argv[1:]
     if a and a[0] == "load":
         stage_load(a[1], a[2], a[3], a[4], tf_pkgs=(a[5] or None) if len(a) > 5 else None, from_hub=len(a) > 6 and a[6] == "hub")
