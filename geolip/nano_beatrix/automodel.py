@@ -468,7 +468,8 @@ def fetch_finals(repo: str, crafts: list, runs: str, token: str | None = None) -
 ARM_WHAT = {"fr": "the diet's text with keyed records written in small frames, and questions that ask a record back",
             "ct": "the diet's text alone, the same steps: the comparison for the other arms",
             "cf": "framed records re-written along the text as carries, with the question far after: the body learns to re-write a record on its way to a distant question",
-            "nt": "notes in real words taken from the text itself (a definition, an abbreviation, a quantity, a capital, a place, a year), re-written on the way and asked back"}
+            "nt": "notes in real words taken from the text itself (a definition, an abbreviation, a quantity, a capital, a place, a year), re-written on the way and asked back",
+            "mx": "carry rows and framed rows side by side, their records in all three registers (letters, digits, hex), the plain text kept: one phase for the near read, the far habit and every register"}
 ARM_COLS = (("the bed's held-out bits a byte", "bed/text/heldout_bits", 4), ("copy / nested / repeated key", None, 2),
             ("1,024-byte frame", "bed/scaling/frame_1024_whole", 2), ("far question, own carries", "bed/carry/full_value", 2),
             ("carries a row", "bed/carry/carries_per_row", 1))
@@ -492,7 +493,7 @@ def arms_section(hist: dict, params: dict, reads: dict | None = None) -> str:
     """0.1.43: the card's continuation arms, body by body: what each arm trains on, then a table a body (the body at the diet's end and
     each of its arms at its end: the folder, the steps it trained, the bed's reads; the note arm's own columns when one is packaged).
     Empty when no packaged craft is an arm."""
-    from .nano_v1 import ALL, ARM_TEXT, CONT_TOKENS, TOKENS_PER_STEP, arm_text, body_of, plan_steps, start_step
+    from .nano_v1 import ALL, ARM_TEXT, CONT_TOKENS, CONT_TOKENS_OF, TOKENS_PER_STEP, arm_text, body_of, plan_steps, start_step
 
     def f(x, nd):
         return "-" if x is None else f"{x:.{nd}f}"
@@ -506,10 +507,12 @@ def arms_section(hist: dict, params: dict, reads: dict | None = None) -> str:
     bodies = [b for b in ALL if not ALL[b].get("source") and any(body_of(n) == b for n in arms)]
     notes = any(end_of(hist, n, reads, "bed/note_self/rows_with_key") is not None for n in arms)
     what = "\n".join(f"| {ARM_TEXT[k]} | `-{k}` | {ARM_WHAT[k]} |" for k in kinds)
+    longer = "".join(f"; the {ARM_TEXT[k]} arm {math.ceil(CONT_TOKENS_OF[k] / TOKENS_PER_STEP):,} steps, {CONT_TOKENS_OF[k] / 1e9:.1f} billion"
+                     for k in kinds if CONT_TOKENS_OF.get(k, CONT_TOKENS) != CONT_TOKENS)       # 0.1.49: a phase longer than the others
     out = [f"""## The continuation arms
 
 Each body's diet ended at step {plan_steps(bodies[0], TOKENS_PER_STEP):,}. From there an arm takes the same body {math.ceil(CONT_TOKENS / TOKENS_PER_STEP):,} steps further
-({CONT_TOKENS / 1e9:.1f} billion bytes, the same optimizer settings) on a mix that teaches it to write and read its own notes; a second-stage arm
+({CONT_TOKENS / 1e9:.1f} billion bytes{longer}, the same optimizer settings) on a mix that teaches it to write and read its own notes; a second-stage arm
 continues an arm's end the same way (its folder suffix chains the two: `-fr-cf` is frames, then carry). Every arm folder is a model like
 the four above, with its own training record, and loads the same way.
 

@@ -188,6 +188,9 @@ def test_the_card_names_each_model_and_how_to_load_it():
     v11["nano-pollux-dual-v1.1-cf-nt"] = [{"phase": "carry_continuation", "step": 65237, "bed": {}},
                                           {"phase": "note_continuation", "step": 69052, "tokens": 18.1e9, "val_bpb": 1.27,
                                            "bed": {"bed/text/heldout_bits": 1.249, "bed/note_self/rows_with_key": 0.271, "bed/note_planted/far_ge2048_full_value": 0.702}}]
+    v11["nano-castor-v1.1-mx"] = [{"phase": "anneal_mix", "step": 61422, "bed": {}},                                 # 0.1.49: the mixed arm
+                                  {"phase": "mixed_continuation", "step": 67145, "tokens": 17.6e9, "val_bpb": 1.255,
+                                   "bed": {"bed/text/heldout_bits": 1.2401, "bed/frame/copy_whole": 0.85, "bed/carry/full_value": 0.5, "bed/carry/carries_per_row": 4.0}}]
     params = {n: 9_000_000 for n in v11}
     reads = {"nano-castor-v1.1-cf": {"bed/carry/full_value": 0.292, "bed/carry/carries_per_row": 3.27}}
     text = AM.card("AbstractPhil/alephllm-nano-castor-pollux", v11, params, reads)
@@ -195,6 +198,8 @@ def test_the_card_names_each_model_and_how_to_load_it():
     assert "| [`nano-castor-v1.1`](./nano-castor-v1.1) | 0 to 61,422 (the diet) |" in text
     assert "| [`nano-castor-v1.1-cf`](./nano-castor-v1.1-cf) | carry: 61,422 to 65,237 | 1.2367 | 0.37 / - / - | - | 0.29 | 3.3 |" in text
     assert "carry, then notes: 65,237 to 69,052, from `nano-pollux-dual-v1.1-cf`" in text and "| 0.70 | 0.27 |" in text
+    assert "| [`nano-castor-v1.1-mx`](./nano-castor-v1.1-mx) | mixed: 61,422 to 67,145 | 1.2401 | 0.85 / - / - | - | 0.50 | 4.0 |" in text   # 0.1.49
+    assert "| mixed | `-mx` |" in text and "the mixed arm 5,723 steps, 1.5 billion" in text
     assert text.count("| [`nano-castor-v1.1-cf`]") == 1 and 'subfolder="nano-pollux-dual-canon-v1.1"' in text   # an arm never enters the first table
     idx = AM.index(v11, params, reads)
     assert set(idx) == set(params) and idx["nano-castor-v1.1-cf"]["reads"]["bed/carry/full_value"] == 0.292

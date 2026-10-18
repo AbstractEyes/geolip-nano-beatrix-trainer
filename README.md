@@ -175,6 +175,17 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.49 (2026-10-18): THE MIXED-PHASE ARM. The frames-then-carry arm lost the near read in the carry phase's first 0.2 billion
+bytes (the data form, not the habit), and the register fade showed a register's lookup survives a framed phase only if that
+register is in the mix. `frames_data.MIXED`: a framed row (the bed's dose; the same coin and text position as every other arm's
+row) is a carry row two times in three and a frames row once, its register drawn caption one time in two, math and code one in
+four each, from a third generator so a caption carry row is the carry arm's row byte for byte (`mixed_draw`, `row_bytes(...,
+carry='mixed')`, the stream `nano-frames-mixed`). `nano_v1.CRAFTS_MIX` (`nano-<body>-v1.1-mx`, from the diet's end),
+`CONT_TOKENS_OF` (the mixed phase 1.5 billion bytes: its carry rows total the carry arm's 0.75 billion while the frames rows add
+0.375), `mixed_table`; the carry gauge on the mixed arm's reads; the card names the arm. `colab/nano_v1_1_mixed.ipynb` (the marks
+before the run: NEAR KEPT, FAR GAINED and FAR MATCHED, TEXT, REGISTERS KEPT; C4 reads the math and code registers on the mixed,
+carry and control ends). `colab/nano_v1_1_release.ipynb` pins v0.1.49; tests.
+
 0.1.48 (2026-10-18): the v1.1 card's note on the v1 run points at the archive. The v1 folders moved to
 `AbstractPhil/alephllm-nano-beatrix-training` under `archive/castor-pollux-v1/` on 2026-10-16 while the card, rendered from
 `nano_v1.V11_NOTE`, still said they stayed in place; the note now names the archive with a link, and the twins card is regenerated

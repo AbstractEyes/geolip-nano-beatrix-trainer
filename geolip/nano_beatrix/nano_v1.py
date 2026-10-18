@@ -58,7 +58,7 @@ import numpy as np
 import torch
 
 from .bodies import craft_cfg
-from .frames_data import CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
+from .frames_data import CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, MIXED_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
@@ -90,7 +90,11 @@ CRAFTS_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS.i
 CONT_TOKENS = 1_000_000_000
 CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continuation", CONTROL_MIX),
               "cf": ("carry_continuation", CARRY_MIX),       # 0.1.37: the carry rows (the self-written frames prototype)
-              "nt": ("note_continuation", NOTE_MIX)}         # 0.1.41: the note rows (form A, second instance: a fact of the text framed)
+              "nt": ("note_continuation", NOTE_MIX),         # 0.1.41: the note rows (form A, second instance: a fact of the text framed)
+              "mx": ("mixed_continuation", MIXED_MIX)}       # 0.1.49: the mixed phase (carry rows and frames rows, three registers)
+# 0.1.49: a continuation phase's bytes when they differ from CONT_TOKENS: the mixed phase runs 1.5 billion so that its carry rows (two
+# framed rows in three) total the carry arm's 0.75 billion, the far habit's dose kept, while its frames rows add 0.375 billion.
+CONT_TOKENS_OF = {"mx": 1_500_000_000}
 CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
                for n, c in CRAFTS.items() for arm in ("fr", "ct", "cf")}
 # 0.1.40: the frames-then-carry arm (one seed): the frames craft's end state (fp32 weights and both optimizers at step 65,237 at the 2s
@@ -102,7 +106,11 @@ CRAFTS_CONT2 = {f"{n}.1-fr-cf": dict(c, train=V11_TRAIN, tag="v11frcf", source=f
 # already writes carries learns WHAT to write: the fact the text states); both run the note phase (NOTE_MIX, CONT_TOKENS).
 CRAFTS_NOTE = {f"{n}.1-nt": dict(c, train=V11_TRAIN, tag="v11nt", source=f"{n}.1", cont="nt") for n, c in CRAFTS.items()}
 CRAFTS_NOTE2 = {f"{n}.1-cf-nt": dict(c, train=V11_TRAIN, tag="v11cfnt", source=f"{n}.1-cf", cont="nt") for n, c in CRAFTS.items()}
-ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2}
+# 0.1.49: the mixed-phase arm (one seed): -mx from the diet's end through one phase of carry rows and frames rows across the three
+# registers (frames_data.MIXED; plans/2026-10-18_mixed_phase_arm_plan.md): the near read and the far habit in one body, the lookup kept
+# in every register.
+CRAFTS_MIX = {f"{n}.1-mx": dict(c, train=V11_TRAIN, tag="v11mx", source=f"{n}.1", cont="mx") for n, c in CRAFTS.items()}
+ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX}
 
 
 def train_of(name: str) -> dict:
@@ -110,7 +118,7 @@ def train_of(name: str) -> dict:
     return dict(ALL[name].get("train") or {})
 
 
-ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes"}      # 0.1.43: a continuation kind in plain words
+ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed"}      # 0.1.43: a continuation kind in plain words; 0.1.49 mixed
 
 
 def body_of(name: str) -> str:
@@ -195,7 +203,7 @@ def diet_of(name: str, scale: float = 1.0) -> list:
         return diet(scale)
     phases = diet_of(ALL[name]["source"], scale)
     pname, ds = CONT_PHASE[arm]
-    phases.append(dict(name=pname, dataset=ds, planned_tokens=max(1, int(CONT_TOKENS * scale)), status="planned"))
+    phases.append(dict(name=pname, dataset=ds, planned_tokens=max(1, int(CONT_TOKENS_OF.get(arm, CONT_TOKENS) * scale)), status="planned"))
     return phases
 
 
@@ -524,8 +532,8 @@ def gauge_scalars(rec: dict) -> dict:
 def gauge_args(name: str, init: str, out: str) -> dict:
     c = ALL[name]
     args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
-    if c.get("cont") in ("cf", "nt"):
-        args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge)
+    if c.get("cont") in ("cf", "nt", "mx"):
+        args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge); 0.1.49 the mixed arm
     if c.get("cont") == "nt":
         args["note_gauge"] = "1"                         # 0.1.41: the note arm's reads add the note rows, given and self-written (the tag ends _carry_note_gauge)
     return args
@@ -769,7 +777,8 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 def version_of(names) -> str:
     """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 for n in names) else "v1"
+    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX
+                         for n in names) else "v1"
 
 
 def card_in_training(names=None) -> str:
@@ -888,6 +897,36 @@ def cont2_table(hist: dict) -> str:
             d1 = "-" if a is None or s is None else f"{a - s:+.{nd}f}"
             d2 = "-" if a is None or z is None else f"{a - z:+.{nd}f}"
             rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {d1} | {d2} |")
+    return "\n".join(rows)
+
+
+def mixed_table(hist: dict) -> str:
+    """0.1.49: the mixed-phase reads (markdown): per body and read, the diet's end (the -mx craft's first row: the same weights), the end
+    of the mixed arm, of the frames arm, of the carry arm and of the control, then mixed minus frames (the near read kept or lost) and
+    mixed minus carry (the far habit kept or lost); a read no arm carries is left out."""
+    rows = ["| body | read | diet's end (the start) | after mixed | frames arm | carry arm | control | minus the frames arm | minus the carry arm |",
+            "|---|---|---|---|---|---|---|---|---|"]
+
+    def at(entries, phase):
+        return next((e for e in entries if e.get("phase") == phase), None)
+
+    def get(e, k):
+        return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
+    last = diet()[-1]["name"]
+    mx_end, fr_end, cf_end, ct_end = (CONT_PHASE[a][0] for a in ("mx", "fr", "cf", "ct"))
+    for n in CRAFTS:
+        mx, fr = hist.get(f"{n}.1-mx") or [], hist.get(f"{n}.1-fr") or []
+        cf, ct = hist.get(f"{n}.1-cf") or [], hist.get(f"{n}.1-ct") or []
+        start = at(mx, last) or at(fr, last) or at(cf, last) or at(ct, last)
+        after, a_fr, a_cf, a_ct = at(mx, mx_end), at(fr, fr_end), at(cf, cf_end), at(ct, ct_end)
+        for label, k, nd in CONT_READS:
+            s, a, x, z, y = get(start, k), get(after, k), get(a_fr, k), get(a_cf, k), get(a_ct, k)
+            if s is None and a is None and x is None and z is None and y is None:
+                continue
+            f = ["-" if v is None else f"{v:.{nd}f}" for v in (s, a, x, z, y)]
+            d1 = "-" if a is None or x is None else f"{a - x:+.{nd}f}"
+            d2 = "-" if a is None or z is None else f"{a - z:+.{nd}f}"
+            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {f[4]} | {d1} | {d2} |")
     return "\n".join(rows)
 
 

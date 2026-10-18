@@ -201,6 +201,16 @@ def insert_carry(row: bytearray, pos: int, gen: bytes, ctx: int = ROW_CTX) -> No
 NOTE = dict(register="caption", tags="mode", size=32, grid=64, carry_every=(384, 640), late=512, sized=True, sliced=32, min_pos=128,
             key_max=20, val_max=20, rec_max=27)
 NOTE_MIX = "nano-frames-note-mix"
+# 0.1.49: THE MIXED PHASE (plans/2026-10-18_mixed_phase_arm_plan.md). The frames-then-carry arm lost the near read in the carry phase's
+# first 0.2B bytes (the data form, not the habit), and the register fade showed that a register's lookup survives only if that register
+# is in the mix. One phase holds both forms and the three registers: a framed row (the bed's dose; the same coin and text position as
+# every other arm's row i) is a carry row two times in three and a frames row once, its register drawn caption one time in two, math and
+# code one in four each (the value alphabets: letters, digits, hex); the plain rows stay. A THIRD generator ([seed, i, 2]) draws the kind
+# and the register, so the composer's own generator is untouched: a caption carry row here is the carry arm's row i byte for byte, a
+# caption frames row the frames arm's. The phase is 1.5 billion bytes (nano_v1.CONT_TOKENS_OF), so its carry rows total the carry
+# arm's 0.75 billion (the far habit's dose kept) while the frames rows add 0.375 billion.
+MIXED = dict(p_carry=2 / 3, registers=(("caption", 0.5), ("math", 0.25), ("code", 0.25)), carry=CARRY, frames=FORM)
+MIXED_MIX = "nano-frames-mixed-mix"
 _TERM = r"([A-Z][a-z]{2,}(?: (?:[A-Z][a-z]{2,}|[a-z]{2,})){0,2})"
 _UNITS = (r"km|kilometres|kilometers|miles|metres|meters|feet|kg|kilograms|tons|tonnes|percent|%|acres|hectares|million|billion|years"
           r"|days|degrees|species|members|students|employees")
@@ -324,6 +334,18 @@ def note_row(rng, src: bytes, form: dict = NOTE, ctx: int = ROW_CTX, notes: bool
 _CORPUS: dict = {}
 
 
+def mixed_draw(rng, form: dict = MIXED) -> tuple:
+    """0.1.49: the kind and the register of one framed row of the mixed phase, from the row's third generator ([seed, i, 2]).
+    -> ('carry' | 'frames', register)."""
+    kind = "carry" if rng.random() < form["p_carry"] else "frames"
+    u, acc = rng.random(), 0.0
+    for reg, w in form["registers"]:
+        acc += w
+        if u < acc:
+            return kind, reg
+    return kind, form["registers"][-1][0]
+
+
 def load_corpus(folder: str | None = None) -> np.ndarray:
     """The corpus text with the document byte after every document (as the packer joins documents), cached per folder."""
     from geolip.alephllm.data.special_tokens import DOC
@@ -347,6 +369,13 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
     if framed and carry == "note":                                 # 0.1.41: the note rows; a text with no usable fact stays plain
         nr = note_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
         row, framed = (nr[0], True) if nr else (packed[p:p + ROW_BYTES].tobytes(), False)
+    elif framed and carry == "mixed":                              # 0.1.49: the mixed phase: carry rows and frames rows, three registers
+        kind, reg = mixed_draw(np.random.default_rng([seed, i, 2]), form)
+        src, rng2 = packed[p:p + 2 * ROW_BYTES].tobytes(), np.random.default_rng([seed, i, 1])
+        if kind == "carry":
+            row, _ = carry_row(rng2, src, dict(form["carry"], register=reg), ROW_CTX)
+        else:
+            row, _ = frame_row(rng2, src, dict(form["frames"], register=reg), ROW_CTX)
     elif framed and carry:
         row, _ = carry_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
     elif framed:
@@ -401,12 +430,17 @@ def _rows_note(seed):
     return rows(seed, P_FRAMED, NOTE, "note")       # 0.1.41: the note rows at the frames dose (a text without a usable fact stays plain)
 
 
+def _rows_mixed(seed):
+    return rows(seed, P_FRAMED, MIXED, "mixed")     # 0.1.49: the mixed phase at the frames dose
+
+
 def register() -> None:
     """Add the generators and their mixes to the library's registries (names only added; an existing name is refused unless it is
     already ours)."""
     from geolip.alephllm.data import curriculum, streams
     for name, fn, mix in (("nano-frames-p75", _rows_p75, FRAMES_MIX), ("nano-frames-p0", _rows_p0, CONTROL_MIX),
-                          ("nano-frames-carry", _rows_carry, CARRY_MIX), ("nano-frames-note", _rows_note, NOTE_MIX)):
+                          ("nano-frames-carry", _rows_carry, CARRY_MIX), ("nano-frames-note", _rows_note, NOTE_MIX),
+                          ("nano-frames-mixed", _rows_mixed, MIXED_MIX)):
         gen = name.replace("-", "_")
         entry = dict(path=None, generator=gen, ids_rows=True)
         assert streams.REGISTRY.get(name, entry) == entry, f"{name} is already a different registry entry"
