@@ -244,6 +244,13 @@ def fixed_inputs(context: int = 4096) -> dict:
     return {"a": torch.randint(0, 256, (2, 96), generator=g), "b": torch.randint(0, 256, (1, min(700, context)), generator=g)}
 
 
+def device() -> str:
+    """0.1.45: the gates run on the card when one is visible, else the CPU; the parity stage and the load gate use the same device and
+    compare their logits on the CPU, so the exactness bars are read between runs of the same kernels."""
+    import torch
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def stage_parity(craft: str, root: str, work: str, gates: str) -> dict:
     import importlib
     import torch
@@ -274,23 +281,24 @@ def stage_parity(craft: str, root: str, work: str, gates: str) -> dict:
     config_ok = norm(cfg_v.to_dict()) == norm(cfg_l.to_dict())
     xs = fixed_inputs(int(pc["context"]))
     torch.save(xs, os.path.join(work, "ref_inputs.pt"))
-    facts, ok = {}, config_ok
+    dev = device()
+    facts, ok = {"device": dev}, config_ok
     for tag, fname, _ in WEIGHTS:
         sd = {k[len("model."):]: (v.float() if v.is_floating_point() else v) for k, v in load_file(os.path.join(out, fname)).items()}
         mv, ml = V.AlephLM(cfg_v), LibAlephLM(cfg_l)
         mv.load_state_dict(sd, strict=True)
         ml.load_state_dict(sd, strict=True)
-        mv.eval()
-        ml.eval()
+        mv.to(dev).eval()
+        ml.to(dev).eval()
         worst = 0.0
         with torch.no_grad():
             for name, x in xs.items():
-                a, b = mv(x)[0].float(), ml(x)[0].float()
+                a, b = mv(x.to(dev))[0].float().cpu(), ml(x.to(dev))[0].float().cpu()
                 assert torch.isfinite(b).all()
                 worst = max(worst, float((a - b).abs().max()))
                 torch.save(b, os.path.join(work, f"ref_logits_{tag}_{name}.pt"))
         facts[tag] = {"file": fname, "vendored_vs_library_max_abs": worst, "parameters": sum(p.numel() for p in ml.parameters())}
-        log(f"{craft} {tag}: vendored against the library, max abs logit difference {worst} (must be 0.0)")
+        log(f"{craft} {tag}: vendored against the library on {dev}, max abs logit difference {worst} (must be 0.0)")
         ok = ok and worst == 0.0
     return gate(os.path.join(gates, craft), "parity", ok, config_equal=config_ok, files=facts, sha256=hashes(out, PACKAGE))
 
@@ -327,24 +335,25 @@ def stage_load(craft: str, root: str, work: str, gates: str, from_hub: bool = Fa
     from safetensors.torch import load_file
     files = os.path.join(work, "files")
     xs = torch.load(os.path.join(work, "ref_inputs.pt"))
+    dev = device()
     routes = [("top + subfolder", root, craft)] + ([] if from_hub else [("craft folder", os.path.join(root, craft), None)])
-    facts, ok = {"transformers": transformers.__version__, "torch": torch.__version__, "source": root, "routes": {}}, True
+    facts, ok = {"transformers": transformers.__version__, "torch": torch.__version__, "device": dev, "source": root, "routes": {}}, True
     for route, src, sub in routes:
         for tag, fname, variant in WEIGHTS:
             model, info = _load_once(src, sub, variant, from_hub)
-            model.eval()
+            model.to(dev).eval()
             problems = {k: (sorted(v) if isinstance(v, (set, list, tuple)) else v) for k, v in info.items() if v}
             ref = load_file(os.path.join(files, fname))
-            got = model.state_dict()
+            got = {k: v.cpu() for k, v in model.state_dict().items()}
             tensors_ok = set(got) == set(ref) and all(torch.equal(got[k].float(), ref[k].float()) for k in ref)
             worst = 0.0
             with torch.no_grad():
                 for name, x in xs.items():
-                    lg = model(input_ids=x).logits.float()
+                    lg = model(input_ids=x.to(dev)).logits.float().cpu()
                     worst = max(worst, float((lg - torch.load(os.path.join(work, f"ref_logits_{tag}_{name}.pt"))).abs().max()))
-                ids = torch.tensor([list(PROMPT.encode("utf-8"))])
+                ids = torch.tensor([list(PROMPT.encode("utf-8"))]).to(dev)
                 gen = model.generate(ids, max_new_tokens=32, do_sample=False)
-            text = bytes(int(i) for i in gen[0]).decode("utf-8", errors="replace")
+            text = bytes(int(i) for i in gen[0].cpu()).decode("utf-8", errors="replace")
             lib = sorted(m for m in sys.modules if m.split(".")[0] in ("geolip", "amoe") and sys.modules[m] is not None)
             good = not problems and tensors_ok and worst <= 1e-5 and not lib and type(model).__name__ == "NanoBeatrixForCausalLM"
             facts["routes"][f"{route} / {tag}"] = {

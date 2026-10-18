@@ -175,6 +175,11 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.45 (2026-10-18): the AutoModel gates run on the card when one is visible (`automodel.device`): the parity stage and the load
+gate build and run their models on the same device and compare the logits on the CPU, so the exactness bars (vendored equals the
+library exactly; the loaded model within 1e-5 of the parity logits) are read between runs of the same kernels; the gate records
+carry the device. `colab/nano_v1_1_release.ipynb` pins v0.1.45.
+
 0.1.44 (2026-10-18): the load gate's child interpreter runs with UTF-8 standard streams (`-X utf8`, `PYTHONIOENCODING`, the
 streams reconfigured to backslash-replace): on a Windows console (cp1252) the gate's log line, which carries the model's greedy
 bytes, ended the child with a UnicodeEncodeError after the load had passed, so the gate read FAIL for a reason that was not the
