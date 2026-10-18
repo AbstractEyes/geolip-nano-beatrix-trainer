@@ -95,7 +95,7 @@ def test_the_cards_name_the_version_and_the_v1_card_is_unchanged():
     assert "Castor and Pollux, v1\n" in v1 and "v1.1" not in v1 and "colab/nano_v1_2s.ipynb" in v1
     v11 = nano_v1.card_in_training(V11)
     assert "Castor and Pollux, v1.1\n" in v11 and all(f"`{n}`" in v11 for n in V11)
-    assert "decoupled weight decay 0.1" in v11 and "colab/nano_v1_1.ipynb" in v11 and "folders stay as they were" in v11
+    assert "decoupled weight decay 0.1" in v11 and "colab/nano_v1_1.ipynb" in v11 and "archive/castor-pollux-v1" in v11   # 0.1.48: the re-point
     hist = {n: [{"phase": "anneal_mix", "step": 61422, "tokens": 16.1e9, "val_bpb": 1.2345,
                  "bed": {k: 0.5 for k in nano_v1.HEADLINE}}] for n in V11}
     am = automodel.card("AbstractPhil/alephllm-nano-castor-pollux", hist, {n: 9_000_000 for n in V11})

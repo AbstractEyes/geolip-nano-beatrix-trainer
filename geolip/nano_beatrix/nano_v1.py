@@ -814,7 +814,7 @@ data's share-alike and non-commercial terms, as Beatrix 2s's does.
 """
 
 
-V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run (the folders without the .1) the readout kept growing under\nMuon and the last block's output gathered onto a single direction within its first thousand steps; that run was stopped and\nits folders stay as they were.")
+V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run the readout kept growing under Muon and\nthe last block's output gathered onto a single direction within its first thousand steps; that run was stopped, and its folders\nare archived in [alephllm-nano-beatrix-training](https://huggingface.co/AbstractPhil/alephllm-nano-beatrix-training/tree/main/archive/castor-pollux-v1) under `archive/castor-pollux-v1/`.")   # 0.1.48: the card re-point (the v1 folders moved 10-16)
 
 HEADLINE = ("bed/note_self/full_value", "bed/note_self/far_ge2048_full_value", "bed/note_self/near_lt1024_full_value", "bed/note_self/carries_per_row",
             "bed/note_self/rows_with_key", "bed/note_self/carry_exact", "bed/note_planted/full_value", "bed/note_planted/far_ge2048_full_value",   # 0.1.41: the note rows

@@ -175,6 +175,12 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.48 (2026-10-18): the v1.1 card's note on the v1 run points at the archive. The v1 folders moved to
+`AbstractPhil/alephllm-nano-beatrix-training` under `archive/castor-pollux-v1/` on 2026-10-16 while the card, rendered from
+`nano_v1.V11_NOTE`, still said they stayed in place; the note now names the archive with a link, and the twins card is regenerated
+from it (the card is generated: a wording change goes into the generator, never into the Hub file).
+`colab/nano_v1_1_release.ipynb` pins v0.1.48; tests.
+
 0.1.47 (2026-10-18): `automodel.complete_config`: a manifest written by an older library lacks the model-config fields added since
 (the v1.1 bodies, trained before the head's mode and dial existed, have no `head_mode`; the first local release stopped at the
 parity stage with a KeyError). For a craft in nano_v1's table the missing fields come from the bodies table (`bodies.craft_cfg` at
