@@ -178,8 +178,8 @@ def build_rows(docs: list, mode: str, n_rows: int, ctx: int, seed: int) -> tuple
                 continue
             r, m = rm
             rows.append(bytearray(r))
-            metas.append(dict(start=form["min_pos"], q0=m["q0"], fact_end=m["fact_end"], fact_key=m["early_keys"][0], fact_val=m["early_vals"][0],
-                              text=bytes(r[:m["q0"]])))
+            metas.append(dict(start=form["min_pos"], q0=m["q0"], v0=m["v0"], vlen=m["vlen"], fact_end=m["fact_end"], fact_key=m["early_keys"][0],
+                              fact_val=m["early_vals"][0], text=bytes(r[:m["q0"]])))
         assert len(rows) == n_rows, f"only {len(rows)} held-out documents of {scanned} hold a usable fact; rows {n_rows}"
     else:
         assert mode == "plain", mode
@@ -193,6 +193,7 @@ def build_rows(docs: list, mode: str, n_rows: int, ctx: int, seed: int) -> tuple
 
 
 # ------------------------------------------------------------------ the screen
+@torch.no_grad()
 def screen(logits_fn, rows: list, metas: list, dev, seed: int = 1, ctx: int = 4096, horizons=HORIZONS, margins=MARGINS, grid: int = 64,
            max_gen: int | None = None, log=print) -> tuple:
     """The grid protocol with the gate's reads at every note. -> (notes: one dict a note with its gains and flags, reads: grid reads a row)."""
@@ -205,7 +206,9 @@ def screen(logits_fn, rows: list, metas: list, dev, seed: int = 1, ctx: int = 40
     p = [m["start"] for m in metas]
     inserted = [0] * n
     q_end = [m["q0"] for m in metas]
-    tail_room = [form["late"]] * n
+    # the room the insertions have: the filler after the answer on a question row (the question and its value must stay inside the
+    # window, as bed_train keeps them), the late region on a plain row
+    tail_room = [(ctx + 1 - (m["v0"] + m["vlen"] + 1)) if m.get("v0") is not None else form["late"] for m in metas]
     notes, reads = [], [0] * n
 
     def greedy(prompts):

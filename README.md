@@ -175,6 +175,11 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.53 (2026-10-18): the gate screen's protocol runs under no_grad. The first 192-row read on a 24 GB card stopped at the 10 GB
+budget `gate_stored` gives the child: the grid reads and the frame generation kept an autograd graph the scoring reads never
+needed (the two-row smoke on a CPU had the memory for it). `gate_screen.screen` is decorated `torch.no_grad`; the record and the
+notebook are unchanged otherwise; the gate notebook pins v0.1.53.
+
 0.1.52 (2026-10-18): the second seed of the mixed arm, and the mixed notebook reads any mixed craft. `nano_v1.CRAFTS_MIX2` adds
 `nano-pollux-dual-v1.1-mx2`: the mixed phase from the same diet-end state, dose and mix as `-mx`, at a second data seed
 (`TrainConfig.seed` 2 against the default; the phase's stream and its framed rows draw from it), so the mixed phase's marks get a

@@ -108,3 +108,30 @@ def test_the_protocol_proposes_scores_and_summarizes():
     assert rec["notes_a_row"] == len(notes) / 2 and rec["table"]["64|0.25"]["kept"] >= 1
     assert rec["kept_holds_fact_key"] == 1.0 and rec["kept_examples"] and rec["gain_without_kept"]["median"] > 0
     assert set(rec["table"]) == {f"{H}|{m}" for H in (64, 128, 256) for m in (0.25, 1.0)}
+
+
+def test_a_fact_row_keeps_its_question_inside_the_window():
+    """0.1.53: a question row's insertions have only the filler after its answer (bed_train's room), never the plain rows' 512 bytes; the
+    model is never handed more than ctx bytes."""
+    note = _note()
+    ctx = 1600
+    text = bytearray((b"the quick brown fox jumps over the lazy dog. " * 120)[:ctx])
+    key, val = b"hair", b"golden"
+    q = bytes([CUE]) + key + bytes([SEP]) + val + bytes([END])
+    q0 = ctx + 1 - 40                                                    # late in the window, as note_row draws it
+    row = bytearray(bytes([DOC]) + text)
+    row[q0:q0 + len(q)] = q
+    v0, vlen = q0 + 1 + len(key) + 1, len(val)
+    room = ctx + 1 - (v0 + vlen + 1)
+    metas = [dict(start=128, q0=q0, v0=v0, vlen=vlen, fact_end=None, fact_key="hair", fact_val="golden", text=bytes(row[:q0]))]
+
+    class Guard(_Scripted):
+        def __call__(self, x):
+            assert x.shape[1] <= ctx, x.shape
+            return super().__call__(x)
+
+    rows = [row]
+    notes, reads = gs.screen(Guard(note), rows, metas, torch.device("cpu"), ctx=ctx, horizons=(64,), margins=(0.25,), log=lambda s: None)
+    ins = sum(n["length"] for n in notes)
+    assert notes and ins == room and notes[0]["cut"]                    # the one note is cut to the room after the answer
+    assert len(rows[0]) == ctx + 1 and bytes(rows[0][q0 + ins:q0 + ins + len(q)]) == q   # the question moved right and stayed whole
