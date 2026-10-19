@@ -110,7 +110,11 @@ CRAFTS_NOTE2 = {f"{n}.1-cf-nt": dict(c, train=V11_TRAIN, tag="v11cfnt", source=f
 # registers (frames_data.MIXED; plans/2026-10-18_mixed_phase_arm_plan.md): the near read and the far habit in one body, the lookup kept
 # in every register.
 CRAFTS_MIX = {f"{n}.1-mx": dict(c, train=V11_TRAIN, tag="v11mx", source=f"{n}.1", cont="mx") for n, c in CRAFTS.items()}
-ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX}
+# 0.1.52: the second seed of the mixed arm on the best carry body: the same diet-end start, dose and mix at a second data seed (TrainConfig.seed 2
+# against the default 1337; the phase stream and its rows draw from it), so the mixed phase's marks get a seed pair on one body.
+CRAFTS_MIX2 = {"nano-pollux-dual-v1.1-mx2": dict(CRAFTS["nano-pollux-dual-v1"], train={**V11_TRAIN, "seed": 2}, tag="v11mx2",
+                                                source="nano-pollux-dual-v1.1", cont="mx")}
+ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2}
 
 
 def train_of(name: str) -> dict:
@@ -812,7 +816,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 def version_of(names) -> str:
     """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX
+    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2
                          for n in names) else "v1"
 
 
@@ -949,8 +953,11 @@ def mixed_table(hist: dict) -> str:
         return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
     last = diet()[-1]["name"]
     mx_end, fr_end, cf_end, ct_end = (CONT_PHASE[a][0] for a in ("mx", "fr", "cf", "ct"))
-    for n in CRAFTS:
-        mx, fr = hist.get(f"{n}.1-mx") or [], hist.get(f"{n}.1-fr") or []
+    pairs = [(n, f"{n}.1-mx") for n in CRAFTS]                                 # 0.1.52: every mixed craft of a body, the -mx first
+    pairs += [(k, k) for k in sorted(hist) if k in ALL and ALL[k].get("cont") == "mx" and k not in {m for _, m in pairs}]
+    for body_label, mxn in pairs:
+        n = body_label if body_label in CRAFTS else body_of(mxn)[:-2]
+        mx, fr = hist.get(mxn) or [], hist.get(f"{n}.1-fr") or []
         cf, ct = hist.get(f"{n}.1-cf") or [], hist.get(f"{n}.1-ct") or []
         start = at(mx, last) or at(fr, last) or at(cf, last) or at(ct, last)
         after, a_fr, a_cf, a_ct = at(mx, mx_end), at(fr, fr_end), at(cf, cf_end), at(ct, ct_end)
@@ -961,7 +968,7 @@ def mixed_table(hist: dict) -> str:
             f = ["-" if v is None else f"{v:.{nd}f}" for v in (s, a, x, z, y)]
             d1 = "-" if a is None or x is None else f"{a - x:+.{nd}f}"
             d2 = "-" if a is None or z is None else f"{a - z:+.{nd}f}"
-            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {f[4]} | {d1} | {d2} |")
+            rows.append(f"| {body_label} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {f[4]} | {d1} | {d2} |")
     return "\n".join(rows)
 
 

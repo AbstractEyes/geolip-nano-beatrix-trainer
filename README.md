@@ -175,6 +175,13 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.52 (2026-10-18): the second seed of the mixed arm, and the mixed notebook reads any mixed craft. `nano_v1.CRAFTS_MIX2` adds
+`nano-pollux-dual-v1.1-mx2`: the mixed phase from the same diet-end state, dose and mix as `-mx`, at a second data seed
+(`TrainConfig.seed` 2 against the default; the phase's stream and its framed rows draw from it), so the mixed phase's marks get a
+seed pair on one body. `mixed_table` lists every mixed craft of a body beside its frames, carry and control arms. The mixed
+notebook's read cell takes the mixed craft named for each body (`-mx` or `-mx2`) and the arm code from the craft table, never from
+the name's tail; it pins v0.1.52. Tests.
+
 0.1.51 (2026-10-18): THE GATE SCREEN. The body's own loss decides which of its notes to keep. `gate_screen.py` keeps the
 reading-with-notes protocol as it is (a held-out row read in 64-byte grid steps; at each grid point the greedy next byte decides
 whether a frame opens, and an opened frame is written to END and inserted) and adds, for every note the body writes, three

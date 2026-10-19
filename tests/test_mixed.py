@@ -122,3 +122,25 @@ def test_the_mixed_table_reads_near_against_frames_and_far_against_carry():
     far = next(l for l in t.split("\n") if "far question, own carries" in l)
     assert far.split("|")[4].strip() == "0.50" and far.split("|")[6].strip() == "0.60" and far.split("|")[9].strip() == "-0.10"
     assert not any("| nano-castor-v1 |" in l for l in t.split("\n"))
+
+
+def test_the_second_seed_mixed_craft_shares_everything_but_its_data_seed():
+    from geolip.alephllm.presets import TrainConfig
+    MX2 = nano_v1.CRAFTS_MIX2
+    assert list(MX2) == ["nano-pollux-dual-v1.1-mx2"] and all(n in nano_v1.ALL for n in MX2)
+    n2, n1 = "nano-pollux-dual-v1.1-mx2", "nano-pollux-dual-v1.1-mx"
+    c, c1 = nano_v1.ALL[n2], nano_v1.ALL[n1]
+    assert c["cont"] == "mx" and c["tag"] == "v11mx2" and c["source"] == "nano-pollux-dual-v1.1" and c["arm"] == c1["arm"] and c["code"] == c1["code"]
+    assert nano_v1.train_of(n2) == {**nano_v1.V11_TRAIN, "seed": 2} and "seed" not in nano_v1.train_of(n1)
+    assert TrainConfig().seed == 1337 and TrainConfig(**nano_v1.train_of(n2)).seed == 2 and TrainConfig(**nano_v1.train_of(n1)).seed == 1337
+    assert nano_v1.diet_of(n2) == nano_v1.diet_of(n1)
+    assert nano_v1.plan_steps(n2, 262144) == 67145 and nano_v1.start_step(n2) == 61422
+    assert nano_v1.gauge_init(n2, 67145) == "v11mx2pd_67145" and nano_v1.gauge_init(n1, 67145) == "v11mxpd_67145"
+    assert len({nano_v1.gauge_init(n, 67145) for n in nano_v1.ALL}) == len(nano_v1.ALL)
+    assert nano_v1.arm_text(n2) == "mixed" and nano_v1.body_of(n2) == "nano-pollux-dual-v1.1" and nano_v1.version_of([n2]) == "v1.1"
+    assert nano_v1.gauge_args(n2, "v11mx2pd_67145", "/tmp/x").get("carry_gauge") == "1"
+    # the mixed table reads the second seed beside the body's other arms, labeled by its craft name; the bodies' own rows unchanged
+    row = dict(phase="mixed_continuation", step=67145, tokens=0, val_bpb=1.0, bed={"bed/frame/copy_whole": 0.8})
+    t = nano_v1.mixed_table({n2: [row], n1: [dict(row, bed={"bed/frame/copy_whole": 0.81})]})
+    assert "| nano-pollux-dual-v1 | copy | - | 0.81 |" in t and "| nano-pollux-dual-v1.1-mx2 | copy | - | 0.80 |" in t
+    assert t.index("| nano-pollux-dual-v1 | copy") < t.index("| nano-pollux-dual-v1.1-mx2 | copy")
