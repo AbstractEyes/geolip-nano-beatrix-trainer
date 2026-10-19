@@ -7,6 +7,11 @@ A row is one act of THINKING ABOUT AN IMAGE that nobody sees: a hidden image spe
 at a stated depth, the wordings an artist would use, and questions whose answers sit in the records. Text only; nothing refers to
 pixels or to seeing a file.
 
+ADULTS ONLY, BY RULE (2026-10-19): every person in every row is an adult. No child, kid, boy, girl, baby, toddler, teen, student,
+pupil, school, classroom, playground or kindergarten appears anywhere in a row, in any register, tag or wording; the age attribute
+takes adult decades (20s to 80s) or elderly; the booru tag register is used for adults only, with no age or school tags. The
+vocabulary carries none of these words, the sampler never draws them, and the validator rejects a row holding any of them.
+
 ## The depths
 | depth | the thought holds | records | thoughts | questions | wordings | frame |
 |---|---|---|---|---|---|---|
@@ -25,6 +30,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
 6. a mood names its evidence: the key of the record that shows it (look expression, shot light, rel1 rel)
 7. a series shares its spec by subset: simple within medium within deep
 8. no real person's name, no copyrighted image described from memory: the spec is invented or comes from a licensed description
+9. ADULTS ONLY: no child, kid, boy, girl, baby, toddler, teen, student, pupil, school, classroom, playground or kindergarten anywhere in a row (the spec, the genre, the thoughts, the wordings, the tags, the questions); a person's age is an adult decade or elderly
 
 ## The systems trie
 - person: count, gender, age, role
@@ -110,7 +116,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
  "wordings": {
   "caption": "A woman with short hair and a wry smile, in a yellow raincoat, on a rainy market street at dusk, lit by neon, in front of a fish stall.",
   "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject right third",
-  "tags": "1girl, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"
+  "tags": "solo, woman, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"
  },
  "questions": [
   {
