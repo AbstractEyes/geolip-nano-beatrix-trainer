@@ -175,6 +175,22 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.55 (2026-10-19): THE CAPTION PHASE on the caption pack. `caption_pack` reads the Beatrix caption arm's pack from the Hub (the
+photograph, illustration, web-image and COCO rows of `AbstractPhil/alephllm-mini-beatrix-training`, the first shards of each source;
+`NANO_CAPTION_PACK` names the cache) into a byte blob and an index: a row's attributes become records whose keys are PATHS of a
+closed vocabulary, the system then the attribute (`look hair`, `person age`, `wear clothing`, `scene mood`, `shot light`,
+`thing <name>`), a row's several captions are its wordings, the pack's held split is the gauge. `frames_data.caption_frame` writes a
+document's records as one sized frame: the records of one system in a child frame of one or two 32-byte slices, the children nested
+in the smallest frame that holds them, their places shuffled (a symbolic trie: a system of systems); one system alone gives the flat
+frame. A caption document is the caption head, the frame (a shuffled subset of the records), a newline, one caption and, in half the
+documents, the question of a framed record; a caption window is documents back to back. The phase `cp` (`nano-<body>-v1.1-mx-cp`,
+1.5 billion bytes from the mixed arm's end) keeps the mixed arm's coin, registers and plain rows and draws, of its framed rows, a
+carry row one time in three and a caption window two; the control `nano-pollux-dual-v1.1-mx-cpx` takes every document's frame from
+another document. `caption_screen` reads a stored craft on the held split: the extraction read (the caption alone, then the path
+question: the value) and the copy read (the frame, the caption, the question); `nano_v1.caption_stored` runs it as a child and
+`caption_table` lays the boundary reads beside the mixed arm's end; the caption notebook (`colab/nano_v1_1_caption.ipynb`) runs the
+phase, the control and the reads and pins v0.1.55.
+
 0.1.54 (2026-10-18): `gate_stored` writes the held-out head beside its records before the screen's child runs. The gate notebook's
 preflight smoke runs in its own folder, which had no `heldout_fineweb_edu_head2048.jsonl`: the child asserted on its first run on
 a rented card (the training entry point and the gauge path write that file; the gate runner did not). The preflight also copies

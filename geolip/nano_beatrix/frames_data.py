@@ -215,6 +215,111 @@ NOTE_MIX = "nano-frames-note-mix"
 # boundary (DOC + the document from its first byte); the other half keep the mid-document start the diet's windows have.
 MIXED = dict(p_carry=2 / 3, registers=(("caption", 0.5), ("math", 0.25), ("code", 0.25)), carry=CARRY, frames=FORM, p_doc_start=0.5)
 MIXED_MIX = "nano-frames-mixed-mix"
+# 0.1.55: THE CAPTION PHASE (plans/2026-10-19_caption_finetune_plan.md; Phil 2026-10-19 00:3x "a caption finetune of them using frame
+# sizing with shuffle", 01:3x the caption pack as the source). A framed row is a carry row one time in three (the far habit and the three
+# registers kept, as the mixed phase keeps them) and a CAPTION WINDOW two times in three: caption documents back to back until the window
+# is full, each the caption register's head, the image's records (real words from the pack: hair, eyes, expression, ...) as ONE sized
+# frame (32, 64 or 128 bytes by how many records it holds, sliced at 32) in a SHUFFLED order over a random SUBSET of the records, a
+# newline, ONE of the image's captions (the wordings: the same image said several ways across the epochs), and in half the documents the
+# question for a framed record with its value and END. A document with no records (a web-image row) is the register's plain caption. The
+# control form (swap=True) takes each document's frame from ANOTHER document of the pack: the frame then says nothing about the caption.
+# Plain rows as the mixed phase's (half of them at a document start). The kind and the register of a framed row come from the row's
+# third generator ([seed, i, 2]) as in the mixed phase; the composer's own generator ([seed, i, 1]) builds the row.
+CAPTION = dict(p_carry=1 / 3, registers=MIXED["registers"], carry=CARRY, p_doc_start=0.5, p_question=0.5, max_records=8, trie=True, swap=False)
+CAPTION_CTRL = dict(CAPTION, swap=True)
+CAPTION_MIX = "nano-frames-caption-mix"
+CAPTION_CTRL_MIX = "nano-frames-caption-ctrl-mix"
+CAPTION_HEAD = bytes([DOC]) + bf.tag_bytes("caption", "mode") + bytes([SEP]) + b"q" + bytes([SEP])
+SLICE_ROOM = 29                                 # a 32-byte sized slice: the two-byte open tag, 29 bytes of body, END
+
+
+def _slices_of(recs: list, cap: int) -> list:
+    """The records packed into 29-byte slices as build_sliced packs them (a record never split), at most cap slices (the rest dropped)."""
+    slices, cur, used = [], [], 0
+    for k, v in recs:
+        n = len(bf.record_bytes(k, v))
+        assert n <= SLICE_ROOM, (k, v)
+        if used + n > SLICE_ROOM:
+            slices.append(cur)
+            cur, used = [], 0
+        cur.append((k, v))
+        used += n
+    if cur:
+        slices.append(cur)
+    return slices[:cap]
+
+
+def _state():
+    return dict(frames=[], defs={}, facts=None, key_iter=iter(()), fact_iter=None, sized=True, sliced=32)
+
+
+def caption_frame(rng, recs: list, trie: bool = True) -> tuple:
+    """The records as ONE sized frame. THE SYMBOLIC TRIE (Phil 2026-10-19 02:0x: "symbolic associative trie ... systemic association
+    frames, system of systems"): a record's key is a path of symbols (caption_pack: the system, then the attribute); records of one
+    system are packed into a CHILD frame of their own (32 or 64 bytes: one or two slices, the rest of the system dropped), the children
+    nested inside the document's frame (the smallest of 64, 128, 256, 512 bytes that holds them; build_sliced places the child runs at
+    slice-aligned positions with random whole-slice gaps, so the systems' order shuffles too), in the order the systems first appear in
+    the (shuffled) record list. One system alone, or trie=False, gives the flat frame: 32, 64 or 128 bytes by the slices its records
+    need (at most four). -> (frame bytes, the records written)."""
+    if not trie or len({k.split(b" ")[0] for k, _ in recs}) <= 1:
+        slices = _slices_of(recs, 4)
+        kept = [kv for s in slices for kv in s]
+        size = 32 if len(slices) <= 1 else 64 if len(slices) == 2 else 128
+        fb = bf.build_frame(rng, bf.spec("data", size, records=len(kept), keys=[k for k, _ in kept], values=[v for _, v in kept]), 0,
+                            bf.Filler(b" " * 4096, 0), "caption", _state())
+        return fb, kept
+    groups, order = {}, []
+    for k, v in recs:
+        s = k.split(b" ")[0]
+        if s not in groups:
+            groups[s] = []
+            order.append(s)
+        groups[s].append((k, v))
+    kids, kept = [], []
+    for s in order:
+        slices = _slices_of(groups[s], 2)
+        rs = [kv for sl in slices for kv in sl]
+        kids.append(bf.spec("data", 32 * len(slices), records=len(rs), keys=[k for k, _ in rs], values=[v for _, v in rs]))
+        kept += rs
+    need = sum(c["size"] // 32 for c in kids)
+    size = next(S for S in (64, 128, 256, 512) if S // 32 >= need)
+    fb = bf.build_frame(rng, bf.spec("data", size, records=0, children=kids), 0, bf.Filler(b" " * 4096, 0), "caption", _state())
+    return fb, kept
+
+
+def caption_doc(rng, pack, i: int, form: dict = CAPTION, swap_from: int | None = None) -> tuple:
+    """One caption document: the head, the frame (a shuffled subset of the document's records; of another document's when swap_from is
+    given), a newline, one caption, and with probability p_question the question for a framed record. -> (bytes, meta)."""
+    recs = pack.records(i if swap_from is None else swap_from)
+    caps = pack.captions(i)
+    cap = caps[int(rng.integers(len(caps)))]
+    out, kept, asked = bytearray(CAPTION_HEAD), [], None
+    if recs:
+        k = int(rng.integers(1, min(len(recs), form["max_records"]) + 1))
+        order = rng.permutation(len(recs)).tolist()[:k]
+        fb, kept = caption_frame(rng, [recs[j] for j in order], form.get("trie", True))
+        out += fb + b"\n"
+    out += cap
+    if kept and rng.random() < form["p_question"]:
+        key, val = kept[int(rng.integers(len(kept)))]
+        asked = (key.decode("ascii", "replace"), val.decode("ascii", "replace"))
+        out += b"\n" + bytes([CUE]) + key + bytes([SEP]) + val + bytes([END])
+    return bytes(out), dict(doc=i, swap_from=swap_from, records=[(k.decode("ascii", "replace"), v.decode("ascii", "replace")) for k, v in kept],
+                            caption_bytes=len(cap), asked=asked)
+
+
+def caption_window(rng, pack, form: dict = CAPTION, ctx: int = ROW_CTX) -> tuple:
+    """Caption documents back to back until the window is full, the last one cut, as the packer fills a window with documents (the next
+    document begins with its own DOC). -> (ctx + 1 bytes, the documents' metas)."""
+    out, metas = bytearray(), []
+    while len(out) < ctx + 1:
+        i = pack.draw(rng)
+        swap = pack.draw(rng) if form["swap"] else None
+        d, m = caption_doc(rng, pack, i, form, swap)
+        m["start"] = len(out)
+        out += d
+        metas.append(m)
+    return bytes(out[:ctx + 1]), metas
 _TERM = r"([A-Z][a-z]{2,}(?: (?:[A-Z][a-z]{2,}|[a-z]{2,})){0,2})"
 _UNITS = (r"km|kilometres|kilometers|miles|metres|meters|feet|kg|kilograms|tons|tonnes|percent|%|acres|hectares|million|billion|years"
           r"|days|degrees|species|members|students|employees")
@@ -380,16 +485,24 @@ def load_corpus(folder: str | None = None) -> np.ndarray:
     return _CORPUS[folder]
 
 
-def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict = FORM, carry: bool = False) -> tuple:
+def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict = FORM, carry: bool = False, pack=None) -> tuple:
     """Row i of the stream at `seed`: the position and the coin from the row's own generator ([seed, i]), the framing from a second one
     ([seed, i, 1]), so the position and the coin are the same whatever p_framed is (and whatever the framed form: carry=True composes
-    the carry row of `form` in place of the frames row, 0.1.37). -> (ROW_BYTES bytes, framed?)."""
+    the carry row of `form` in place of the frames row, 0.1.37; carry="caption" / "caption_ctrl" the caption phase's rows from `pack`,
+    0.1.55). -> (ROW_BYTES bytes, framed?)."""
     rng = np.random.default_rng([seed, i])
     p = int(rng.integers(0, len(packed) - 2 * ROW_BYTES - 2))
     framed = bool(rng.random() < p_framed)
     if framed and carry == "note":                                 # 0.1.41: the note rows; a text with no usable fact stays plain
         nr = note_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
         row, framed = (nr[0], True) if nr else (packed[p:p + ROW_BYTES].tobytes(), False)
+    elif framed and carry in ("caption", "caption_ctrl"):          # 0.1.55: the caption phase: a carry row a third, a caption window two thirds
+        kind, reg = mixed_draw(np.random.default_rng([seed, i, 2]), form)
+        rng2 = np.random.default_rng([seed, i, 1])
+        if kind == "carry":
+            row, _ = carry_row(rng2, packed[p:p + 2 * ROW_BYTES].tobytes(), dict(form["carry"], register=reg), ROW_CTX)
+        else:
+            row, _ = caption_window(rng2, pack, form, ROW_CTX)
     elif framed and carry == "mixed":                              # 0.1.49: the mixed phase: carry rows and frames rows, three registers
         kind, reg = mixed_draw(np.random.default_rng([seed, i, 2]), form)
         src, rng2 = packed[p:p + 2 * ROW_BYTES].tobytes(), np.random.default_rng([seed, i, 1])
@@ -403,7 +516,7 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
         row, _ = frame_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
     else:
         row = packed[p:p + ROW_BYTES].tobytes()
-        if carry == "mixed" and form.get("p_doc_start") and np.random.default_rng([seed, i, 2]).random() < form["p_doc_start"]:
+        if carry in ("mixed", "caption", "caption_ctrl") and form.get("p_doc_start") and np.random.default_rng([seed, i, 2]).random() < form["p_doc_start"]:
             row = doc_start_row(packed, p)                         # 0.1.50: the mixed phase's document-start plain rows (the third generator's coin)
     assert len(row) == ROW_BYTES, len(row)
     return row, framed
@@ -412,8 +525,8 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
 class _LazyRow(Mapping):
     """A generator row built on access: the stream reads row['ids']; a resume's skip only advances past it."""
 
-    def __init__(self, packed, seed, i, p_framed, form=FORM, carry=False):
-        self._a = (packed, seed, i, p_framed, form, carry)
+    def __init__(self, packed, seed, i, p_framed, form=FORM, carry=False, pack=None):
+        self._a = (packed, seed, i, p_framed, form, carry, pack)
 
     def __getitem__(self, k):
         if k != "ids":
@@ -431,9 +544,13 @@ class _LazyRow(Mapping):
 def rows(seed: int, p_framed: float, form: dict = FORM, carry: bool = False):
     """The infinite generator a library stream opens (gen(seed)): row i at a time, built on access."""
     packed = load_corpus()
+    pack = None
+    if carry in ("caption", "caption_ctrl"):                       # 0.1.55: the caption pack (the folder from NANO_CAPTION_PACK)
+        from . import caption_pack as cp
+        pack = cp.load()
     i = 0
     while True:
-        yield _LazyRow(packed, int(seed), i, p_framed, form, carry)
+        yield _LazyRow(packed, int(seed), i, p_framed, form, carry, pack)
         i += 1
 
 
@@ -457,13 +574,22 @@ def _rows_mixed(seed):
     return rows(seed, P_FRAMED, MIXED, "mixed")     # 0.1.49: the mixed phase at the frames dose
 
 
+def _rows_caption(seed):
+    return rows(seed, P_FRAMED, CAPTION, "caption")             # 0.1.55: the caption phase at the frames dose
+
+
+def _rows_caption_ctrl(seed):
+    return rows(seed, P_FRAMED, CAPTION_CTRL, "caption_ctrl")   # 0.1.55: its control: every frame from another document
+
+
 def register() -> None:
     """Add the generators and their mixes to the library's registries (names only added; an existing name is refused unless it is
     already ours)."""
     from geolip.alephllm.data import curriculum, streams
     for name, fn, mix in (("nano-frames-p75", _rows_p75, FRAMES_MIX), ("nano-frames-p0", _rows_p0, CONTROL_MIX),
                           ("nano-frames-carry", _rows_carry, CARRY_MIX), ("nano-frames-note", _rows_note, NOTE_MIX),
-                          ("nano-frames-mixed", _rows_mixed, MIXED_MIX)):
+                          ("nano-frames-mixed", _rows_mixed, MIXED_MIX), ("nano-frames-caption", _rows_caption, CAPTION_MIX),
+                          ("nano-frames-caption-ctrl", _rows_caption_ctrl, CAPTION_CTRL_MIX)):
         gen = name.replace("-", "_")
         entry = dict(path=None, generator=gen, ids_rows=True)
         assert streams.REGISTRY.get(name, entry) == entry, f"{name} is already a different registry entry"

@@ -58,7 +58,7 @@ import numpy as np
 import torch
 
 from .bodies import craft_cfg
-from .frames_data import CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, MIXED_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
+from .frames_data import CAPTION_CTRL_MIX, CAPTION_MIX, CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, MIXED_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
@@ -91,10 +91,13 @@ CONT_TOKENS = 1_000_000_000
 CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continuation", CONTROL_MIX),
               "cf": ("carry_continuation", CARRY_MIX),       # 0.1.37: the carry rows (the self-written frames prototype)
               "nt": ("note_continuation", NOTE_MIX),         # 0.1.41: the note rows (form A, second instance: a fact of the text framed)
-              "mx": ("mixed_continuation", MIXED_MIX)}       # 0.1.49: the mixed phase (carry rows and frames rows, three registers)
+              "mx": ("mixed_continuation", MIXED_MIX),       # 0.1.49: the mixed phase (carry rows and frames rows, three registers)
+              "cp": ("caption_continuation", CAPTION_MIX),   # 0.1.55: the caption phase (caption windows from the pack and carry rows)
+              "cpx": ("caption_control_continuation", CAPTION_CTRL_MIX)}   # 0.1.55: its control (every frame from another document)
 # 0.1.49: a continuation phase's bytes when they differ from CONT_TOKENS: the mixed phase runs 1.5 billion so that its carry rows (two
 # framed rows in three) total the carry arm's 0.75 billion, the far habit's dose kept, while its frames rows add 0.375 billion.
-CONT_TOKENS_OF = {"mx": 1_500_000_000}
+# 0.1.55: the caption phase runs the mixed phase's 1.5 billion (the same dose on the mixed arm's end: about half the bytes caption windows).
+CONT_TOKENS_OF = {"mx": 1_500_000_000, "cp": 1_500_000_000, "cpx": 1_500_000_000}
 CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
                for n, c in CRAFTS.items() for arm in ("fr", "ct", "cf")}
 # 0.1.40: the frames-then-carry arm (one seed): the frames craft's end state (fp32 weights and both optimizers at step 65,237 at the 2s
@@ -114,7 +117,14 @@ CRAFTS_MIX = {f"{n}.1-mx": dict(c, train=V11_TRAIN, tag="v11mx", source=f"{n}.1"
 # against the default 1337; the phase stream and its rows draw from it), so the mixed phase's marks get a seed pair on one body.
 CRAFTS_MIX2 = {"nano-pollux-dual-v1.1-mx2": dict(CRAFTS["nano-pollux-dual-v1"], train={**V11_TRAIN, "seed": 2}, tag="v11mx2",
                                                 source="nano-pollux-dual-v1.1", cont="mx")}
-ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2}
+# 0.1.55: the caption arms (plans/2026-10-19_caption_finetune_plan.md): -mx-cp from the mixed arm's end (the dominant form, the release
+# repo's resident arm) through one phase of caption windows from the caption pack and carry rows (frames_data.CAPTION); the control
+# -mx-cpx on Pollux dual, the same phase with every frame taken from another document (the frame says nothing about the caption).
+CRAFTS_CAPTION = {f"{n}.1-mx-cp": dict(c, train=V11_TRAIN, tag="v11mxcp", source=f"{n}.1-mx", cont="cp") for n, c in CRAFTS.items()}
+CRAFTS_CAPTION_CTRL = {"nano-pollux-dual-v1.1-mx-cpx": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v11mxcpx",
+                                                           source="nano-pollux-dual-v1.1-mx", cont="cpx")}
+ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2, **CRAFTS_CAPTION,
+       **CRAFTS_CAPTION_CTRL}
 
 
 def train_of(name: str) -> dict:
@@ -122,7 +132,7 @@ def train_of(name: str) -> dict:
     return dict(ALL[name].get("train") or {})
 
 
-ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed"}      # 0.1.43: a continuation kind in plain words; 0.1.49 mixed
+ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed", "cp": "caption", "cpx": "caption control"}   # 0.1.43: a continuation kind in plain words; 0.1.49 mixed; 0.1.55 caption
 
 
 def body_of(name: str) -> str:
@@ -536,8 +546,8 @@ def gauge_scalars(rec: dict) -> dict:
 def gauge_args(name: str, init: str, out: str) -> dict:
     c = ALL[name]
     args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
-    if c.get("cont") in ("cf", "nt", "mx"):
-        args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge); 0.1.49 the mixed arm
+    if c.get("cont") in ("cf", "nt", "mx", "cp", "cpx"):
+        args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge); 0.1.49 the mixed arm; 0.1.55 the caption arms
     if c.get("cont") == "nt":
         args["note_gauge"] = "1"                         # 0.1.41: the note arm's reads add the note rows, given and self-written (the tag ends _carry_note_gauge)
     return args
@@ -638,6 +648,41 @@ def gauge_stored(name: str, step: int, out: str, repo: str = REPO, carry: bool =
     return json.load(open(rec_path, encoding="utf-8"))
 
 
+def caption_stored(name: str, step: int, out: str, repo: str = REPO, token=None, rows: int = 256, gauge_gb: float = 10.0,
+                   pack: str | None = None, pack_rows: int | None = None, caption_cmd=None) -> dict:
+    """0.1.55: THE CAPTION READS on a stored craft (caption_screen.py as a child; the weights pulled to <out>/bed/<init> as gauge_stored
+    pulls them; the held split of the caption pack at `pack` or <out>/caption_pack, built when absent). A record already on disk is
+    returned as it is. -> the record (caption_<init>.json)."""
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file, save_file
+    from . import caption_pack as cp
+    c = ALL[name]
+    init = gauge_init(name, step)
+    bed = os.path.join(out, "bed")
+    wdir = os.path.join(bed, init)
+    rec_path = os.path.join(bed, f"caption_{init}.json")
+    if os.path.exists(rec_path):
+        return json.load(open(rec_path, encoding="utf-8"))
+    folder = pack or os.path.join(out, "caption_pack")
+    cp.ensure(folder, token, pack_rows)
+    os.makedirs(wdir, exist_ok=True)
+    if not os.path.exists(os.path.join(wdir, "model.safetensors")):
+        ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
+        save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
+        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+    args = dict(out=out, init=init, rows=str(rows), ctx=str(CTX), seed=str(GAUGE_SEED), pack=folder)
+    total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
+    cmd = list(caption_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.caption_screen"]) + [f"--{k}={v}" for k, v in args.items()]
+    env = dict(os.environ, BATTERY_GPU_FRAC=str(min(0.6, max(0.05, gauge_gb / total))), PYTHONIOENCODING="utf-8")
+    env.pop("HF_TOKEN", None)
+    os.makedirs(os.path.join(bed, "gauge_logs"), exist_ok=True)
+    log_path = os.path.join(bed, "gauge_logs", f"{init}_caption.log")
+    with open(log_path, "w", encoding="utf-8") as lf:
+        rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, timeout=7200).returncode
+    assert rc == 0 and os.path.exists(rec_path), f"the caption read of {name} at {step:,} failed (exit {rc}); its log: {log_path}"
+    return json.load(open(rec_path, encoding="utf-8"))
+
+
 def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "self", token=None, rows: int = 192, gauge_gb: float = 10.0,
                 gate_cmd=None, extra: dict | None = None) -> dict:
     """0.1.51: THE GATE SCREEN on a STORED craft (gate_screen.py as a child, the weights pulled to <out>/bed/<init> as gauge_stored pulls
@@ -706,7 +751,7 @@ def unrecorded_boundary(trainer, rows: list) -> tuple:
 def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO,
         gauge_every: int = GAUGE_EVERY, gauge_cmd=None, max_hours: float | None = None, process_streams: bool = True,
         diet_scale: float = 1.0, device=None, gauge_gb: float = 10.0, cont_from: str | None = None, frames_corpus: str | None = None,
-        frames_corpus_bytes: float = 1.0e9, **train_over) -> dict:
+        frames_corpus_bytes: float = 1.0e9, caption_pack: str | None = None, caption_pack_rows: int | None = None, **train_over) -> dict:
     """Train the v1 crafts through the diet, round-robin by phase. out: the local folder (births, runs, the bed's gauge folder);
     hf_token: None = local only (no hub record, no uploads); max_hours: this session's wall budget (a stop between or inside phases is
     a pause: the next call resumes from the hub); gauge_gb: the bed gauge child's card budget. -> {craft: [one entry a boundary: phase,
@@ -722,6 +767,11 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         if not os.path.exists(os.path.join(folder, "bed_corpus.bin")):
             build_corpus(folder, int(frames_corpus_bytes))
         os.environ[CORPUS_ENV] = folder
+    if any(ALL[n].get("cont") in ("cp", "cpx") for n in names):     # 0.1.55: the caption pack, reached by the stream children
+        from . import caption_pack as cp
+        pack_folder = caption_pack or os.path.join(out, "caption_pack")
+        cp.ensure(pack_folder, hf_token, caption_pack_rows, log=lambda *a: print("[v1]", *a, flush=True))
+        os.environ[cp.PACK_ENV] = pack_folder
     hist_p = os.path.join(out, "v1_boundaries.json")
     hist = json.load(open(hist_p, encoding="utf-8")) if os.path.exists(hist_p) else {n: [] for n in names}
     gauged = {n: set() for n in names}
@@ -818,7 +868,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 def version_of(names) -> str:
     """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2
+    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2 or n in CRAFTS_CAPTION or n in CRAFTS_CAPTION_CTRL
                          for n in names) else "v1"
 
 
@@ -971,6 +1021,34 @@ def mixed_table(hist: dict) -> str:
             d1 = "-" if a is None or x is None else f"{a - x:+.{nd}f}"
             d2 = "-" if a is None or z is None else f"{a - z:+.{nd}f}"
             rows.append(f"| {body_label} | {label} | {f[0]} | {f[1]} | {f[2]} | {f[3]} | {f[4]} | {d1} | {d2} |")
+    return "\n".join(rows)
+
+
+def caption_table(hist: dict) -> str:
+    """0.1.55: the caption-phase reads (markdown): per body and read, the mixed arm's end (the -mx-cp craft's first row: the same
+    weights), the end of the caption phase, the end of the control (every document's frame from another document) and each minus the
+    start; a read no craft carries is left out."""
+    rows = ["| body | read | mixed arm's end (the start) | after the caption phase | the control's end | caption minus the start | control minus the start |",
+            "|---|---|---|---|---|---|---|"]
+
+    def at(entries, phase):
+        return next((e for e in entries if e.get("phase") == phase), None)
+
+    def get(e, k):
+        return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
+    mx_end, cp_end, cpx_end = (CONT_PHASE[a][0] for a in ("mx", "cp", "cpx"))
+    for n in CRAFTS:
+        cpe, cpx, mx = hist.get(f"{n}.1-mx-cp") or [], hist.get(f"{n}.1-mx-cpx") or [], hist.get(f"{n}.1-mx") or []
+        start = at(cpe, mx_end) or at(cpx, mx_end) or at(mx, mx_end)
+        after, ctrl = at(cpe, cp_end), at(cpx, cpx_end)
+        for label, k, nd in CONT_READS:
+            s, a, x = get(start, k), get(after, k), get(ctrl, k)
+            if s is None and a is None and x is None:
+                continue
+            f = ["-" if v is None else f"{v:.{nd}f}" for v in (s, a, x)]
+            d1 = "-" if a is None or s is None else f"{a - s:+.{nd}f}"
+            d2 = "-" if x is None or s is None else f"{x - s:+.{nd}f}"
+            rows.append(f"| {n} | {label} | {f[0]} | {f[1]} | {f[2]} | {d1} | {d2} |")
     return "\n".join(rows)
 
 
