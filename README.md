@@ -175,6 +175,11 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.54 (2026-10-18): `gate_stored` writes the held-out head beside its records before the screen's child runs. The gate notebook's
+preflight smoke runs in its own folder, which had no `heldout_fineweb_edu_head2048.jsonl`: the child asserted on its first run on
+a rented card (the training entry point and the gauge path write that file; the gate runner did not). The preflight also copies
+the held-out it already fetched into the smoke folder, so nothing is downloaded twice; the gate notebook pins v0.1.54.
+
 0.1.53 (2026-10-18): the gate screen's protocol runs under no_grad. The first 192-row read on a 24 GB card stopped at the 10 GB
 budget `gate_stored` gives the child: the grid reads and the frame generation kept an autograd graph the scoring reads never
 needed (the two-row smoke on a CPU had the memory for it). `gate_screen.screen` is decorated `torch.no_grad`; the record and the

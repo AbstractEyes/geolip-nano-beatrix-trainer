@@ -643,7 +643,7 @@ def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "s
     """0.1.51: THE GATE SCREEN on a STORED craft (gate_screen.py as a child, the weights pulled to <out>/bed/<init> as gauge_stored pulls
     them): the body proposes notes on the grid protocol, every note scored with and without it and with its value withheld over the
     bytes that follow; mode self (the note gauge's fact rows) or plain (the carry gauge's plain rows). A record already on disk is
-    returned as it is. -> the record (gate_<init>_<mode>.json)."""
+    returned as it is; the held-out head is written to <out>/bed when absent (0.1.54). -> the record (gate_<init>_<mode>.json)."""
     from huggingface_hub import hf_hub_download
     from safetensors.torch import load_file, save_file
     c = ALL[name]
@@ -654,6 +654,8 @@ def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "s
     if os.path.exists(rec_path):
         return json.load(open(rec_path, encoding="utf-8"))
     os.makedirs(wdir, exist_ok=True)
+    from .bed_corpus import write_heldout
+    write_heldout(bed)                                   # 0.1.54: the child reads the held-out head from <out>/bed; a fresh folder gets it here
     if not os.path.exists(os.path.join(wdir, "model.safetensors")):
         ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
         save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
