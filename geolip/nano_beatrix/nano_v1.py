@@ -965,9 +965,51 @@ def version_of(names) -> str:
     return "v1.1" if any(ALL[n].get("train") or ALL[n].get("source") for n in names) else "v1"
 
 
-def card_in_training(names=None) -> str:
-    """The repo's card while the crafts train (the AutoModel card replaces it when they finish); names: the crafts training (the v1
-    crafts by default, the v1 text unchanged)."""
+TRAINING_OPEN, TRAINING_CLOSE = "<!-- training now -->", "<!-- /training now -->"
+
+
+def training_block(names=None) -> str:
+    """The 'Training now' section a release card carries while later crafts train: their version's note, the crafts, where their
+    folders fill (0.1.63)."""
+    names = list(names or CRAFTS)
+    ver = version_of(names)
+    rows = "\n".join(f"| [`{n}`](./{n}) | {ALL[n]['body']} | `{ALL[n]['arm']}`, seed {ALL[n]['seed']} |" for n in names)
+    note = (V11_NOTE if ver == "v1.1" else V12_NOTE if ver == "v1.2" else "").strip()
+    nb = {"v1.1": "colab/nano_v1_1.ipynb", "v1.2": "colab/nano_v1_2.ipynb"}.get(ver, "colab/nano_v1_2s.ipynb")
+    return f"""{TRAINING_OPEN}
+## Training now: {ver}
+
+{note}
+
+| craft | the body | started from the start of its bed run |
+|---|---|---|
+{rows}
+
+Each folder fills as it trains (`checkpoints/`, `resume/`, `manifest.json`, `runs/`, `bed_gauges/`, and `v1_boundaries.json` with the
+bed's reads at every phase boundary) and becomes an AutoModel package like the folders above when it finishes. The trainer notebook:
+`{nb}`.
+{TRAINING_CLOSE}
+
+"""
+
+
+def card_in_training(names=None, existing: str | None = None) -> str:
+    """The repo's card while the crafts train. existing: the repo's current README; when it is a release card (it has a '## Use'
+    section), the training block is inserted before '## Use', or replaces the block already there, and the rest of the card stays
+    (0.1.63: v1.2's launch card had replaced the v1.1 release card whole, 2026-10-19). Without a release card: the in-training card
+    alone, as before (the AutoModel card replaces it when the crafts finish)."""
+    if existing and "## Use" in existing:
+        block = training_block(names)
+        if TRAINING_OPEN in existing and TRAINING_CLOSE in existing:
+            a, b = existing.index(TRAINING_OPEN), existing.index(TRAINING_CLOSE) + len(TRAINING_CLOSE)
+            return existing[:a] + block + existing[b:].lstrip("\n")
+        return existing.replace("## Use", block + "## Use", 1)
+    return _card_fresh(names)
+
+
+def _card_fresh(names=None) -> str:
+    """The one-set in-training card (the repo holds no release card yet); names: the crafts training (the v1 crafts by default, the
+    v1 text unchanged)."""
     names = list(names or CRAFTS)
     ver = version_of(names)
     rows = "\n".join(f"| `{n}` | {ALL[n]['body']} | `{ALL[n]['arm']}`, seed {ALL[n]['seed']} |" for n in names)
