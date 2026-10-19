@@ -65,20 +65,7 @@ def test_the_example_passes_and_broken_rows_fail_the_right_rule():
     assert 7 in broken(lambda r: r["spec"]["look"].__setitem__("hair", held["hair"][0]))
     assert 8 in broken(lambda r: r["source"].pop("license"))
     assert 0 in broken(lambda r: r.pop("held"))
-    # rule 9, the no-children rule: anywhere in the row, including the booru count tags and the school compounds; adults pass
-    assert 9 in broken(lambda r: r["wordings"].__setitem__("tags", "1girl, short hair"))
-    assert 9 in broken(lambda r: r["wordings"].__setitem__("tags", "2boys, outdoors"))
-    assert 9 in broken(lambda r: r["thoughts"].append({"step": "see", "text": "A schoolgirl waits."}))
-    assert 9 in broken(lambda r: r.__setitem__("genre", "classroom scene"))
-    assert {2, 9} <= broken(lambda r: r["spec"]["person"].__setitem__("age", "teen"))
-    assert {2, 9} <= broken(lambda r: r["spec"]["scene"].__setitem__("setting", "classroom"))
-    assert 9 in broken(lambda r: r["questions"].append({"key": "person role", "value": "student", "needs": "unknown"}))
-    assert 9 in broken(lambda r: r["wordings"].__setitem__("caption", "A woman and her baby."))
-    assert 9 not in broken(lambda r: r["wordings"].__setitem__("caption", "A cowgirl and a boyar; a schooner at the boundary."))
-    for name in ("gender", "age", "role", "setting", "purpose", "audience", "genre", "clothing"):
-        for v in TP.VOCAB[name]:
-            assert not TP.MINORS.search(v), (name, v)
-    assert not TP.MINORS.search(json.dumps(TP.EXAMPLE))
+    assert set(TP.RULES) == set(range(1, 9))                # the plan's eight rules; a content rule for generated pictures is not the dataset's
     deep = copy.deepcopy(TP.EXAMPLE)
     deep["depth"] = "deep"
     rules = {rule for rule, _ in TP.validate(deep, held)}
@@ -145,8 +132,8 @@ def test_the_vocab_files_the_prompt_and_the_doc(tmp_path):
     hj = json.load(open(tmp_path / "vocab" / "held.json", encoding="utf-8"))
     assert trie["keys"] == TP.keys() and trie["counts"]["deep"]["records"] == [14, 30] and hj["held"] == held and trie["version"] == TP.VERSION
     pr = TP.prompt("medium", "photograph", held)
-    assert "THE RULES" in pr and json.dumps(TP.EXAMPLE, ensure_ascii=False) in pr and "6-14 records" in pr and "ADULTS ONLY, BY RULE" in pr
-    assert "ADULTS ONLY, BY RULE" in TP.PROMPT_DOC and "9. ADULTS ONLY" in TP.PROMPT_DOC
+    assert "THE RULES" in pr and json.dumps(TP.EXAMPLE, ensure_ascii=False) in pr and "6-14 records" in pr
+    assert "ADULTS ONLY" not in pr and "ADULTS ONLY" not in TP.PROMPT_DOC
     def offered(text, name):
         line = [ln for ln in text.split("\n") if ln.startswith(f"  {name}: ")]
         return set(line[0][len(name) + 4:].split(", ")) if line else set()

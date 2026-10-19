@@ -29,7 +29,7 @@ import numpy as np
 
 from .caption_pack import COLOURS, EXPRESSIONS
 
-VERSION = "0.1.60"
+VERSION = "0.1.61"
 REPO = "AbstractPhil/thought-symbolic-image-captions"
 DEPTHS = ("simple", "medium", "deep")
 DOMAINS = ("photograph", "painting", "illustration", "sculpture", "design")
@@ -63,15 +63,8 @@ RULES = {1: "every claim is in the spec or is marked as an inference with its ev
          5: "at least one wording a row, three for deep (caption, prompt, tags); the tag wording uses the booru register where it exists",
          6: "a mood names its evidence: the key of the record that shows it (look expression, shot light, rel1 rel)",
          7: "a series shares its spec by subset: simple within medium within deep",
-         8: "no real person's name, no copyrighted image described from memory: the spec is invented or comes from a licensed description",
-         9: "ADULTS ONLY: no child, kid, boy, girl, baby, toddler, teen, student, pupil, school, classroom, playground or kindergarten anywhere "
-            "in a row (the spec, the genre, the thoughts, the wordings, the tags, the questions); a person's age is an adult decade or elderly"}
+         8: "no real person's name, no copyrighted image described from memory: the spec is invented or comes from a licensed description"}
 BANNED = ("pixel", "the image file", "i can see", "as seen in the image", "in this photo i", "looking at the image", "the jpeg", "the png")
-# rule 9 (the no-children rule, 2026-10-19): whole words, plus the booru count tags (1girl, 2boys) and the school compounds
-MINORS = re.compile(r"(?:\b|\d)(?:child|children|childish|kid|kids|kiddo|boy|boys|boyish|girl|girls|girlish|baby|babies|infant|infants|newborn|toddler|"
-                    r"toddlers|teen|teens|teenage|teenager|teenagers|tween|tweens|preteen|underage|minor|minors|youngster|youngsters|student|students|"
-                    r"pupil|pupils|school|schools|schoolgirl|schoolgirls|schoolboy|schoolboys|schoolchild|schoolchildren|schoolyard|schoolbag|"
-                    r"classroom|classrooms|playground|playgrounds|kindergarten|preschool|preschooler|nursery|daycare|loli|shota|lolita)\b")
 
 # ------------------------------------------------------------------ the closed vocabulary (a tenth of every list is sealed as held-out)
 def _union(base, more) -> list:
@@ -85,14 +78,14 @@ VOCAB = {
     "colour": _union(COLOURS - {"gray"}, ["cream", "beige", "tan", "gold", "navy", "olive", "maroon", "coral", "lilac", "rust", "ivory", "charcoal", "indigo", "peach", "mint", "mustard", "plum", "sand", "slate", "wine"]),
     "expression": _union(EXPRESSIONS, ["wry", "serene", "stern", "pensive", "amused", "weary", "startled", "proud", "tender", "bored", "defiant", "dreamy", "wince", "gaze", "calm", "fierce", "mournful", "curious"]),
     "hair": ["short", "long", "curly", "straight", "wavy", "braided", "bob", "bun", "ponytail", "buzzed", "shaved", "messy", "slicked", "afro", "locs", "bangs", "pigtails", "undercut", "wet", "windblown"],
-    "gender": ["woman", "man", "person", "nonbinary person"],
-    "age": ["20s", "30s", "40s", "50s", "60s", "70s", "80s", "elderly"],
-    "role": ["worker", "dancer", "musician", "soldier", "farmer", "nurse", "clerk", "chef", "rider", "swimmer", "painter", "monk", "vendor", "guard", "traveller", "reader", "mother", "father", "bride", "athlete"],
+    "gender": ["woman", "man", "girl", "boy", "person", "nonbinary person"],
+    "age": ["child", "teen", "20s", "30s", "40s", "50s", "60s", "elderly", "baby", "young adult"],
+    "role": ["worker", "dancer", "musician", "soldier", "farmer", "nurse", "student", "chef", "rider", "swimmer", "painter", "monk", "vendor", "guard", "traveller", "reader", "mother", "father", "bride", "athlete"],
     "clothing": ["raincoat", "suit", "dress", "kimono", "hoodie", "uniform", "overalls", "gown", "jacket", "sweater", "coat", "robe", "armour", "apron", "cloak", "tunic", "jeans", "sari", "parka", "vest"],
     "accessory": ["hat", "glasses", "scarf", "umbrella", "watch", "bag", "cane", "gloves", "mask", "crown", "headphones", "belt", "cap", "veil", "necklace", "earrings", "ring", "bracelet", "pin", "none"],
     "pose": ["standing", "sitting", "walking", "running", "lying", "kneeling", "leaning", "crouching", "jumping", "dancing", "turning", "reaching", "resting", "climbing", "floating", "bowing", "stretching", "crossed arms", "hands in pockets", "arms raised"],
     "gesture": ["waving", "pointing", "holding", "covering face", "hands clasped", "thumbs up", "shrug", "beckoning", "saluting", "clapping"],
-    "setting": ["market street", "forest", "beach", "kitchen", "studio", "rooftop", "subway", "cathedral", "desert", "harbour", "cafe", "library", "garden", "mountain pass", "alley", "ballroom", "farm", "observatory", "river bank", "snowfield", "greenhouse", "stadium", "workshop", "bridge", "cliff", "meadow", "laboratory", "temple", "bus stop", "hospital ward", "lighthouse", "vineyard", "attic", "ruins", "pier", "swamp", "courtyard", "cave", "skate park", "night market"],
+    "setting": ["market street", "forest", "beach", "kitchen", "studio", "rooftop", "subway", "cathedral", "desert", "harbour", "cafe", "library", "garden", "mountain pass", "alley", "ballroom", "farm", "classroom", "river bank", "snowfield", "greenhouse", "stadium", "workshop", "bridge", "cliff", "meadow", "laboratory", "temple", "bus stop", "hospital ward", "lighthouse", "vineyard", "attic", "ruins", "pier", "swamp", "courtyard", "cave", "skate park", "night market"],
     "time": ["dawn", "morning", "noon", "afternoon", "golden hour", "dusk", "blue hour", "night", "midnight", "late evening"],
     "weather": ["rain", "snow", "fog", "clear", "overcast", "storm", "haze", "wind", "drizzle", "sleet", "heat shimmer", "frost"],
     "layout": ["single subject", "pair", "crowd", "empty", "cluttered", "sparse", "layered depth", "flat", "panoramic", "tight"],
@@ -116,8 +109,8 @@ VOCAB = {
     "tone": ["warm", "cold", "dry", "lyrical", "ironic", "solemn", "brash", "quiet", "sweet", "harsh"],
     "energy": ["still", "slow", "steady", "brisk", "frantic", "explosive", "drifting", "pulsing"],
     "temperature": ["warm", "cool", "neutral", "mixed"],
-    "purpose": ["editorial", "advertising", "personal record", "archival", "fine art", "book illustration", "concept art", "album cover", "poster", "scientific record", "fashion", "product", "documentary", "devotional", "propaganda", "calendar", "game art", "portrait commission", "study", "protest"],
-    "audience": ["a travel feature", "collectors", "a sports page", "a newspaper", "a gallery", "the family", "a fashion house", "a game studio", "a church", "the public square", "a city council", "a museum", "a magazine cover", "a film crew", "a scientific journal"],
+    "purpose": ["editorial", "advertising", "personal record", "archival", "fine art", "book illustration", "concept art", "album cover", "poster", "scientific record", "fashion", "product", "documentary", "devotional", "propaganda", "children's book", "game art", "portrait commission", "study", "protest"],
+    "audience": ["a travel feature", "collectors", "children", "a newspaper", "a gallery", "the family", "a fashion house", "a game studio", "a church", "the public square", "students", "a museum", "a magazine cover", "a film crew", "a scientific journal"],
     "genre": ["portrait", "landscape", "still life", "street", "documentary", "fashion", "product", "architecture", "wildlife", "abstract", "sport", "food", "interior", "aerial", "underwater", "macro", "war", "history painting", "genre scene", "self portrait", "cityscape", "seascape", "nude study", "botanical", "scientific"],
     "moment": ["the instant before", "the instant after", "mid action", "a pause", "a departure", "an arrival", "a discovery", "a farewell", "a wait", "a celebration", "a loss", "a plain afternoon"],
 }
@@ -238,7 +231,7 @@ SAMPLE_RELATIONS = {"simple": 0, "medium": 1, "deep": 2}
 # the sampler draws hues for clothing, things, eyes and palettes: the booru modifiers and the hair-only colours stay for the model's own use
 NOT_A_HUE = {"gradient", "colored", "two-tone", "streaked", "multicolored", "heterochromia", "dark", "light", "blonde", "platinum blonde",
              "strawberry blonde", "auburn", "ginger"}
-NOT_SAMPLED: dict = {}                                                            # values the sampler leaves to the model (none since the no-children rule emptied it)
+NOT_SAMPLED = {"age": {"baby"}}                                                   # values the sampler leaves to the model (a baby posed and dressed reads wrong)
 
 
 def sample_spec(rng, depth: str, lists: dict | None = None) -> dict:
@@ -383,12 +376,6 @@ def validate(row: dict, held: dict | None = None) -> list:
     for b in BANNED:
         if b in words:
             p.append((1, f"the text speaks of the image as seen: {b!r}"))
-    # rule 9: adults only, everywhere in the row
-    everywhere = " ".join([words, str(row.get("genre", "")), str(row.get("domain", ""))] + [v for _, v in recs] + [str(k) for k, _ in recs]
-                          + [str(q.get("value", "")) for q in row["questions"]]).lower()
-    hits = sorted({m.group(0).lstrip("0123456789") for m in MINORS.finditer(everywhere)})
-    if hits:
-        p.append((9, f"adults only: the row holds {hits}"))
     # rule 4: the questions
     recmap = {}
     for k, v in recs:
@@ -511,7 +498,7 @@ EXAMPLE = {
                  {"step": "say", "text": "The composed wording follows."}],
     "wordings": {"caption": "A woman with short hair and a wry smile, in a yellow raincoat, on a rainy market street at dusk, lit by neon, in front of a fish stall.",
                  "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject right third",
-                 "tags": "solo, woman, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"},
+                 "tags": "1girl, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"},
     "questions": [{"key": "look hair", "value": "short", "needs": "record"},
                   {"key": "rel1 b", "value": "fish stall", "needs": "record"},
                   {"key": "scene layout", "value": "single subject", "needs": "chain"},
@@ -539,11 +526,6 @@ def prompt(depth: str, domain: str, held: dict | None = None, split: str = "trai
     lists_txt = "\n".join(f"  {k}: {', '.join(v)}" for k, v in lists.items() if v)
     return f"""You write rows of THE ART THOUGHT DATASET ({REPO}): text only, one act of thinking about an image that nobody sees.
 Domain: {domain}. Write {want}. Output JSON Lines, one JSON object a row, nothing else.
-
-ADULTS ONLY, BY RULE: every person in every row is an adult; no child, kid, boy, girl, baby, toddler, teen, student, pupil, school,
-classroom, playground or kindergarten appears anywhere (not in the spec, the genre, the thoughts, the wordings, the tags or the
-questions); the booru tag register is used for adults only, with no age or school tags (write 'solo, woman' or 'solo, man', never a
-count-and-girl tag). A row that breaks this is rejected whole.
 
 {spec_line}
 
@@ -579,11 +561,6 @@ The dataset: {REPO}. The plan: history/plans/2026-10-19_art_thought_dataset_plan
 A row is one act of THINKING ABOUT AN IMAGE that nobody sees: a hidden image specification in the systems trie, a chain of thoughts
 at a stated depth, the wordings an artist would use, and questions whose answers sit in the records. Text only; nothing refers to
 pixels or to seeing a file.
-
-ADULTS ONLY, BY RULE (2026-10-19): every person in every row is an adult. No child, kid, boy, girl, baby, toddler, teen, student,
-pupil, school, classroom, playground or kindergarten appears anywhere in a row, in any register, tag or wording; the age attribute
-takes adult decades (20s to 80s) or elderly; the booru tag register is used for adults only, with no age or school tags. The
-vocabulary carries none of these words, the sampler never draws them, and the validator rejects a row holding any of them.
 
 ## The depths
 | depth | the thought holds | records | thoughts | questions | wordings | frame |
