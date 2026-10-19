@@ -175,6 +175,19 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.51 (2026-10-18): THE GATE SCREEN. The body's own loss decides which of its notes to keep. `gate_screen.py` keeps the
+reading-with-notes protocol as it is (a held-out row read in 64-byte grid steps; at each grid point the greedy next byte decides
+whether a frame opens, and an opened frame is written to END and inserted) and adds, for every note the body writes, three
+teacher-forced reads of the bytes that follow it: with the note, without it, and with its value replaced by spaces. A note is kept
+at a horizon and a margin when the text after it costs at least the margin fewer bits than both controls (Toolformer's two-control
+filter); horizons 64 to 512 bytes and margins 0.25 to 4 bits are scanned and reported as a table, never set. A random-note control
+(a one-record frame with a key and a value from the bed's vocabulary at the same positions) runs beside every read and must fail.
+Two modes: `self` reads the note gauge's rows (held-out documents holding a fact), `plain` the carry gauge's plain rows.
+`nano_v1.gate_stored` runs it on a stored craft as `gauge_stored` runs the gauges. The record carries the notes a row, the kept
+share at every setting, the gain distributions, the share of kept notes whose value stands in the preceding 1,024 bytes, the share
+whose key the extractor also finds, examples kept and dropped, and the wall time. The notebook `colab/nano_v1_1_gate.ipynb` reads
+the premise (does the body propose at all) and the screen on the candidates and ships the records to the Hub as JSON. Tests.
+
 0.1.50 (2026-10-18): document-start plain rows in the mixed phase, and a preflight fix. A read of every final's cost over the
 first 64 bytes of a plain held-out document found the framed streams' head tax to be the opening: their plain rows are slices
 taken mid-document and never begin with DOC, so a window-initial DOC announced a frame with probability 1.0 and a plain document's

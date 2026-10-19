@@ -634,6 +634,41 @@ def gauge_stored(name: str, step: int, out: str, repo: str = REPO, carry: bool =
     return json.load(open(rec_path, encoding="utf-8"))
 
 
+def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "self", token=None, rows: int = 192, gauge_gb: float = 10.0,
+                gate_cmd=None, extra: dict | None = None) -> dict:
+    """0.1.51: THE GATE SCREEN on a STORED craft (gate_screen.py as a child, the weights pulled to <out>/bed/<init> as gauge_stored pulls
+    them): the body proposes notes on the grid protocol, every note scored with and without it and with its value withheld over the
+    bytes that follow; mode self (the note gauge's fact rows) or plain (the carry gauge's plain rows). A record already on disk is
+    returned as it is. -> the record (gate_<init>_<mode>.json)."""
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file, save_file
+    c = ALL[name]
+    init = gauge_init(name, step)
+    bed = os.path.join(out, "bed")
+    wdir = os.path.join(bed, init)
+    rec_path = os.path.join(bed, f"gate_{init}_{mode}.json")
+    if os.path.exists(rec_path):
+        return json.load(open(rec_path, encoding="utf-8"))
+    os.makedirs(wdir, exist_ok=True)
+    if not os.path.exists(os.path.join(wdir, "model.safetensors")):
+        ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
+        save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
+        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+    args = dict(out=out, init=init, mode=mode, rows=str(rows), ctx=str(CTX), seed=str(GAUGE_SEED))
+    if extra:
+        args.update({k: str(v) for k, v in extra.items()})
+    total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
+    cmd = list(gate_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.gate_screen"]) + [f"--{k}={v}" for k, v in args.items()]
+    env = dict(os.environ, BATTERY_GPU_FRAC=str(min(0.6, max(0.05, gauge_gb / total))), PYTHONIOENCODING="utf-8")
+    env.pop("HF_TOKEN", None)
+    os.makedirs(os.path.join(bed, "gauge_logs"), exist_ok=True)
+    log_path = os.path.join(bed, "gauge_logs", f"{init}_gate_{mode}.log")
+    with open(log_path, "w", encoding="utf-8") as lf:
+        rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, timeout=7200).returncode
+    assert rc == 0 and os.path.exists(rec_path), f"the gate screen of {name} at {step:,} ({mode}) failed (exit {rc}); its log: {log_path}"
+    return json.load(open(rec_path, encoding="utf-8"))
+
+
 # ------------------------------------------------------------------ the run
 def phase_index(trainer) -> int | None:
     """The index of the craft's current phase (active, else the first planned), None when its diet is done; reads only."""
