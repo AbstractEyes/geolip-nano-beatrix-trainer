@@ -144,8 +144,17 @@ CRAFTS_MICRO = {f"{s}-pollux-dual-v1": dict(arm="altd-both", seed=1, code=f"m{s[
                                                  f"{SIZES[s]['n_layers']} blocks, {SIZES[s]['n_heads']} heads)"))
                 for s in ("micro26", "micro45", "micro66")}
 CRAFTS_MICRO_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS_MICRO.items()}
+# 0.1.58: THE FRAME-PRETRAINED NANO, v1.2 (plans/2026-10-19_nano_todo_frame_pretrain_plan.md; Phil 2026-10-19 12:0x: a nano "specifically
+# pretrained to understand frames, rather than just documents", its frame behaviors not "lost over time like they are currently"): Pollux
+# dual from the same birth as v1 and v1.1, the v1.1 recipe, the 2s diet with half of every phase's rows framed from the first step
+# (framed_diet.FORMS "p50": carry rows, frames rows, caption windows, note rows in the three registers; the phases, their names and bytes
+# the control's); the alternatives at a quarter and three quarters. The plain nano-pollux-dual-v1.1 is the control (the same birth,
+# recipe, phases and bytes; its boundary record on the Hub). The framing is the craft's property ("framed"), applied in the stream child.
+CRAFTS_V12 = {"nano-pollux-dual-v1.2": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12", framed="p50"),
+              "nano-pollux-dual-v1.2-p25": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12p25", framed="p25"),
+              "nano-pollux-dual-v1.2-p75": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12p75", framed="p75")}
 ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2, **CRAFTS_CAPTION,
-       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL, **CRAFTS_MICRO, **CRAFTS_MICRO_V11}
+       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL, **CRAFTS_MICRO, **CRAFTS_MICRO_V11, **CRAFTS_V12}
 
 
 def train_of(name: str) -> dict:
@@ -166,6 +175,11 @@ def size_of(name: str) -> str:
     """0.1.57: the body's size (bodies.SIZES): the craft's own, else its source's; "nano" for the bed's bodies."""
     c = ALL[name]
     return c.get("size") or (size_of(c["source"]) if c.get("source") else "nano")
+
+
+def framed_of(name: str) -> str | None:
+    """0.1.58: the framed diet's form of a craft (framed_diet.FORMS), None for a plain diet."""
+    return ALL[name].get("framed")
 
 
 def arm_text(name: str) -> str | None:
@@ -363,7 +377,12 @@ def _stream_worker(spec: dict, q, stop) -> None:
         from geolip.alephllm.data.streams import build_stream
         from geolip.alephllm.data.tokenizers import build_tokenizer
         tok = build_tokenizer(spec["tokenizer"])
-        s = build_stream(spec["dataset"], tok, spec["context"], spec["micro_batch"], seed=spec["seed"], shard=spec.get("shard"))
+        if spec.get("framed"):                            # 0.1.58: THE FRAMED DIET: the phase's stream at micro-batch 1 under the framed wrapper
+            from .framed_diet import FORMS, FramedStream
+            inner = build_stream(spec["dataset"], tok, spec["context"], 1, seed=spec["seed"], shard=spec.get("shard"))
+            s = FramedStream(inner, spec["micro_batch"], spec["seed"], FORMS[spec["framed"]])
+        else:
+            s = build_stream(spec["dataset"], tok, spec["context"], spec["micro_batch"], seed=spec["seed"], shard=spec.get("shard"))
         if spec.get("state") is not None:
             s.load_state_dict(spec["state"])
         byte = int(getattr(tok, "vocab_size", 256) or 256) <= 256
@@ -395,12 +414,12 @@ class ProcessStream:
     state right after the last batch handed out, so a checkpoint resumes where the trainer stands, not where the child ran ahead."""
 
     def __init__(self, dataset: str, tokenizer: str, context: int, micro_batch: int, seed: int, state=None, shard=None,
-                 depth: int = 6, timeout: float = 1800.0):
+                 depth: int = 6, timeout: float = 1800.0, framed: str | None = None):
         import multiprocessing as mp
-        self.dataset, self.timeout = dataset, timeout
+        self.dataset, self.timeout, self.framed = dataset, timeout, framed    # 0.1.58: framed = a framed_diet.FORMS key
         ctx = mp.get_context("spawn")
         self._q, self._stop = ctx.Queue(maxsize=depth), ctx.Event()
-        spec = dict(dataset=dataset, tokenizer=tokenizer, context=context, micro_batch=micro_batch, seed=seed, state=state, shard=shard)
+        spec = dict(dataset=dataset, tokenizer=tokenizer, context=context, micro_batch=micro_batch, seed=seed, state=state, shard=shard, framed=framed)
         self._p = ctx.Process(target=_stream_worker, args=(spec, self._q, self._stop), daemon=True, name=f"stream-{dataset}")
         self._p.start()
         self._state, self._rows, self._epoch = state, int((state or {}).get("rows_consumed", 0) or 0), int((state or {}).get("epoch", 0) or 0)
@@ -448,7 +467,8 @@ class ProcessStream:
             self._p.join(timeout=5)
 
 
-def make_trainer(preset_obj, hf_token: str | None, out_dir: str, process_streams: bool = True, after_eval=None, device=None):
+def make_trainer(preset_obj, hf_token: str | None, out_dir: str, process_streams: bool = True, after_eval=None, device=None,
+                 framed: str | None = None):
     """The library's Trainer for a v1 craft with two additions: the training streams composed in child processes (process_streams), and
     a hook after every full eval (after_eval(trainer): the interval gauges)."""
     from geolip.alephllm.train.trainer import Trainer
@@ -482,6 +502,7 @@ def make_trainer(preset_obj, hf_token: str | None, out_dir: str, process_streams
 
         def _open_stream(self):
             if not process_streams:
+                assert not framed, "the framed diet runs in the stream child (process_streams)"
                 return super()._open_stream()
             assert self.world == 1, "the v1 runs are single-card"
             ph = self.manifest.advance_phases()
@@ -493,7 +514,7 @@ def make_trainer(preset_obj, hf_token: str | None, out_dir: str, process_streams
                 self._stream_state = None
                 close_stream(self)
                 self.stream = ProcessStream(ph["dataset"], self.cfg.tokenizer, self.cfg.context, self.tc.micro_batch,
-                                            seed=self._phase_seed(ph), state=state)
+                                            seed=self._phase_seed(ph), state=state, framed=framed)
             return ph
 
         def _full_eval(self):
@@ -575,9 +596,9 @@ def gauge_args(name: str, init: str, out: str) -> dict:
     args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
     if size_of(name) != "nano":
         args["size"] = size_of(name)                     # 0.1.57: a micro body's gauge child builds the craft at its size (the tag carries it)
-    if c.get("cont") in ("cf", "nt", "mx", "cp", "cpx", "cp2", "cpx2"):
+    if c.get("cont") in ("cf", "nt", "mx", "cp", "cpx", "cp2", "cpx2") or c.get("framed"):   # 0.1.58: the framed diet trains the carry rows too
         args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge); 0.1.49 the mixed arm; 0.1.55 the caption arms
-    if c.get("cont") == "nt":
+    if c.get("cont") == "nt" or c.get("framed"):      # 0.1.58: and the note rows
         args["note_gauge"] = "1"                         # 0.1.41: the note arm's reads add the note rows, given and self-written (the tag ends _carry_note_gauge)
     return args
 
@@ -699,6 +720,13 @@ def caption_stored(name: str, step: int, out: str, repo: str = REPO, token=None,
         ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
         save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
         json.dump(craft_cfg(c["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+    return _caption_child(name, step, out, folder, rows, gauge_gb, caption_cmd)
+
+def _caption_child(name: str, step: int, out: str, folder: str, rows: int, gauge_gb: float, caption_cmd=None) -> dict:
+    """caption_screen.py as a child on the weights at <out>/bed/<init> (present), the pack's held split at `folder`. -> the record."""
+    init = gauge_init(name, step)
+    bed = os.path.join(out, "bed")
+    rec_path = os.path.join(bed, f"caption_{init}.json")
     args = dict(out=out, init=init, rows=str(rows), ctx=str(CTX), seed=str(GAUGE_SEED), pack=folder)
     total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
     cmd = list(caption_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.caption_screen"]) + [f"--{k}={v}" for k, v in args.items()]
@@ -710,6 +738,32 @@ def caption_stored(name: str, step: int, out: str, repo: str = REPO, token=None,
         rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, timeout=7200).returncode
     assert rc == 0 and os.path.exists(rec_path), f"the caption read of {name} at {step:,} failed (exit {rc}); its log: {log_path}"
     return json.load(open(rec_path, encoding="utf-8"))
+
+
+def caption_live(trainer, name: str, out: str, folder: str, gauge_gb: float = 10.0, rows: int = 256, caption_cmd=None) -> dict | None:
+    """0.1.58: THE CAPTION READ AT A BOUNDARY of a framed-diet craft, on the trainer's weights now (saved to <out>/bed/<init> for the child
+    as bed_gauge saves them, removed after): the record's whole numbers for the boundary row. A failed read is logged and skipped (a
+    diagnostic never stops the train). -> dict(extraction, prior, over_prior, copy) or None."""
+    from safetensors.torch import save_file
+    init = gauge_init(name, trainer.step)
+    wdir = os.path.join(out, "bed", init)
+    try:
+        os.makedirs(wdir, exist_ok=True)
+        if not os.path.exists(os.path.join(wdir, "model.safetensors")):
+            save_file({k: v.detach().float().cpu().contiguous() for k, v in trainer.raw_model.state_dict().items()},
+                      os.path.join(wdir, "model.safetensors"))
+            json.dump(craft_cfg(ALL[name]["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+        rec = _caption_child(name, trainer.step, out, folder, rows, gauge_gb, caption_cmd)
+        row = dict(extraction=rec["extraction"]["whole"], prior=rec["prior"]["whole"], over_prior=rec["extraction_over_prior"],
+                   copy=(rec.get("copy") or {}).get("whole"))
+        print(f"[v1] {name}: the caption read at step {trainer.step:,}: extraction {row['extraction']:.3f} against the prior "
+              f"{row['prior']:.3f} ({row['over_prior']:+.3f}), copy {row['copy'] if row['copy'] is None else round(row['copy'], 3)}", flush=True)
+        return row
+    except Exception as e:  # noqa: BLE001
+        print(f"[v1] {name}: the caption read at step {trainer.step:,} raised {type(e).__name__}: {e}; skipped", flush=True)
+        return None
+    finally:
+        shutil.rmtree(wdir, ignore_errors=True)
 
 
 def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "self", token=None, rows: int = 192, gauge_gb: float = 10.0,
@@ -787,6 +841,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
     step, tokens, val bits a byte, the gauge's headline reads]} (also written to <out>/v1_boundaries.json)."""
     from .bed_corpus import write_heldout
     names = list(names or CRAFTS)
+    assert process_streams or not any(ALL[n].get("framed") for n in names), "the framed diet runs in the stream child (process_streams)"
     t_end = None if max_hours is None else time.time() + max_hours * 3600
     births = {n: (None if ALL[n].get("cont") else write_birth(n, os.path.join(out, "births"))) for n in names}
     write_heldout(os.path.join(out, "bed"))
@@ -796,9 +851,9 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         if not os.path.exists(os.path.join(folder, "bed_corpus.bin")):
             build_corpus(folder, int(frames_corpus_bytes))
         os.environ[CORPUS_ENV] = folder
-    if any(ALL[n].get("cont") in ("cp", "cpx", "cp2", "cpx2") for n in names):     # 0.1.55: the caption pack, reached by the stream children
+    pack_folder = caption_pack or os.path.join(out, "caption_pack")
+    if any(ALL[n].get("cont") in ("cp", "cpx", "cp2", "cpx2") or ALL[n].get("framed") for n in names):   # 0.1.55: the caption pack, reached by the stream children; 0.1.58 the framed diet's caption windows
         from . import caption_pack as cp
-        pack_folder = caption_pack or os.path.join(out, "caption_pack")
         cp.ensure(pack_folder, hf_token, caption_pack_rows, log=lambda *a: print("[v1]", *a, flush=True))
         os.environ[cp.PACK_ENV] = pack_folder
     hist_p = os.path.join(out, "v1_boundaries.json")
@@ -821,8 +876,9 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
             rec = bed_gauge(t, n, out, gauge_cmd, gauge_gb)
         else:
             rec = None
+        cap = caption_live(t, n, out, pack_folder, gauge_gb) if ALL[n].get("framed") else None   # 0.1.58: the caption read at every boundary
         ledger = (getattr(t, "_last_eval", {}) or {}).get("ledger") or {}
-        hist.setdefault(n, []).append(dict(phase=done, step=t.step, tokens=t.manifest.tokens_seen, val_bpb=ledger.get("bpb_full"),
+        hist.setdefault(n, []).append(dict(phase=done, step=t.step, tokens=t.manifest.tokens_seen, val_bpb=ledger.get("bpb_full"), caption=cap,
                                            bed=None if rec is None else {k: v for k, v in gauge_scalars(rec).items()
                                                                          if k in HEADLINE}))
         json.dump(hist, open(hist_p, "w", encoding="utf-8"), indent=1)
@@ -835,11 +891,16 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
     trainers, failed = {}, {}
     for n in names:
         p = preset(n, births[n], micro_batch, grad_accum, repo, diet_scale, cont_from, **train_over)
-        t = make_trainer(p, hf_token, os.path.join(out, "runs"), process_streams, hook_for(n), device)
+        t = make_trainer(p, hf_token, os.path.join(out, "runs"), process_streams, hook_for(n), device, framed=ALL[n].get("framed"))
         if births[n] and t.step == 0 and t.manifest.init_from and not any("BIRTH:" in str(x) for x in (t.manifest.notes or [])):
             c = ALL[n]
             t.manifest.note(f"BIRTH: the nano bed's birth of {c['arm']} seed {c['seed']} (torch.manual_seed then the CPU build at context "
                             f"{BIRTH_CTX}, the position rows {BIRTH_CTX}..{CTX - 1} zero): the start of its strongest v4 bed run; {c['body']}")
+            if c.get("framed"):                           # 0.1.58: the framed diet in the manifest
+                from .framed_diet import FORMS
+                fm = FORMS[c["framed"]]
+                t.manifest.note(f"FRAMED DIET {c['framed']}: {fm['p_framed']:.2f} of every phase's rows framed from the first step (kinds "
+                                f"{dict(fm['kinds'])}, registers {dict(fm['registers'])}; framed_diet.FramedStream over the phase's stream)")
         if not hist.get(n):                               # a fresh machine: the boundary table so far from the craft's hub record
             prev = t.hub.download("v1_boundaries.json") if t.hub.api else None
             hist[n] = json.load(open(prev, encoding="utf-8")) if prev else []
@@ -896,9 +957,12 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 
 def version_of(names) -> str:
-    """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2 or n in CRAFTS_CAPTION or n in CRAFTS_CAPTION_CTRL or n in CRAFTS_CAPTION2 or n in CRAFTS_CAPTION2_CTRL
-                         or n in CRAFTS_MICRO_V11 for n in names) else "v1"
+    """The version a set of crafts belongs to: v1.2 when any is a framed-diet craft, v1.1 when any is a v1.1 craft (or a continuation of
+    one), else v1."""
+    names = list(names)
+    if any(ALL[n].get("framed") for n in names):
+        return "v1.2"
+    return "v1.1" if any(ALL[n].get("train") or ALL[n].get("source") for n in names) else "v1"
 
 
 def card_in_training(names=None) -> str:
@@ -907,10 +971,12 @@ def card_in_training(names=None) -> str:
     names = list(names or CRAFTS)
     ver = version_of(names)
     rows = "\n".join(f"| `{n}` | {ALL[n]['body']} | `{ALL[n]['arm']}`, seed {ALL[n]['seed']} |" for n in names)
-    note = V11_NOTE if ver == "v1.1" else ""
+    note = V11_NOTE if ver == "v1.1" else V12_NOTE if ver == "v1.2" else ""
     recipe = (" The output layer's two readout matrices train with AdamW (0.0003, decoupled weight decay 0.1) instead of Muon."
-              if ver == "v1.1" else "")
-    nb = "colab/nano_v1_1.ipynb" if ver == "v1.1" else "colab/nano_v1_2s.ipynb"
+              if ver in ("v1.1", "v1.2") else "")
+    nb = {"v1.1": "colab/nano_v1_1.ipynb", "v1.2": "colab/nano_v1_2.ipynb"}.get(ver, "colab/nano_v1_2s.ipynb")
+    count = {1: "One", 2: "Two", 3: "Three", 4: "Four"}.get(len(names), str(len(names)))
+    plural = "" if len(names) == 1 else "s"
     return f"""---
 license: cc-by-nc-sa-4.0
 language: en
@@ -923,7 +989,7 @@ tags:
 
 # AlephLLM nano: Castor and Pollux, {ver}
 
-Four small byte-level AlephLLM crafts (about 9.2 million parameters, a 4,096-byte window) training from birth on Beatrix 2s's diet:
+{count} small byte-level AlephLLM craft{plural} (about 9.2 million parameters, a 4,096-byte window) training from birth on Beatrix 2s's diet:
 16.1 billion bytes in thirteen phases (wikitext-103, fineweb-edu, nine curriculum stages, two anneals). **Training now**; when they
 finish, each craft's folder becomes a transformers AutoModel package (`trust_remote_code=True`, raw UTF-8 bytes in and out).{note}
 
@@ -943,6 +1009,7 @@ data's share-alike and non-commercial terms, as Beatrix 2s's does.
 """
 
 
+V12_NOTE = ("\n\nThis is v1.2: Pollux dual from the same start and with the same recipe as v1.1, on the same 16.1 billion bytes with half of every phase's\nrows framed from the first step (carry rows, system frames, caption windows, note rows): the frames are part of the diet, not a later phase. The\nplain v1.1 craft is its control.")
 V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run the readout kept growing under Muon and\nthe last block's output gathered onto a single direction within its first thousand steps; that run was stopped, and its folders\nare archived in [alephllm-nano-beatrix-training](https://huggingface.co/AbstractPhil/alephllm-nano-beatrix-training/tree/main/archive/castor-pollux-v1) under `archive/castor-pollux-v1/`.")   # 0.1.48: the card re-point (the v1 folders moved 10-16)
 
 HEADLINE = ("bed/note_self/full_value", "bed/note_self/far_ge2048_full_value", "bed/note_self/near_lt1024_full_value", "bed/note_self/carries_per_row",
@@ -1096,3 +1163,81 @@ def table(hist: dict) -> str:
                         f"{f(b.get('bed/text/heldout_bits'), 4)} | {f(b.get('bed/frame/copy_whole'), 2)} | {f(b.get('bed/frame/nested_whole'), 2)} | "
                         f"{f(b.get('bed/frame/redefined_key_whole'), 2)} | {f(b.get('bed/scaling/frame_1024_whole'), 2)} |")
     return "\n".join(rows)
+
+
+# ------------------------------------------------------------------ 0.1.58: the framed diet's marks (plans/2026-10-19_nano_todo_frame_pretrain_plan.md s.5)
+V12_READS = (("copy", "bed/frame/copy_whole"), ("nested", "bed/frame/nested_whole"), ("redefined key", "bed/frame/redefined_key_whole"),
+             ("1,024-byte frame", "bed/scaling/frame_1024_whole"), ("far question", "bed/carry/full_value"),
+             ("note (self)", "bed/note_self/full_value"), ("caption over prior", "caption/over_prior"))
+LOSS_BAR, TEXT_BAR, TEXT_END_BAR, MEANING_BAR = 0.10, 0.02, 0.01, 0.20
+
+
+def _read(row: dict, key: str):
+    if key.startswith("caption/"):
+        return (row.get("caption") or {}).get(key.split("/", 1)[1])
+    return (row.get("bed") or {}).get(key)
+
+
+def v12_marks(rows: list, ctrl: list | None = None) -> dict:
+    """THE MARKS of a framed-diet run from its boundary rows (and the control's rows): per read its peak over the boundaries, its end and
+    KEPT (the end within LOSS_BAR of the peak: the loss rule); per boundary the held-out bits against the control's at the same phase
+    (QUIET within TEXT_BAR; the end within TEXT_END_BAR); MEANING = the caption extraction over the prior at the end at or above
+    MEANING_BAR. A verdict is None while its reads have no number yet."""
+    reads = {}
+    for label, key in V12_READS:
+        vals = [(r["phase"], _read(r, key)) for r in rows if _read(r, key) is not None]
+        if not vals:
+            reads[key] = dict(label=label, peak=None, peak_phase=None, end=None, end_phase=None, kept=None)
+            continue
+        peak_phase, peak = max(vals, key=lambda pv: pv[1])
+        end_phase, end = vals[-1]
+        reads[key] = dict(label=label, peak=peak, peak_phase=peak_phase, end=end, end_phase=end_phase, kept=bool(end >= peak - LOSS_BAR))
+    cb = {r["phase"]: r.get("val_bpb") for r in (ctrl or [])}
+    text = {}
+    for r in rows:
+        if r.get("val_bpb") is None or cb.get(r["phase"]) is None:
+            continue
+        d = r["val_bpb"] - cb[r["phase"]]
+        text[r["phase"]] = dict(bits=r["val_bpb"], control=cb[r["phase"]], delta=d, quiet=bool(abs(d) <= TEXT_BAR))
+    judged = [v for v in reads.values() if v["kept"] is not None]
+    last = rows[-1]["phase"] if rows else None
+    frames_kept = None if not judged else all(v["kept"] for v in judged)
+    text_kept = None if not text else (all(v["quiet"] for v in text.values()) and (last not in text or abs(text[last]["delta"]) <= TEXT_END_BAR))
+    cap = reads.get("caption/over_prior") or {}
+    meaning = None if cap.get("end") is None else bool(cap["end"] >= MEANING_BAR)
+    return dict(reads=reads, text=text, frames_kept=frames_kept, text_kept=text_kept, meaning=meaning, boundaries=len(rows))
+
+
+def v12_table(rows: list, ctrl: list | None = None) -> str:
+    """The framed-diet run's boundary table beside the control's bits: the phase, the step, the bits (v1.2, the control, the difference),
+    the frame reads, the far question, the note read, the caption extraction, the prior and the extraction over it."""
+    cb = {r["phase"]: r.get("val_bpb") for r in (ctrl or [])}
+    out = ["| phase | step | bits v1.2 | bits control | diff | copy | nested | 1,024 frame | far question | note | caption extraction | prior | over prior |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+
+    def f(x, nd=2):
+        return "-" if x is None else f"{x:.{nd}f}"
+    for r in rows:
+        c, v, cap = cb.get(r["phase"]), r.get("val_bpb"), r.get("caption") or {}
+        out.append(f"| {r['phase']} | {r['step']:,} | {f(v, 4)} | {f(c, 4)} | {'-' if v is None or c is None else f'{v - c:+.4f}'} | "
+                   f"{f(_read(r, 'bed/frame/copy_whole'))} | {f(_read(r, 'bed/frame/nested_whole'))} | {f(_read(r, 'bed/scaling/frame_1024_whole'))} | "
+                   f"{f(_read(r, 'bed/carry/full_value'))} | {f(_read(r, 'bed/note_self/full_value'))} | {f(cap.get('extraction'))} | "
+                   f"{f(cap.get('prior'))} | {f(cap.get('over_prior'))} |")
+    return "\n".join(out)
+
+
+def v12_marks_table(m: dict) -> str:
+    """The marks as text: one line a read (peak, end, kept), the text deltas, the three verdicts."""
+    lines = ["| read | peak (phase) | end (phase) | kept (within 0.10 of the peak) |", "|---|---|---|---|"]
+    for v in m["reads"].values():
+        if v["peak"] is None:
+            lines.append(f"| {v['label']} | - | - | no number yet |")
+        else:
+            lines.append(f"| {v['label']} | {v['peak']:.3f} ({v['peak_phase']}) | {v['end']:.3f} ({v['end_phase']}) | {'KEPT' if v['kept'] else 'LOST'} |")
+    lines += ["", "| boundary | bits v1.2 | bits control | difference | quiet (within 0.02) |", "|---|---|---|---|---|"]
+    for ph, t in m["text"].items():
+        lines.append(f"| {ph} | {t['bits']:.4f} | {t['control']:.4f} | {t['delta']:+.4f} | {'yes' if t['quiet'] else 'NO'} |")
+    word = lambda x: "open" if x is None else ("MET" if x else "NOT MET")
+    lines += ["", f"FRAMES KEPT: {word(m['frames_kept'])}; TEXT KEPT: {word(m['text_kept'])}; MEANING (+0.20 over the prior): {word(m['meaning'])}; "
+                  f"{m['boundaries']} boundaries so far."]
+    return "\n".join(lines)
