@@ -81,11 +81,47 @@ def _mean(xs):
     return float(np.mean(xs)) if len(xs) else None
 
 
-def read(logits_fn, dev, pack, n_rows: int, seed: int, ctx: int, log=print) -> dict:
-    """The two reads over the held items. -> dict(extraction=..., copy=..., n=...)."""
+def _by(items: list, vals: list, field: str) -> dict:
+    """The mean of vals by a field of the items (key decoded, or kind). -> {name: dict(n, whole)}."""
+    out = {}
+    for it, v in zip(items, vals):
+        name = it[field].decode("ascii", "replace") if isinstance(it[field], bytes) else it[field]
+        d = out.setdefault(name, dict(n=0, whole=0.0))
+        d["n"] += 1
+        d["whole"] += v
+    for d in out.values():
+        d["whole"] = d["whole"] / d["n"]
+    return out
+
+
+def prior_of(train, n_docs: int = 50000, seed: int = 1) -> tuple:
+    """0.1.56: the commonest training value of each key over a seeded sample of training documents: the prior a body answers with when it
+    does not read the caption (the first caption phase's lesson: the craft and its control both read 0.17 whole from the caption alone,
+    the prior). Ties by the count, then the value. -> ({key bytes: value bytes}, documents tallied)."""
+    rng = np.random.default_rng([seed, 56])
+    idx = rng.permutation(train.n)[:n_docs].tolist() if train.n > n_docs else list(range(train.n))
+    tally = {}
+    for i in idx:
+        for k, v in train.records(i):
+            d = tally.setdefault(k, {})
+            d[v] = d.get(v, 0) + 1
+    return {k: max(d.items(), key=lambda kv: (kv[1], kv[0]))[0] for k, d in tally.items()}, len(idx)
+
+
+def read(logits_fn, dev, pack, n_rows: int, seed: int, ctx: int, log=print, train=None) -> dict:
+    """The two reads over the held items, and with `train` (the pack's training split) the prior-only baseline on the same items.
+    -> dict(extraction=..., copy=..., prior=..., extraction_over_prior=..., n=...)."""
     items = build_items(pack, n_rows, seed, ctx)
     assert items, "no held document with records: the pack's held split is empty or has no attributes (a bigger pack)"
     res = dict(n=len(items), kinds={k: sum(1 for it in items if it["kind"] == k) for k in sorted({it["kind"] for it in items})})
+    if train is not None:                                                   # 0.1.56: the prior beside every extraction number
+        major, n_docs = prior_of(train)
+        pw = [float(major.get(it["key"]) == it["val"]) for it in items]
+        asked = {it["key"] for it in items}
+        res["prior"] = dict(n=len(items), n_docs=n_docs, whole=_mean(pw), by_key=_by(items, pw, "key"), by_kind=_by(items, pw, "kind"),
+                            majority={k.decode("ascii", "replace"): v.decode("ascii", "replace") for k, v in major.items() if k in asked})
+        log(f"[caption] prior: each key's commonest training value answers {res['prior']['whole']:.3f} of the {len(items)} held questions whole "
+            f"({n_docs:,} training documents tallied)")
     for form, field in (("extraction", "ex"), ("copy", "co")):
         t0 = time.time()
         prompts = [it[field] for it in items]
@@ -111,6 +147,9 @@ def read(logits_fn, dev, pack, n_rows: int, seed: int, ctx: int, log=print) -> d
                                         read=g.decode("utf-8", "replace"), right=bool(w)) for it, g, w in list(zip(items, gens, whole))[:16]],
                          seconds=round(time.time() - t0, 1))
         log(f"[caption] {form}: whole {res[form]['whole']:.3f}, first byte {res[form]['first_byte']:.3f}, value bits {res[form]['value_bits']:.2f} over {len(items)} rows ({res[form]['seconds']} s)")
+    if "prior" in res:
+        res["extraction_over_prior"] = res["extraction"]["whole"] - res["prior"]["whole"]
+        log(f"[caption] extraction over the prior: {res['extraction_over_prior']:+.3f}")
     return res
 
 
@@ -134,9 +173,9 @@ def main():
                 return model(x)[0]
         return model(x)[0]
 
-    pack = cp.load(pack_dir, "held")
-    print(f"[caption] {init}: {pack.n} held documents in {pack_dir}; up to {n_rows} rows; {dev}", flush=True)
-    rec = read(logits_fn, dev, pack, n_rows, seed, ctx, log=lambda s: print(s, flush=True))
+    pack, train = cp.load(pack_dir, "held"), cp.load(pack_dir, "train")
+    print(f"[caption] {init}: {pack.n} held documents in {pack_dir} ({train.n:,} training documents for the prior); up to {n_rows} rows; {dev}", flush=True)
+    rec = read(logits_fn, dev, pack, n_rows, seed, ctx, log=lambda s: print(s, flush=True), train=train)
     rec.update(init=init, seed=seed, ctx=ctx, pack=pack_dir, seconds=round(time.time() - t0, 1), device=str(dev))
     os.makedirs(bed, exist_ok=True)
     json.dump(rec, open(rec_path, "w", encoding="utf-8"), indent=1)

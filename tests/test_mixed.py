@@ -86,7 +86,7 @@ def test_the_mixed_crafts_their_plans_gauges_tags_and_names():
     assert curriculum.CURRICULUM_MIXES[fd.MIXED_MIX] == [("nano-frames-mixed", 1.0)]
     MX = nano_v1.CRAFTS_MIX
     assert list(MX) == [f"{n}.1-mx" for n in nano_v1.CRAFTS] and all(n in nano_v1.ALL for n in MX)
-    assert nano_v1.CONT_PHASE["mx"] == ("mixed_continuation", fd.MIXED_MIX) and nano_v1.CONT_TOKENS_OF == {"mx": 1_500_000_000, "cp": 1_500_000_000, "cpx": 1_500_000_000}
+    assert nano_v1.CONT_PHASE["mx"] == ("mixed_continuation", fd.MIXED_MIX) and nano_v1.CONT_TOKENS_OF == {"mx": 1_500_000_000, "cp": 1_500_000_000, "cpx": 1_500_000_000, "cp2": 1_500_000_000, "cpx2": 1_500_000_000}
     assert len({nano_v1.gauge_init(n, 67145) for n in nano_v1.ALL}) == len(nano_v1.ALL)
     steps_mx = math.ceil(1_500_000_000 / 262144)
     for n in MX:

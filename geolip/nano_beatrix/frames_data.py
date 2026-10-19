@@ -229,6 +229,17 @@ CAPTION = dict(p_carry=1 / 3, registers=MIXED["registers"], carry=CARRY, p_doc_s
 CAPTION_CTRL = dict(CAPTION, swap=True)
 CAPTION_MIX = "nano-frames-caption-mix"
 CAPTION_CTRL_MIX = "nano-frames-caption-ctrl-mix"
+# 0.1.56: THE FRAMELESS QUESTION (the caption phase's repair; plans/2026-10-19_caption_finetune_plan.md THE RESULT): the first caption
+# phase taught the format and not the meaning, because the frame holding the answer stood before every question and copying it answered
+# the question without the caption (the control, whose frames never matched their captions, read the caption no worse: 0.172 against
+# 0.168 whole, the key's value prior). CAPTION2 withholds the frame in half the caption documents (p_frame 0.5); a frameless document
+# always asks its question, so the body must read the caption to answer it. Its control CAPTION2_CTRL keeps the 0.1.55 swap (the frame
+# and the question's records from another document): in its frameless documents the question's truth is unrelated to the caption, so
+# the control can learn only each key's prior, and the craft's extraction read minus the control's is the caption reading.
+CAPTION2 = dict(CAPTION, p_frame=0.5)
+CAPTION2_CTRL = dict(CAPTION2, swap=True)
+CAPTION2_MIX = "nano-frames-caption2-mix"
+CAPTION2_CTRL_MIX = "nano-frames-caption2-ctrl-mix"
 CAPTION_HEAD = bytes([DOC]) + bf.tag_bytes("caption", "mode") + bytes([SEP]) + b"q" + bytes([SEP])
 SLICE_ROOM = 29                                 # a 32-byte sized slice: the two-byte open tag, 29 bytes of body, END
 
@@ -293,19 +304,24 @@ def caption_doc(rng, pack, i: int, form: dict = CAPTION, swap_from: int | None =
     recs = pack.records(i if swap_from is None else swap_from)
     caps = pack.captions(i)
     cap = caps[int(rng.integers(len(caps)))]
-    out, kept, asked = bytearray(CAPTION_HEAD), [], None
+    out, kept, asked, framed = bytearray(CAPTION_HEAD), [], None, True
     if recs:
         k = int(rng.integers(1, min(len(recs), form["max_records"]) + 1))
         order = rng.permutation(len(recs)).tolist()[:k]
-        fb, kept = caption_frame(rng, [recs[j] for j in order], form.get("trie", True))
-        out += fb + b"\n"
+        p_frame = form.get("p_frame", 1.0)
+        framed = p_frame >= 1.0 or rng.random() < p_frame              # 0.1.56: the frame withheld in 1 - p_frame of the documents (no draw at 1)
+        if framed:
+            fb, kept = caption_frame(rng, [recs[j] for j in order], form.get("trie", True))
+            out += fb + b"\n"
+        else:
+            kept = [recs[j] for j in order]                              # the question's records with no frame: the caption has to answer
     out += cap
-    if kept and rng.random() < form["p_question"]:
+    if kept and (not framed or rng.random() < form["p_question"]):       # a frameless document always asks
         key, val = kept[int(rng.integers(len(kept)))]
         asked = (key.decode("ascii", "replace"), val.decode("ascii", "replace"))
         out += b"\n" + bytes([CUE]) + key + bytes([SEP]) + val + bytes([END])
     return bytes(out), dict(doc=i, swap_from=swap_from, records=[(k.decode("ascii", "replace"), v.decode("ascii", "replace")) for k, v in kept],
-                            caption_bytes=len(cap), asked=asked)
+                            caption_bytes=len(cap), asked=asked, framed=framed)
 
 
 def caption_window(rng, pack, form: dict = CAPTION, ctx: int = ROW_CTX) -> tuple:
@@ -496,7 +512,7 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
     if framed and carry == "note":                                 # 0.1.41: the note rows; a text with no usable fact stays plain
         nr = note_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
         row, framed = (nr[0], True) if nr else (packed[p:p + ROW_BYTES].tobytes(), False)
-    elif framed and carry in ("caption", "caption_ctrl"):          # 0.1.55: the caption phase: a carry row a third, a caption window two thirds
+    elif framed and carry in ("caption", "caption_ctrl", "caption2", "caption2_ctrl"):   # 0.1.55: the caption phase: a carry row a third, a caption window two thirds; 0.1.56 the frameless-question forms
         kind, reg = mixed_draw(np.random.default_rng([seed, i, 2]), form)
         rng2 = np.random.default_rng([seed, i, 1])
         if kind == "carry":
@@ -516,7 +532,7 @@ def row_bytes(packed: np.ndarray, seed: int, i: int, p_framed: float, form: dict
         row, _ = frame_row(np.random.default_rng([seed, i, 1]), packed[p:p + 2 * ROW_BYTES].tobytes(), form, ROW_CTX)
     else:
         row = packed[p:p + ROW_BYTES].tobytes()
-        if carry in ("mixed", "caption", "caption_ctrl") and form.get("p_doc_start") and np.random.default_rng([seed, i, 2]).random() < form["p_doc_start"]:
+        if carry in ("mixed", "caption", "caption_ctrl", "caption2", "caption2_ctrl") and form.get("p_doc_start") and np.random.default_rng([seed, i, 2]).random() < form["p_doc_start"]:
             row = doc_start_row(packed, p)                         # 0.1.50: the mixed phase's document-start plain rows (the third generator's coin)
     assert len(row) == ROW_BYTES, len(row)
     return row, framed
@@ -545,7 +561,7 @@ def rows(seed: int, p_framed: float, form: dict = FORM, carry: bool = False):
     """The infinite generator a library stream opens (gen(seed)): row i at a time, built on access."""
     packed = load_corpus()
     pack = None
-    if carry in ("caption", "caption_ctrl"):                       # 0.1.55: the caption pack (the folder from NANO_CAPTION_PACK)
+    if carry in ("caption", "caption_ctrl", "caption2", "caption2_ctrl"):   # 0.1.55: the caption pack (the folder from NANO_CAPTION_PACK)
         from . import caption_pack as cp
         pack = cp.load()
     i = 0
@@ -582,6 +598,14 @@ def _rows_caption_ctrl(seed):
     return rows(seed, P_FRAMED, CAPTION_CTRL, "caption_ctrl")   # 0.1.55: its control: every frame from another document
 
 
+def _rows_caption2(seed):
+    return rows(seed, P_FRAMED, CAPTION2, "caption2")           # 0.1.56: the caption phase with the frame withheld in half the documents
+
+
+def _rows_caption2_ctrl(seed):
+    return rows(seed, P_FRAMED, CAPTION2_CTRL, "caption2_ctrl")  # 0.1.56: its control (the swap of 0.1.55 under the frameless questions)
+
+
 def register() -> None:
     """Add the generators and their mixes to the library's registries (names only added; an existing name is refused unless it is
     already ours)."""
@@ -589,7 +613,8 @@ def register() -> None:
     for name, fn, mix in (("nano-frames-p75", _rows_p75, FRAMES_MIX), ("nano-frames-p0", _rows_p0, CONTROL_MIX),
                           ("nano-frames-carry", _rows_carry, CARRY_MIX), ("nano-frames-note", _rows_note, NOTE_MIX),
                           ("nano-frames-mixed", _rows_mixed, MIXED_MIX), ("nano-frames-caption", _rows_caption, CAPTION_MIX),
-                          ("nano-frames-caption-ctrl", _rows_caption_ctrl, CAPTION_CTRL_MIX)):
+                          ("nano-frames-caption-ctrl", _rows_caption_ctrl, CAPTION_CTRL_MIX),
+                          ("nano-frames-caption2", _rows_caption2, CAPTION2_MIX), ("nano-frames-caption2-ctrl", _rows_caption2_ctrl, CAPTION2_CTRL_MIX)):
         gen = name.replace("-", "_")
         entry = dict(path=None, generator=gen, ids_rows=True)
         assert streams.REGISTRY.get(name, entry) == entry, f"{name} is already a different registry entry"

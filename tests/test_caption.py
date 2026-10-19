@@ -164,7 +164,8 @@ def test_the_caption_stream_keeps_the_text_the_coin_and_the_carry_rows_of_the_mi
         m, fm = fd.row_bytes(packed, 7, i, fd.P_FRAMED, fd.MIXED, carry="mixed")
         c, fc = fd.row_bytes(packed, 7, i, fd.P_FRAMED, fd.CAPTION, carry="caption", pack=pk)
         x, fx = fd.row_bytes(packed, 7, i, fd.P_FRAMED, fd.CAPTION_CTRL, carry="caption_ctrl", pack=pk)
-        assert fc == fm == fx and len(c) == len(x) == fd.ROW_BYTES
+        c2, fc2 = fd.row_bytes(packed, 7, i, fd.P_FRAMED, fd.CAPTION2, carry="caption2", pack=pk)
+        assert fc == fm == fx == fc2 and len(c) == len(x) == len(c2) == fd.ROW_BYTES
         if not fc:
             plain += 1
             assert c == m == x                                                                       # the same plain row, document start included
@@ -172,7 +173,7 @@ def test_the_caption_stream_keeps_the_text_the_coin_and_the_carry_rows_of_the_mi
         kind, reg = fd.mixed_draw(np.random.default_rng([7, i, 2]), fd.CAPTION)
         if kind == "carry":
             carries += 1
-            assert c == x == m                                                                              # the mixed arm's own carry row (one coin, one register)
+            assert c == x == m == c2                                                                        # the mixed arm's own carry row (one coin, one register)
         else:
             windows += 1
             assert c.startswith(fd.CAPTION_HEAD) and any(cap[:24] in c for k in range(pk.n) for cap in pk.captions(k))
@@ -186,20 +187,25 @@ def test_the_caption_stream_keeps_the_text_the_coin_and_the_carry_rows_of_the_mi
 
 def test_the_streams_the_crafts_and_their_plans_are_registered():
     from geolip.alephllm.data import curriculum, streams
-    for name, mix in (("nano-frames-caption", fd.CAPTION_MIX), ("nano-frames-caption-ctrl", fd.CAPTION_CTRL_MIX)):
+    for name, mix in (("nano-frames-caption", fd.CAPTION_MIX), ("nano-frames-caption-ctrl", fd.CAPTION_CTRL_MIX),
+                      ("nano-frames-caption2", fd.CAPTION2_MIX), ("nano-frames-caption2-ctrl", fd.CAPTION2_CTRL_MIX)):
         assert streams.REGISTRY[name]["generator"] == name.replace("-", "_") and curriculum.CURRICULUM_MIXES[mix] == [(name, 1.0)]
     for body in nano_v1.CRAFTS:
-        n = f"{body}.1-mx-cp"
-        c = nano_v1.ALL[n]
-        assert c["source"] == f"{body}.1-mx" and c["cont"] == "cp" and c["tag"] == "v11mxcp" and nano_v1.body_of(n) == f"{body}.1"
-        last = nano_v1.diet_of(n)[-1]
-        assert last["name"] == "caption_continuation" and last["dataset"] == fd.CAPTION_MIX and last["planned_tokens"] == 1_500_000_000
-        assert nano_v1.gauge_args(n, "x", "y")["carry_gauge"] == "1" and nano_v1.version_of([n]) == "v1.1"
-    x = nano_v1.ALL["nano-pollux-dual-v1.1-mx-cpx"]
-    assert x["cont"] == "cpx" and x["source"] == "nano-pollux-dual-v1.1-mx" and nano_v1.diet_of("nano-pollux-dual-v1.1-mx-cpx")[-1]["dataset"] == fd.CAPTION_CTRL_MIX
-    assert nano_v1.ARM_TEXT["cp"] == "caption" and nano_v1.c_arm("nano-castor-v1.1-mx-cp")
+        for arm, phase, mix in (("cp", "caption_continuation", fd.CAPTION_MIX), ("cp2", "caption2_continuation", fd.CAPTION2_MIX)):
+            n = f"{body}.1-mx-{arm}"
+            c = nano_v1.ALL[n]
+            assert c["source"] == f"{body}.1-mx" and c["cont"] == arm and c["tag"] == f"v11mx{arm}" and nano_v1.body_of(n) == f"{body}.1"
+            last = nano_v1.diet_of(n)[-1]
+            assert last["name"] == phase and last["dataset"] == mix and last["planned_tokens"] == 1_500_000_000
+            assert nano_v1.gauge_args(n, "x", "y")["carry_gauge"] == "1" and nano_v1.version_of([n]) == "v1.1"
+    for arm, mix in (("cpx", fd.CAPTION_CTRL_MIX), ("cpx2", fd.CAPTION2_CTRL_MIX)):
+        x = nano_v1.ALL[f"nano-pollux-dual-v1.1-mx-{arm}"]
+        assert x["cont"] == arm and x["source"] == "nano-pollux-dual-v1.1-mx" and nano_v1.diet_of(f"nano-pollux-dual-v1.1-mx-{arm}")[-1]["dataset"] == mix
+    assert nano_v1.ARM_TEXT["cp"] == "caption" and nano_v1.ARM_TEXT["cp2"].startswith("caption") and nano_v1.c_arm("nano-castor-v1.1-mx-cp") and nano_v1.c_arm("nano-castor-v1.1-mx-cp2")
     from geolip.nano_beatrix.automodel import ARM_WHAT
-    assert "cp" in ARM_WHAT and "cpx" in ARM_WHAT
+    assert "cp" in ARM_WHAT and "cpx" in ARM_WHAT and "cp2" in ARM_WHAT and "cpx2" in ARM_WHAT
+    h2 = {"nano-castor-v1.1-mx-cp2": [dict(phase="mixed_continuation", val_bpb=1.0, bed={}), dict(phase="caption2_continuation", val_bpb=0.8, bed={})]}
+    assert "| nano-castor-v1 | val bits a byte | 1.0000 | 0.8000 | - | -0.2000 | - |" in nano_v1.caption_table(h2, "cp2") and nano_v1.caption_table(h2).count("\n") == 1
     assert nano_v1.caption_table({}).count("\n") == 1                                                # the header alone
     h = {"nano-pollux-dual-v1.1-mx-cp": [dict(phase="mixed_continuation", val_bpb=1.0, bed={"bed/frame/copy_whole": 0.5}),
                                          dict(phase="caption_continuation", val_bpb=0.9, bed={"bed/frame/copy_whole": 0.6})],
@@ -243,11 +249,49 @@ class _Copier:
 def test_the_caption_reads_with_a_scripted_model(pack_dir):
     held = cp.load(pack_dir, "held")
     model = _Copier()
-    rec = cs.read(lambda x: model(x)[0], torch.device("cpu"), held, n_rows=12, seed=1, ctx=4096, log=lambda s: None)
+    rec = cs.read(lambda x: model(x)[0], torch.device("cpu"), held, n_rows=12, seed=1, ctx=4096, log=lambda s: None, train=cp.load(pack_dir))
     assert rec["n"] == 12 and rec["copy"]["whole"] == 1.0 and rec["copy"]["first_byte"] == 1.0 and rec["extraction"]["whole"] == 0.0
+    # the majority of look hair over the training split is the photo rows' dark brown (70 copies against the illustration's 35), so a held
+    # illustration item asking it misses: the prior sits between the two kinds' shares
+    assert 0.5 < rec["prior"]["whole"] < 1.0 and rec["prior"]["n_docs"] == 175 and rec["extraction_over_prior"] == -rec["prior"]["whole"]
+    assert set(rec["prior"]["by_key"]) == set(rec["extraction"]["by_key"]) and any(v["whole"] < 1.0 for v in rec["prior"]["by_key"].values())
+    assert all(v["whole"] == 1.0 for k, v in rec["prior"]["by_key"].items() if k in ("person age", "scene mood", "scene setting"))   # one value in the pack
+    assert set(rec["prior"]["by_key"]) == set(rec["extraction"]["by_key"]) and rec["prior"]["majority"]["look hair"] in ("dark brown", "green")
+    major, n_docs = cs.prior_of(cp.load(pack_dir), n_docs=50)
+    assert n_docs == 50 and major[b"person age"] == b"25-35"
     assert rec["copy"]["value_bits"] < 0.01 and rec["extraction"]["value_bits"] > 5
     assert set(rec["copy"]["by_kind"]) <= {"photo", "danbooru", "coco"} and all(v["whole"] == 1.0 for v in rec["copy"]["by_key"].values())
     assert len(rec["copy"]["examples"]) == 12 and rec["copy"]["examples"][0]["right"]
     gens = cs.greedy(lambda x: model(x)[0], [bytes([DOC]) + b"abc" + bytes([CUE]) + b"look hair" + bytes([SEP]) + b"blonde" + b"  " + bytes([CUE]) + b"look hair" + bytes([SEP])],
                      torch.device("cpu"), 10)
     assert gens == [b"blonde"]
+
+
+def test_the_frameless_question_and_its_control(pack_dir):
+    """0.1.56: the frame withheld in 1 - p_frame of the caption documents; a frameless document always asks a record of its own (the control
+    one of the swapped document's); p_frame 1 draws nothing more, so the first caption phase's documents are unchanged."""
+    pk = cp.load(pack_dir)
+    i, j, w = int(pk.by_kind["photo"][0]), int(pk.by_kind["danbooru"][0]), int(pk.by_kind["cc12m"][0])
+    for s in range(30):
+        assert fd.caption_doc(np.random.default_rng(s), pk, i, dict(fd.CAPTION, p_frame=1.0)) == fd.caption_doc(np.random.default_rng(s), pk, i)
+    frameless = dict(fd.CAPTION, p_frame=0.0)
+    for s in range(30):
+        d, m = fd.caption_doc(np.random.default_rng(s), pk, i, frameless)
+        assert DATA not in d and m["framed"] is False and m["asked"] is not None and m["records"] and any(c in d for c in pk.captions(i))
+        key, val = m["asked"]
+        assert (key.encode(), val.encode()) in pk.records(i) and d.endswith(bytes([CUE]) + key.encode() + bytes([SEP]) + val.encode() + bytes([END]))
+    framed = asked = 0
+    for s in range(300):
+        d, m = fd.caption_doc(np.random.default_rng(s), pk, i, fd.CAPTION2)
+        framed += m["framed"]
+        asked += m["asked"] is not None
+        assert m["framed"] or (m["asked"] is not None and DATA not in d)
+        assert not m["framed"] or DATA in d
+    assert 0.38 < framed / 300 < 0.62 and asked >= 300 - framed                                           # half frameless, every frameless one asked
+    d, m = fd.caption_doc(np.random.default_rng(3), pk, i, dict(fd.CAPTION2_CTRL, p_frame=0.0), swap_from=j)   # the control's frameless question
+    key, val = m["asked"]
+    assert (key.encode(), val.encode()) in pk.records(j) and (key.encode(), val.encode()) not in pk.records(i) and any(c in d for c in pk.captions(i))
+    d3, m3 = fd.caption_doc(np.random.default_rng(1), pk, w, frameless)                                     # a web image: no records, a plain caption
+    assert m3["records"] == [] and m3["asked"] is None and m3["framed"] is True and DATA not in d3
+    row, metas = fd.caption_window(np.random.default_rng(5), pk, fd.CAPTION2)
+    assert len(row) == fd.ROW_BYTES and any(not m["framed"] for m in metas) and all(m["asked"] for m in metas if not m["framed"] and m["records"])

@@ -58,7 +58,7 @@ import numpy as np
 import torch
 
 from .bodies import craft_cfg
-from .frames_data import CAPTION_CTRL_MIX, CAPTION_MIX, CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, MIXED_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
+from .frames_data import CAPTION2_CTRL_MIX, CAPTION2_MIX, CAPTION_CTRL_MIX, CAPTION_MIX, CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, MIXED_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
@@ -93,11 +93,13 @@ CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continu
               "nt": ("note_continuation", NOTE_MIX),         # 0.1.41: the note rows (form A, second instance: a fact of the text framed)
               "mx": ("mixed_continuation", MIXED_MIX),       # 0.1.49: the mixed phase (carry rows and frames rows, three registers)
               "cp": ("caption_continuation", CAPTION_MIX),   # 0.1.55: the caption phase (caption windows from the pack and carry rows)
-              "cpx": ("caption_control_continuation", CAPTION_CTRL_MIX)}   # 0.1.55: its control (every frame from another document)
+              "cpx": ("caption_control_continuation", CAPTION_CTRL_MIX),   # 0.1.55: its control (every frame from another document)
+              "cp2": ("caption2_continuation", CAPTION2_MIX),             # 0.1.56: the caption phase with the frame withheld in half the documents
+              "cpx2": ("caption2_control_continuation", CAPTION2_CTRL_MIX)}   # 0.1.56: its control (the swap under the frameless questions)
 # 0.1.49: a continuation phase's bytes when they differ from CONT_TOKENS: the mixed phase runs 1.5 billion so that its carry rows (two
 # framed rows in three) total the carry arm's 0.75 billion, the far habit's dose kept, while its frames rows add 0.375 billion.
 # 0.1.55: the caption phase runs the mixed phase's 1.5 billion (the same dose on the mixed arm's end: about half the bytes caption windows).
-CONT_TOKENS_OF = {"mx": 1_500_000_000, "cp": 1_500_000_000, "cpx": 1_500_000_000}
+CONT_TOKENS_OF = {"mx": 1_500_000_000, "cp": 1_500_000_000, "cpx": 1_500_000_000, "cp2": 1_500_000_000, "cpx2": 1_500_000_000}
 CRAFTS_CONT = {f"{n}.1-{arm}": dict(c, train=V11_TRAIN, tag=f"v11{arm}", source=f"{n}.1", cont=arm)
                for n, c in CRAFTS.items() for arm in ("fr", "ct", "cf")}
 # 0.1.40: the frames-then-carry arm (one seed): the frames craft's end state (fp32 weights and both optimizers at step 65,237 at the 2s
@@ -123,8 +125,16 @@ CRAFTS_MIX2 = {"nano-pollux-dual-v1.1-mx2": dict(CRAFTS["nano-pollux-dual-v1"], 
 CRAFTS_CAPTION = {f"{n}.1-mx-cp": dict(c, train=V11_TRAIN, tag="v11mxcp", source=f"{n}.1-mx", cont="cp") for n, c in CRAFTS.items()}
 CRAFTS_CAPTION_CTRL = {"nano-pollux-dual-v1.1-mx-cpx": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v11mxcpx",
                                                            source="nano-pollux-dual-v1.1-mx", cont="cpx")}
+# 0.1.56: THE FRAMELESS-QUESTION ARMS (the caption phase's repair; plans/2026-10-19_caption_finetune_plan.md THE RESULT): the first
+# caption phase taught the format, not the meaning (the frame holding the answer stood before every question); -mx-cp2 runs the same
+# phase from the mixed arm's end with the frame withheld in half the caption documents (frames_data.CAPTION2: a frameless document always
+# asks, so the caption has to answer); its control -mx-cpx2 keeps the swap, so in its frameless documents the question's truth is
+# unrelated to the caption and only the prior can be learned.
+CRAFTS_CAPTION2 = {f"{n}.1-mx-cp2": dict(c, train=V11_TRAIN, tag="v11mxcp2", source=f"{n}.1-mx", cont="cp2") for n, c in CRAFTS.items()}
+CRAFTS_CAPTION2_CTRL = {"nano-pollux-dual-v1.1-mx-cpx2": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v11mxcpx2",
+                                                             source="nano-pollux-dual-v1.1-mx", cont="cpx2")}
 ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2, **CRAFTS_CAPTION,
-       **CRAFTS_CAPTION_CTRL}
+       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL}
 
 
 def train_of(name: str) -> dict:
@@ -132,7 +142,7 @@ def train_of(name: str) -> dict:
     return dict(ALL[name].get("train") or {})
 
 
-ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed", "cp": "caption", "cpx": "caption control"}   # 0.1.43: a continuation kind in plain words; 0.1.49 mixed; 0.1.55 caption
+ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed", "cp": "caption", "cpx": "caption control", "cp2": "caption, frameless questions", "cpx2": "caption control, frameless questions"}   # 0.1.43: a continuation kind in plain words; 0.1.49 mixed; 0.1.55 caption
 
 
 def body_of(name: str) -> str:
@@ -546,7 +556,7 @@ def gauge_scalars(rec: dict) -> dict:
 def gauge_args(name: str, init: str, out: str) -> dict:
     c = ALL[name]
     args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
-    if c.get("cont") in ("cf", "nt", "mx", "cp", "cpx"):
+    if c.get("cont") in ("cf", "nt", "mx", "cp", "cpx", "cp2", "cpx2"):
         args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge); 0.1.49 the mixed arm; 0.1.55 the caption arms
     if c.get("cont") == "nt":
         args["note_gauge"] = "1"                         # 0.1.41: the note arm's reads add the note rows, given and self-written (the tag ends _carry_note_gauge)
@@ -767,7 +777,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         if not os.path.exists(os.path.join(folder, "bed_corpus.bin")):
             build_corpus(folder, int(frames_corpus_bytes))
         os.environ[CORPUS_ENV] = folder
-    if any(ALL[n].get("cont") in ("cp", "cpx") for n in names):     # 0.1.55: the caption pack, reached by the stream children
+    if any(ALL[n].get("cont") in ("cp", "cpx", "cp2", "cpx2") for n in names):     # 0.1.55: the caption pack, reached by the stream children
         from . import caption_pack as cp
         pack_folder = caption_pack or os.path.join(out, "caption_pack")
         cp.ensure(pack_folder, hf_token, caption_pack_rows, log=lambda *a: print("[v1]", *a, flush=True))
@@ -868,7 +878,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 
 def version_of(names) -> str:
     """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
-    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2 or n in CRAFTS_CAPTION or n in CRAFTS_CAPTION_CTRL
+    return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2 or n in CRAFTS_CAPTION or n in CRAFTS_CAPTION_CTRL or n in CRAFTS_CAPTION2 or n in CRAFTS_CAPTION2_CTRL
                          for n in names) else "v1"
 
 
@@ -1024,7 +1034,7 @@ def mixed_table(hist: dict) -> str:
     return "\n".join(rows)
 
 
-def caption_table(hist: dict) -> str:
+def caption_table(hist: dict, arm: str = "cp") -> str:
     """0.1.55: the caption-phase reads (markdown): per body and read, the mixed arm's end (the -mx-cp craft's first row: the same
     weights), the end of the caption phase, the end of the control (every document's frame from another document) and each minus the
     start; a read no craft carries is left out."""
@@ -1036,9 +1046,10 @@ def caption_table(hist: dict) -> str:
 
     def get(e, k):
         return None if e is None else (e.get(k) if k == "val_bpb" else (e.get("bed") or {}).get(k))
-    mx_end, cp_end, cpx_end = (CONT_PHASE[a][0] for a in ("mx", "cp", "cpx"))
+    carm = arm.replace("cp", "cpx", 1)                                         # the control's arm code: cp -> cpx; cp2 -> cpx2 (0.1.56)
+    mx_end, cp_end, cpx_end = (CONT_PHASE[a][0] for a in ("mx", arm, carm))
     for n in CRAFTS:
-        cpe, cpx, mx = hist.get(f"{n}.1-mx-cp") or [], hist.get(f"{n}.1-mx-cpx") or [], hist.get(f"{n}.1-mx") or []
+        cpe, cpx, mx = hist.get(f"{n}.1-mx-{arm}") or [], hist.get(f"{n}.1-mx-{carm}") or [], hist.get(f"{n}.1-mx") or []
         start = at(cpe, mx_end) or at(cpx, mx_end) or at(mx, mx_end)
         after, ctrl = at(cpe, cp_end), at(cpx, cpx_end)
         for label, k, nd in CONT_READS:

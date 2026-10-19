@@ -471,7 +471,9 @@ ARM_WHAT = {"fr": "the diet's text with keyed records written in small frames, a
             "nt": "notes in real words taken from the text itself (a definition, an abbreviation, a quantity, a capital, a place, a year), re-written on the way and asked back",
             "mx": "carry rows and framed rows side by side, their records in all three registers (letters, digits, hex), the plain text kept: one phase for the near read, the far habit and every register",
             "cp": "caption documents from the caption pack: an image's attributes as one sized frame in a shuffled order, then one of its captions, the question for a framed attribute in half the documents; carry rows and plain text kept",
-            "cpx": "the caption phase with every frame taken from another image: the control whose frame says nothing about its caption"}
+            "cpx": "the caption phase with every frame taken from another image: the control whose frame says nothing about its caption",
+            "cp2": "the caption phase with the frame withheld in half the documents, so the question has to be answered from the caption",
+            "cpx2": "the frameless-question caption phase with every frame and question taken from another image: the control that can learn only the prior"}
 ARM_COLS = (("the bed's held-out bits a byte", "bed/text/heldout_bits", 4), ("copy / nested / repeated key", None, 2),
             ("1,024-byte frame", "bed/scaling/frame_1024_whole", 2), ("far question, own carries", "bed/carry/full_value", 2),
             ("carries a row", "bed/carry/carries_per_row", 1))

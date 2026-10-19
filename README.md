@@ -175,6 +175,19 @@ it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`
 
 ## Status
 
+0.1.56 (2026-10-19): THE FRAMELESS QUESTION, the caption phase's repair. The first caption phase (Pollux dual, 1.5 billion bytes)
+taught the format and not the meaning: the body copies a record out of the nested system frames whole in 0.961 of 256 held items,
+but asked from the caption alone it answers 0.168, and the control, whose frames never matched their captions, answers 0.172 with the
+same value bits: each key's commonest value, not the caption. The cause is in the data form: the frame holding the answer stood before
+every question, so copying the frame answered it and the caption was never needed. `frames_data.CAPTION2` withholds the frame in half
+the caption documents (`p_frame` 0.5; a frameless document always asks its question, a record of its own, so the caption has to answer);
+its control `CAPTION2_CTRL` keeps the swap, so in its frameless documents the truth is unrelated to the caption and only the prior can
+be learned. The crafts `nano-<body>-v1.1-mx-cp2` and the control `nano-pollux-dual-v1.1-mx-cpx2` run the phase from the mixed arm's
+end. `caption_screen.read` adds the prior-only baseline on the same held items (each key's commonest training value over a sample of
+50,000 training documents; `prior_of`) and `extraction_over_prior`; `caption_table` takes the arm. The caption notebook runs the
+repaired pair, prints the prior beside every extraction number and marks NEW WORDINGS against both the control and the prior; it pins
+v0.1.56. The first phase's documents are unchanged (`p_frame` absent draws nothing).
+
 0.1.55 (2026-10-19): THE CAPTION PHASE on the caption pack. `caption_pack` reads the Beatrix caption arm's pack from the Hub (the
 photograph, illustration, web-image and COCO rows of `AbstractPhil/alephllm-mini-beatrix-training`, the first shards of each source;
 `NANO_CAPTION_PACK` names the cache) into a byte blob and an index: a row's attributes become records whose keys are PATHS of a
