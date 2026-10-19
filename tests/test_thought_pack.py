@@ -14,14 +14,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def test_the_trie_and_its_lists():
     ks = TP.keys()
-    assert "look hair" in ks and "form composition" in ks and "relation" in ks and "mood evidence" in ks and len(ks) == 1 + sum(len(a) for a in TP.SYSTEMS.values())
+    assert "look hair" in ks and "form compose" in ks and "relation" in ks and "mood from" in ks and len(ks) == 1 + sum(len(a) for a in TP.SYSTEMS.values())
     for name, vals in TP.VOCAB.items():
         assert vals and len(vals) == len(set(vals)), name
         for v in vals:
             assert v == v.lower().strip() and len(v.encode("ascii")) <= TP.VAL_MAX, (name, v)
     for k, lst in TP.KEY_LIST.items():
         assert k in ks and lst in TP.VOCAB, k
+        for v in TP.VOCAB[lst]:                                 # every closed value renders with its key in one 32-byte slice
+            assert len(k) + len(v) <= TP.REC_MAX, (k, v, len(k) + len(v))
     assert all(len(k.encode()) <= TP.KEY_MAX for k in ks)
+    for k in ks:                                                # 'mood from' holds any other key as its value
+        assert k.startswith("mood") or len("mood from") + len(k) <= TP.REC_MAX, k
     assert "blonde" in TP.VOCAB["eyes"] and TP.VOCAB["eyes"] is TP.VOCAB["colour"]
 
 
@@ -52,6 +56,8 @@ def test_the_example_passes_and_broken_rows_fail_the_right_rule():
     assert 2 in broken(lambda r: r["spec"].__setitem__("smell", {"scent": "salt"}))
     assert 2 in broken(lambda r: r["spec"]["relation"].append({"a": "x", "rel": "near", "b": "y"}))
     assert 3 in broken(lambda r: r.__setitem__("thoughts", r["thoughts"][:1]))
+    assert 3 in broken(lambda r: r["thoughts"][0].__setitem__("text", "x" * 600))        # a medium chain over 512 bytes of slices
+    assert TP.chain_slices(TP.EXAMPLE["thoughts"]) * TP.SLICE <= TP.CHAIN_MAX["medium"] and TP.chain_room("medium") == 404
     assert 3 in broken(lambda r: r.__setitem__("depth", "deep"))
     assert 1 in broken(lambda r: r["thoughts"].append({"step": "guess", "text": "x"}))
     assert 1 in broken(lambda r: r["wordings"].__setitem__("caption", "as seen in the image, a woman"))
@@ -59,8 +65,9 @@ def test_the_example_passes_and_broken_rows_fail_the_right_rule():
     assert 4 in broken(lambda r: r["questions"].append({"key": "look hair", "value": "unknown", "needs": "unknown"}))
     assert 4 in broken(lambda r: r["questions"].append({"key": "mood feeling", "value": "furious", "needs": "chain"}))
     assert 5 in broken(lambda r: r.__setitem__("wordings", {}))
-    assert 6 in broken(lambda r: r["spec"]["mood"].pop("evidence"))
-    assert 6 in broken(lambda r: r["spec"]["mood"].__setitem__("evidence", "shot lens"))
+    assert 6 in broken(lambda r: r["spec"]["mood"].pop("from"))
+    assert 6 in broken(lambda r: r["spec"]["mood"].__setitem__("from", "shot lens"))
+    assert 2 in broken(lambda r: r["spec"]["form"].__setitem__("compose", "subject right third"))     # 12 + 19 = 31 > 27: no slice holds it
     assert 4 in broken(lambda r: r["questions"].append({"key": "look hair", "value": "short", "needs": "chain"}))
     assert 7 in broken(lambda r: r["spec"]["look"].__setitem__("hair", held["hair"][0]))
     assert 8 in broken(lambda r: r["source"].pop("license"))
@@ -87,7 +94,7 @@ def test_the_series_check_and_the_file_checker(tmp_path):
     p = tmp_path / "rows.jsonl"
     bad = copy.deepcopy(TP.EXAMPLE)
     bad["id"], bad["series"] = "art-000124", "s-00042"
-    bad["spec"]["mood"].pop("evidence")
+    bad["spec"]["mood"].pop("from")
     with open(p, "w", encoding="utf-8") as fh:
         for r in (simple, TP.EXAMPLE, bad):
             fh.write(json.dumps(r) + "\n")

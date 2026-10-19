@@ -27,11 +27,16 @@ import torch
 
 from geolip.alephllm.data.special_tokens import DOC
 from . import frames_data as FD
+from . import thought_frames as TF
 
 KINDS = (("carry", 0.35), ("frames", 0.25), ("caption", 0.25), ("note", 0.15))
 FRAMED = dict(p_framed=0.5, kinds=KINDS, registers=FD.MIXED["registers"], carry=FD.CARRY, frames=FD.FORM, caption=FD.CAPTION2, note=FD.NOTE)
-FORMS = {"p50": FRAMED, "p25": dict(FRAMED, p_framed=0.25), "p75": dict(FRAMED, p_framed=0.75)}
-COUNTED = ("plain", "carry", "frames", "caption", "note", "note_plain")     # note_plain: a note row whose text held no usable fact (plain)
+# 0.1.62: THE THOUGHT KIND (thought_frames: the art thought dataset's documents in the frame grammar) beside the four, in a form of its own,
+# so the live p50 form and its counts stay as they were; the thought pack reaches the stream child through NANO_THOUGHT_PACK
+KINDS_T = (("carry", 0.30), ("frames", 0.20), ("caption", 0.20), ("note", 0.10), ("thought", 0.20))
+FRAMED_T = dict(FRAMED, kinds=KINDS_T, thought=TF.THOUGHT)
+FORMS = {"p50": FRAMED, "p25": dict(FRAMED, p_framed=0.25), "p75": dict(FRAMED, p_framed=0.75), "p50t": FRAMED_T}
+COUNTED = ("plain", "carry", "frames", "caption", "note", "note_plain", "thought")     # note_plain: a note row whose text held no usable fact (plain)
 ROW_IDS = FD.ROW_BYTES + 1                                                    # the stream's row: context + 1 ids at the v1 context
 
 
@@ -49,9 +54,10 @@ def framed_draw(rng, form: dict = FRAMED) -> tuple:
     return _pick(rng, form["kinds"]), _pick(rng, form["registers"])
 
 
-def framed_row(rng_kind, rng_comp, src: bytes, form: dict = FRAMED, pack_fn=None) -> tuple:
+def framed_row(rng_kind, rng_comp, src: bytes, form: dict = FRAMED, pack_fn=None, thought_fn=None) -> tuple:
     """One framed row from `src` (two rows of the stream's text, 2 x ROW_BYTES). pack_fn: returns the caption pack (called for a caption
-    row only). -> (ROW_BYTES bytes, the kind), or (None, "note_plain") when a note row found no usable fact."""
+    row only); thought_fn: returns the thought pack (a thought row only). -> (ROW_BYTES bytes, the kind), or (None, "note_plain") when a
+    note row found no usable fact."""
     assert len(src) >= 2 * FD.ROW_BYTES, len(src)
     kind, reg = framed_draw(rng_kind, form)
     if kind == "carry":
@@ -61,6 +67,8 @@ def framed_row(rng_kind, rng_comp, src: bytes, form: dict = FRAMED, pack_fn=None
     elif kind == "caption":
         from . import caption_pack as cp
         row, _ = FD.caption_window(rng_comp, pack_fn() if pack_fn else cp.load(), form["caption"], FD.ROW_CTX)
+    elif kind == "thought":
+        row, _ = TF.thought_window(rng_comp, thought_fn() if thought_fn else TF.load(), form["thought"], FD.ROW_CTX)
     else:
         nr = FD.note_row(rng_comp, src, form["note"], FD.ROW_CTX)
         if nr is None:
@@ -75,18 +83,23 @@ class FramedStream:
     1 (its rows are consumed one at a time: one for a plain row, two for a framed row); micro_batch: the rows a batch; seed: the phase's
     seed (the coins); form: one of FORMS; pack: the caption pack (loaded from NANO_CAPTION_PACK at the first caption row when None)."""
 
-    def __init__(self, inner, micro_batch: int, seed: int, form: dict = FRAMED, pack=None):
+    def __init__(self, inner, micro_batch: int, seed: int, form: dict = FRAMED, pack=None, thought=None):
         self.inner, self.micro_batch, self.seed, self.form = inner, int(micro_batch), int(seed), form
         self.dataset = inner.dataset
         self.i = 0
         self.counts = {k: 0 for k in COUNTED}
-        self._pack = pack
+        self._pack, self._thought = pack, thought
 
     def _pack_fn(self):
         if self._pack is None:
             from . import caption_pack as cp
             self._pack = cp.load()
         return self._pack
+
+    def _thought_fn(self):
+        if self._thought is None:
+            self._thought = TF.load()
+        return self._thought
 
     @property
     def rows_consumed(self):
@@ -113,7 +126,7 @@ class FramedStream:
         a, b = self._inner_row(), self._inner_row()
         src = np.concatenate([a[:FD.ROW_BYTES], b[:FD.ROW_BYTES]]).astype(np.uint8).tobytes()
         row, kind = framed_row(np.random.default_rng([self.seed, i, 2]), np.random.default_rng([self.seed, i, 1]), src, self.form,
-                               self._pack_fn)
+                               self._pack_fn, self._thought_fn)
         self.counts[kind] += 1
         if row is None:
             return a, kind

@@ -29,14 +29,15 @@ import numpy as np
 
 from .caption_pack import COLOURS, EXPRESSIONS
 
-VERSION = "0.1.61"
+VERSION = "0.1.62"
 REPO = "AbstractPhil/thought-symbolic-image-captions"
 DEPTHS = ("simple", "medium", "deep")
 DOMAINS = ("photograph", "painting", "illustration", "sculpture", "design")
 STEPS = ("see", "name", "place", "count", "relate", "form", "light", "colour", "mood", "mean", "intend", "story", "compare", "change",
          "check", "say")
 NEEDS = ("record", "chain", "unknown")
-VAL_MAX, KEY_MAX = 20, 24                       # a record's value and key, in bytes (the 32-byte slice holds CUE key SEP value in 29)
+VAL_MAX, KEY_MAX, REC_MAX = 20, 16, 27          # a record's value, its key, and key + value together, in bytes: CUE key SEP value fits the
+                                                # 32-byte slice's 29 bytes of body (the caption pack's own budget), so every record renders
 # the systems trie: system -> its attributes (the key is "system attribute"); relation is a list of (a, rel, b)
 SYSTEMS = {"person": ("count", "gender", "age", "role"),
            "look": ("hair", "eyes", "expression", "makeup", "jewelry", "skin"),
@@ -45,9 +46,9 @@ SYSTEMS = {"person": ("count", "gender", "age", "role"),
            "scene": ("setting", "time", "weather", "layout", "mood"),
            "shot": ("light", "angle", "framing", "lens", "focus"),
            "thing": ("name", "count", "colour", "state", "position"),
-           "form": ("composition", "balance", "line", "shape", "space", "rhythm", "contrast", "palette", "texture", "medium", "style", "period"),
-           "mood": ("feeling", "tone", "energy", "temperature", "evidence"),
-           "intent": ("purpose", "audience", "message", "genre"),
+           "form": ("compose", "balance", "line", "shape", "space", "rhythm", "contrast", "palette", "texture", "medium", "style", "period"),
+           "mood": ("feeling", "tone", "energy", "temperature", "from"),
+           "intent": ("purpose", "for", "message", "genre"),
            "story": ("moment", "before", "after", "cause", "teller")}
 RELATIONS = ("left of", "right of", "above", "below", "behind", "in front of", "beside", "holding", "facing", "looking at",
              "larger than", "smaller than", "same colour as", "touching", "inside", "under", "leaning on", "reflected in")
@@ -56,12 +57,28 @@ COUNTS = {"simple": dict(records=(1, 4), thoughts=(1, 2), questions=(1, 2), word
           "medium": dict(records=(6, 14), thoughts=(3, 5), questions=(3, 5), wordings=1),
           "deep": dict(records=(14, 30), thoughts=(6, 10), questions=(5, 8), wordings=3)}
 FRAME_SIZES = {"simple": (128, 256), "medium": (512,), "deep": (1024, 2048)}
+CHAIN_MAX = {"simple": 256, "medium": 512, "deep": 2048}       # the depth's largest thinking frame: the thoughts (text + kind records) fit it
+SLICE, SLICE_ROOM = 32, 29                                      # the frame grammar's slice and its body
+
+
+def chain_slices(thoughts: list) -> int:
+    """The 32-byte slices a row's thoughts take in the chain frame: each thought a run of ceil((7 + len(kind) + len(text)) / 29) slices
+    (its kind record CUE step SEP kind, the newline after it, then the text), as thought_frames renders it."""
+    return sum(max(1, -(-(7 + len(str(t.get("step", ""))) + len(str(t.get("text", "")).strip().encode("utf-8", "replace"))) // SLICE_ROOM))
+               for t in thoughts)
+
+
+def chain_room(depth: str) -> int:
+    """About how many bytes of thought text the depth's frame holds in all (the slices' bodies less a record a thought)."""
+    return CHAIN_MAX[depth] // SLICE * SLICE_ROOM - 12 * COUNTS[depth]["thoughts"][1]
 RULES = {1: "every claim is in the spec or is marked as an inference with its evidence; nothing refers to pixels or to seeing the file",
-         2: "record values are plain lower-case words of at most 20 bytes, keys from the trie; longer language lives in the thoughts and the wordings",
-         3: "the depth sets the counts of records, thoughts and questions",
+         2: "record values are plain lower-case words of at most 20 bytes under keys from the trie, key and value together at most 27 bytes; "
+            "longer language lives in the thoughts and the wordings",
+         3: "the depth sets the counts of records, thoughts and questions, and the thoughts fit the depth's thinking frame (simple 256, medium 512, "
+            "deep 2,048 bytes of 32-byte slices: about 200, 420 and 1,750 bytes of thought text in all)",
          4: "every question's value is a record's value, 'unknown' (a key the spec does not hold), or (needs 'chain') a value the thoughts state",
          5: "at least one wording a row, three for deep (caption, prompt, tags); the tag wording uses the booru register where it exists",
-         6: "a mood names its evidence: the key of the record that shows it (look expression, shot light, rel1 rel)",
+         6: "a mood names what it is read from: 'mood from' holds the key of the record that shows it (look expression, shot light, rel1 rel)",
          7: "a series shares its spec by subset: simple within medium within deep",
          8: "no real person's name, no copyrighted image described from memory: the spec is invented or comes from a licensed description"}
 BANNED = ("pixel", "the image file", "i can see", "as seen in the image", "in this photo i", "looking at the image", "the jpeg", "the png")
@@ -75,10 +92,10 @@ def _union(base, more) -> list:
 
 
 VOCAB = {
-    "colour": _union(COLOURS - {"gray"}, ["cream", "beige", "tan", "gold", "navy", "olive", "maroon", "coral", "lilac", "rust", "ivory", "charcoal", "indigo", "peach", "mint", "mustard", "plum", "sand", "slate", "wine"]),
-    "expression": _union(EXPRESSIONS, ["wry", "serene", "stern", "pensive", "amused", "weary", "startled", "proud", "tender", "bored", "defiant", "dreamy", "wince", "gaze", "calm", "fierce", "mournful", "curious"]),
+    "colour": _union(COLOURS - {"gray", "strawberry blonde"}, ["cream", "beige", "tan", "gold", "navy", "olive", "maroon", "coral", "lilac", "rust", "ivory", "charcoal", "indigo", "peach", "mint", "mustard", "plum", "sand", "slate", "wine"]),
+    "expression": _union({e for e in EXPRESSIONS if len(e) <= 12}, ["wry", "serene", "stern", "pensive", "amused", "weary", "startled", "proud", "tender", "bored", "defiant", "dreamy", "wince", "gaze", "calm", "fierce", "mournful", "curious"]),
     "hair": ["short", "long", "curly", "straight", "wavy", "braided", "bob", "bun", "ponytail", "buzzed", "shaved", "messy", "slicked", "afro", "locs", "bangs", "pigtails", "undercut", "wet", "windblown"],
-    "gender": ["woman", "man", "girl", "boy", "person", "nonbinary person"],
+    "gender": ["woman", "man", "girl", "boy", "person", "nonbinary"],
     "age": ["child", "teen", "20s", "30s", "40s", "50s", "60s", "elderly", "baby", "young adult"],
     "role": ["worker", "dancer", "musician", "soldier", "farmer", "nurse", "student", "chef", "rider", "swimmer", "painter", "monk", "vendor", "guard", "traveller", "reader", "mother", "father", "bride", "athlete"],
     "clothing": ["raincoat", "suit", "dress", "kimono", "hoodie", "uniform", "overalls", "gown", "jacket", "sweater", "coat", "robe", "armour", "apron", "cloak", "tunic", "jeans", "sari", "parka", "vest"],
@@ -91,10 +108,10 @@ VOCAB = {
     "layout": ["single subject", "pair", "crowd", "empty", "cluttered", "sparse", "layered depth", "flat", "panoramic", "tight"],
     "light": ["soft window", "hard sun", "backlit", "rim light", "neon", "candle", "overcast", "spotlight", "golden", "moonlight", "fluorescent", "firelight", "studio flash", "dappled", "silhouette", "lantern", "screen glow", "street lamp", "low key", "high key", "from the left", "from the right", "from above", "from below"],
     "angle": ["eye level", "low angle", "high angle", "overhead", "worm's eye", "dutch tilt", "over the shoulder", "profile", "three quarter", "frontal"],
-    "framing": ["close-up", "extreme close-up", "portrait", "waist up", "full body", "wide", "extreme wide", "macro", "detail", "medium shot", "two shot", "establishing"],
+    "framing": ["close-up", "extreme close", "portrait", "waist up", "full body", "wide", "extreme wide", "macro", "detail", "medium shot", "two shot", "establishing"],
     "lens": ["24mm", "35mm", "50mm", "85mm", "135mm", "telephoto", "fisheye", "tilt-shift", "pinhole", "anamorphic"],
     "focus": ["on the eyes", "deep", "shallow", "soft", "selective", "on the hands", "on the background", "motion blur", "tack sharp", "bokeh"],
-    "composition": ["rule of thirds", "centred", "symmetry", "golden spiral", "leading lines", "frame within frame", "diagonal", "triangular", "layered", "negative space", "subject right third", "subject left third", "horizon high", "horizon low", "radial", "grid", "s-curve", "fill the frame", "off balance", "mirrored"],
+    "compose": ["rule of thirds", "centred", "symmetry", "golden spiral", "leading lines", "frame in frame", "diagonal", "triangular", "layered", "negative space", "right third", "left third", "horizon high", "horizon low", "radial", "grid", "s-curve", "fill the frame", "off balance", "mirrored"],
     "balance": ["balanced", "left heavy", "right heavy", "top heavy", "bottom heavy", "tense", "settled"],
     "line": ["vertical", "horizontal", "diagonal", "curved", "jagged", "converging", "broken", "flowing"],
     "shape": ["round", "angular", "organic", "geometric", "blocky", "spindly", "massive", "delicate"],
@@ -102,17 +119,17 @@ VOCAB = {
     "rhythm": ["repeating", "irregular", "alternating", "accelerating", "still", "staccato", "flowing"],
     "contrast": ["high", "low", "medium", "tonal", "colour", "harsh", "gentle"],
     "texture": ["smooth", "rough", "grainy", "glossy", "matte", "cracked", "velvet", "wet", "dusty", "woven", "brushy", "polished"],
-    "medium": ["photograph", "oil painting", "watercolour", "ink", "charcoal", "pencil", "gouache", "acrylic", "fresco", "woodcut", "etching", "digital painting", "3d render", "pixel art", "collage", "bronze", "marble", "clay", "pastel", "tempera", "linocut", "gelatin silver print", "cyanotype", "polaroid", "film still", "mosaic", "tapestry", "stained glass", "vector art", "lithograph"],
+    "medium": ["photograph", "oil painting", "watercolour", "ink", "charcoal", "pencil", "gouache", "acrylic", "fresco", "woodcut", "etching", "digital painting", "3d render", "pixel art", "collage", "bronze", "marble", "clay", "pastel", "tempera", "linocut", "silver print", "cyanotype", "polaroid", "film still", "mosaic", "tapestry", "stained glass", "vector art", "lithograph"],
     "style": ["realism", "impressionism", "expressionism", "cubism", "surrealism", "baroque", "renaissance", "ukiyo-e", "art nouveau", "art deco", "minimalism", "pop art", "bauhaus", "anime", "comic", "noir", "romanticism", "abstract", "fauvism", "pointillism", "brutalism", "folk art", "photorealism", "gothic", "rococo", "futurism", "dada", "street art", "naive", "symbolism"],
     "period": ["ancient", "medieval", "renaissance", "baroque", "19th century", "early 20th", "mid century", "1980s", "1990s", "contemporary", "futuristic", "timeless"],
     "feeling": ["calm", "tense", "amused", "wistful", "joyful", "lonely", "proud", "anxious", "serene", "playful", "grim", "hopeful", "weary", "defiant", "tender", "eerie", "triumphant", "bored", "curious", "mournful", "giddy", "stern", "cozy", "restless", "awed", "bitter", "gentle", "fierce", "shy", "nostalgic"],
     "tone": ["warm", "cold", "dry", "lyrical", "ironic", "solemn", "brash", "quiet", "sweet", "harsh"],
     "energy": ["still", "slow", "steady", "brisk", "frantic", "explosive", "drifting", "pulsing"],
     "temperature": ["warm", "cool", "neutral", "mixed"],
-    "purpose": ["editorial", "advertising", "personal record", "archival", "fine art", "book illustration", "concept art", "album cover", "poster", "scientific record", "fashion", "product", "documentary", "devotional", "propaganda", "children's book", "game art", "portrait commission", "study", "protest"],
-    "audience": ["a travel feature", "collectors", "children", "a newspaper", "a gallery", "the family", "a fashion house", "a game studio", "a church", "the public square", "students", "a museum", "a magazine cover", "a film crew", "a scientific journal"],
-    "genre": ["portrait", "landscape", "still life", "street", "documentary", "fashion", "product", "architecture", "wildlife", "abstract", "sport", "food", "interior", "aerial", "underwater", "macro", "war", "history painting", "genre scene", "self portrait", "cityscape", "seascape", "nude study", "botanical", "scientific"],
-    "moment": ["the instant before", "the instant after", "mid action", "a pause", "a departure", "an arrival", "a discovery", "a farewell", "a wait", "a celebration", "a loss", "a plain afternoon"],
+    "purpose": ["editorial", "advertising", "family record", "archival", "fine art", "illustration", "concept art", "album cover", "poster", "field record", "fashion", "product", "documentary", "devotional", "propaganda", "picture book", "game art", "commission", "study", "protest"],
+    "for": ["a travel feature", "collectors", "children", "a newspaper", "a gallery", "the family", "a fashion house", "a game studio", "a church", "the public square", "students", "a museum", "a magazine cover", "a film crew", "a science journal"],
+    "genre": ["portrait", "landscape", "still life", "street", "documentary", "fashion", "product", "architecture", "wildlife", "abstract", "sport", "food", "interior", "aerial", "underwater", "macro", "war", "history piece", "genre scene", "self portrait", "cityscape", "seascape", "nude study", "botanical", "scientific"],
+    "moment": ["instant before", "instant after", "mid action", "a pause", "a departure", "an arrival", "a discovery", "a farewell", "a wait", "a celebration", "a loss", "plain afternoon"],
 }
 VOCAB["eyes"] = VOCAB["colour"]
 VOCAB["wear colour"] = VOCAB["colour"]
@@ -123,10 +140,10 @@ KEY_LIST = {"look hair": "hair", "look eyes": "eyes", "look expression": "expres
             "person role": "role", "wear clothing": "clothing", "wear accessory": "accessory", "wear colour": "colour", "body pose": "pose",
             "body gesture": "gesture", "scene setting": "setting", "scene time": "time", "scene weather": "weather", "scene layout": "layout",
             "scene mood": "feeling", "shot light": "light", "shot angle": "angle", "shot framing": "framing", "shot lens": "lens",
-            "shot focus": "focus", "thing colour": "colour", "form composition": "composition", "form balance": "balance", "form line": "line",
+            "shot focus": "focus", "thing colour": "colour", "form compose": "compose", "form balance": "balance", "form line": "line",
             "form shape": "shape", "form space": "space", "form rhythm": "rhythm", "form contrast": "contrast", "form texture": "texture",
             "form medium": "medium", "form style": "style", "form period": "period", "mood feeling": "feeling", "mood tone": "tone",
-            "mood energy": "energy", "mood temperature": "temperature", "intent purpose": "purpose", "intent audience": "audience",
+            "mood energy": "energy", "mood temperature": "temperature", "intent purpose": "purpose", "intent for": "for",
             "intent genre": "genre", "story moment": "moment"}
 
 
@@ -222,7 +239,7 @@ THINGS = ["umbrella", "bicycle", "lantern", "fish stall", "window", "mirror", "d
 VOCAB["thing"] = THINGS
 # the order the sampler fills a spec in: the first attributes of the first systems come first, so a simple spec is a person seen
 FILL = [("person", "gender"), ("look", "hair"), ("scene", "setting"), ("wear", "clothing"), ("look", "expression"), ("shot", "framing"),
-        ("scene", "time"), ("wear", "colour"), ("shot", "light"), ("person", "age"), ("body", "pose"), ("form", "composition"),
+        ("scene", "time"), ("wear", "colour"), ("shot", "light"), ("person", "age"), ("body", "pose"), ("form", "compose"),
         ("thing", "name"), ("scene", "weather"), ("shot", "angle"), ("form", "palette"), ("thing", "colour"), ("form", "contrast"),
         ("look", "eyes"), ("shot", "lens"), ("form", "medium"), ("shot", "focus"), ("form", "style"), ("person", "role"),
         ("wear", "accessory"), ("thing", "position"), ("form", "texture"), ("body", "gesture"), ("scene", "layout"), ("form", "line")]
@@ -252,10 +269,10 @@ def sample_spec(rng, depth: str, lists: dict | None = None) -> dict:
         if key == "thing name":
             val = things[int(rng.integers(len(things)))]
         elif key == "form palette":
-            for _ in range(20):
+            for _ in range(40):
                 i, j = rng.choice(len(hues), size=2, replace=False)
                 val = f"{hues[i]} and {hues[j]}"
-                if len(val) <= VAL_MAX:
+                if len(val) <= min(VAL_MAX, REC_MAX - len(key)):
                     break
         elif key == "thing position":
             val = ("left", "right", "centre", "foreground", "background")[int(rng.integers(5))]
@@ -353,6 +370,8 @@ def validate(row: dict, held: dict | None = None) -> list:
             p.append((2, f"value of {k!r} is not plain lower-case ASCII: {v!r}"))
         elif len(v.encode("ascii")) > VAL_MAX:
             p.append((2, f"value of {k!r} is {len(v)} bytes, over {VAL_MAX}: {v!r}"))
+        elif len(k) + len(v) > REC_MAX:
+            p.append((2, f"record {k!r} = {v!r} is {len(k) + len(v)} bytes of key and value, over {REC_MAX} (it would not fit a frame slice)"))
         if len(k.encode("ascii", "replace")) > KEY_MAX:
             p.append((2, f"key {k!r} is over {KEY_MAX} bytes"))
         lst = KEY_LIST.get(k)
@@ -364,6 +383,9 @@ def validate(row: dict, held: dict | None = None) -> list:
     for name, n, (lo, hi) in (("records", nr, c["records"]), ("thoughts", nt, c["thoughts"]), ("questions", nq, c["questions"])):
         if not lo <= n <= hi:
             p.append((3, f"{depth}: {n} {name}, the depth wants {lo}-{hi}"))
+    ns = chain_slices(row["thoughts"])
+    if ns * SLICE > CHAIN_MAX[depth]:
+        p.append((3, f"{depth}: the thoughts take {ns} slices ({ns * SLICE} bytes), the depth's frame holds {CHAIN_MAX[depth]}: shorten the texts"))
     # the thoughts: a step from the list, a text
     text_all = " ".join(str(t.get("text", "")) for t in row["thoughts"]).lower()
     for t in row["thoughts"]:
@@ -411,11 +433,11 @@ def validate(row: dict, held: dict | None = None) -> list:
     # rule 6: a mood names its evidence
     mood = spec.get("mood") or {}
     if mood:
-        ev = str(mood.get("evidence", "")).strip()
+        ev = str(mood.get("from", "")).strip()
         if not ev:
-            p.append((6, "the mood has no evidence"))
+            p.append((6, "the mood names nothing it is read from ('mood from' is missing)"))
         elif ev not in recmap or ev.startswith("mood "):
-            p.append((6, f"the mood's evidence {ev!r} is not a record of the spec"))
+            p.append((6, f"the mood is read from {ev!r}, which is not a record of the spec"))
     # the held field and the seals
     h = row["held"]
     if not isinstance(h, dict) or not all(k in h for k in ("layout", "wordings", "values")):
@@ -488,16 +510,16 @@ EXAMPLE = {
              "wear": {"clothing": "raincoat", "colour": "yellow"},
              "scene": {"setting": "market street", "time": "dusk", "weather": "rain"},
              "shot": {"light": "neon", "framing": "waist up"},
-             "form": {"composition": "subject right third"},
+             "form": {"compose": "right third"},
              "relation": [{"a": "woman", "rel": "in front of", "b": "fish stall"}],
-             "mood": {"feeling": "amused", "evidence": "look expression"}},
+             "mood": {"feeling": "amused", "from": "look expression"}},
     "thoughts": [{"step": "see", "text": "A woman in a yellow raincoat, short hair, a wry half smile."},
                  {"step": "place", "text": "She stands on a market street at dusk, in the rain, in front of a fish stall."},
                  {"step": "form", "text": "Neon lights her face; she sits in the right third of the frame, seen from the waist up."},
-                 {"step": "mean", "text": "The wry expression reads as amused rather than weary. With dusk and neon the frame is dark around a single subject: an inference from the time and the light, not a record."},
+                 {"step": "mean", "text": "Wry reads as amused. Dusk and neon leave a single subject lit: an inference."},
                  {"step": "say", "text": "The composed wording follows."}],
     "wordings": {"caption": "A woman with short hair and a wry smile, in a yellow raincoat, on a rainy market street at dusk, lit by neon, in front of a fish stall.",
-                 "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject right third",
+                 "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject in the right third",
                  "tags": "1girl, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"},
     "questions": [{"key": "look hair", "value": "short", "needs": "record"},
                   {"key": "rel1 b", "value": "fish stall", "needs": "record"},
@@ -518,8 +540,8 @@ def prompt(depth: str, domain: str, held: dict | None = None, split: str = "trai
             f"{n} row(s) of depth {depth}: {c['records'][0]}-{c['records'][1]} records, {c['thoughts'][0]}-{c['thoughts'][1]} thoughts, "
             f"{c['questions'][0]}-{c['questions'][1]} questions, at least {c['wordings']} wording(s)"
             + (" including caption, prompt and tags, one unknown question and one that needs the chain" if depth == "deep" else ""))
-    spec_line = ("Start from THIS hidden spec: keep every record as given; add mood (a feeling with its evidence), intent and story as the "
-                 "depth asks; add no other facts:\n" + json.dumps(seed_spec, ensure_ascii=False) if seed_spec else
+    spec_line = ("Start from THIS hidden spec: keep every record as given; add mood (a feeling, and 'from' naming the record it is read from), "
+                 "intent and story as the depth asks; add no other facts:\n" + json.dumps(seed_spec, ensure_ascii=False) if seed_spec else
                  "Invent the hidden spec first (consistent: counts match the subjects, every colour is bound to a part, the light has a direction, "
                  "a palette names two colours), then write the thoughts, then the wordings, then the questions.")
     rules = "\n".join(f"  {k}. {v}" for k, v in RULES.items())
@@ -545,11 +567,14 @@ THE RULES (a row that breaks one is rejected by the validator):
 {rules}
 The systems and their attributes: {json.dumps(SYSTEMS)}
 The relations: {', '.join(RELATIONS)}
-Record values: plain lower-case words, at most {VAL_MAX} bytes, from these lists where a list exists (an attribute without a list is open):
+Record values: plain lower-case words, at most {VAL_MAX} bytes, the key and the value together at most {REC_MAX} bytes (so 'form compose'
+leaves 15 bytes for its value), from these lists where a list exists (an attribute without a list is open):
 {lists_txt}
 A question's key is a trie key ("look hair") or a relation record ("rel1 a", "rel1 rel", "rel1 b").
-Depth sets the frame the thought will live in: simple 128-256 bytes, medium 512, deep 1,024-2,048; write each thought's text to fit:
-simple thoughts one or two sentences, deep thoughts up to four.
+Depth sets the frame the thoughts will live in: simple 128-256 bytes, medium 512, deep 1,024-2,048, in 32-byte slices of 29 bytes of
+body with the thought's kind record first; ALL the thoughts' text of a row together fits about {chain_room(depth)} bytes at depth {depth}
+(the validator counts the slices exactly), so write each thought's text to fit: simple thoughts one short sentence or two, medium thoughts
+one or two sentences of about 80 bytes, deep thoughts two to four sentences.
 Before you answer, re-read every row against the rules and fix it."""
 
 

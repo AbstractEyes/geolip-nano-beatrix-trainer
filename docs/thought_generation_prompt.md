@@ -18,11 +18,11 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
 
 ## The rules
 1. every claim is in the spec or is marked as an inference with its evidence; nothing refers to pixels or to seeing the file
-2. record values are plain lower-case words of at most 20 bytes, keys from the trie; longer language lives in the thoughts and the wordings
-3. the depth sets the counts of records, thoughts and questions
+2. record values are plain lower-case words of at most 20 bytes under keys from the trie, key and value together at most 27 bytes; longer language lives in the thoughts and the wordings
+3. the depth sets the counts of records, thoughts and questions, and the thoughts fit the depth's thinking frame (simple 256, medium 512, deep 2,048 bytes of 32-byte slices: about 200, 420 and 1,750 bytes of thought text in all)
 4. every question's value is a record's value, 'unknown' (a key the spec does not hold), or (needs 'chain') a value the thoughts state
 5. at least one wording a row, three for deep (caption, prompt, tags); the tag wording uses the booru register where it exists
-6. a mood names its evidence: the key of the record that shows it (look expression, shot light, rel1 rel)
+6. a mood names what it is read from: 'mood from' holds the key of the record that shows it (look expression, shot light, rel1 rel)
 7. a series shares its spec by subset: simple within medium within deep
 8. no real person's name, no copyrighted image described from memory: the spec is invented or comes from a licensed description
 
@@ -34,9 +34,9 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
 - scene: setting, time, weather, layout, mood
 - shot: light, angle, framing, lens, focus
 - thing: name, count, colour, state, position
-- form: composition, balance, line, shape, space, rhythm, contrast, palette, texture, medium, style, period
-- mood: feeling, tone, energy, temperature, evidence
-- intent: purpose, audience, message, genre
+- form: compose, balance, line, shape, space, rhythm, contrast, palette, texture, medium, style, period
+- mood: feeling, tone, energy, temperature, from
+- intent: purpose, for, message, genre
 - story: moment, before, after, cause, teller
 - relation: a list of {a, rel, b} with rel from: left of, right of, above, below, behind, in front of, beside, holding, facing, looking at, larger than, smaller than, same colour as, touching, inside, under, leaning on, reflected in
 
@@ -71,7 +71,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
    "framing": "waist up"
   },
   "form": {
-   "composition": "subject right third"
+   "compose": "right third"
   },
   "relation": [
    {
@@ -82,7 +82,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
   ],
   "mood": {
    "feeling": "amused",
-   "evidence": "look expression"
+   "from": "look expression"
   }
  },
  "thoughts": [
@@ -100,7 +100,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
   },
   {
    "step": "mean",
-   "text": "The wry expression reads as amused rather than weary. With dusk and neon the frame is dark around a single subject: an inference from the time and the light, not a record."
+   "text": "Wry reads as amused. Dusk and neon leave a single subject lit: an inference."
   },
   {
    "step": "say",
@@ -109,7 +109,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
  ],
  "wordings": {
   "caption": "A woman with short hair and a wry smile, in a yellow raincoat, on a rainy market street at dusk, lit by neon, in front of a fish stall.",
-  "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject right third",
+  "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject in the right third",
   "tags": "1girl, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"
  },
  "questions": [
