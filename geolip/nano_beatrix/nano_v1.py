@@ -57,7 +57,7 @@ import time
 import numpy as np
 import torch
 
-from .bodies import craft_cfg
+from .bodies import MILLIONS, SIZES, craft_cfg
 from .frames_data import CAPTION2_CTRL_MIX, CAPTION2_MIX, CAPTION_CTRL_MIX, CAPTION_MIX, CARRY_MIX, CONTROL_MIX, CORPUS_ENV, FRAMES_MIX, MIXED_MIX, NOTE_MIX  # noqa: F401  (importing registers the frames streams, here and in every stream child)
 from .names import run_tag
 
@@ -133,8 +133,19 @@ CRAFTS_CAPTION_CTRL = {"nano-pollux-dual-v1.1-mx-cpx": dict(CRAFTS["nano-pollux-
 CRAFTS_CAPTION2 = {f"{n}.1-mx-cp2": dict(c, train=V11_TRAIN, tag="v11mxcp2", source=f"{n}.1-mx", cont="cp2") for n, c in CRAFTS.items()}
 CRAFTS_CAPTION2_CTRL = {"nano-pollux-dual-v1.1-mx-cpx2": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v11mxcpx2",
                                                              source="nano-pollux-dual-v1.1-mx", cont="cpx2")}
+# 0.1.57: THE MICRO TIER (Phil 2026-10-19 11:5x "create a micro variant then, step up from nano"; plans/2026-10-19_nano_todo_frame_pretrain_plan.md
+# section 7): Pollux's dual-hub layout at three sizes above the nano (bodies.SIZES: the nano body widened and deepened, every address scaled
+# with the width), born as the nano crafts are (the bed's build at context 1,024, the position rows beyond zero, seed 1), the 2s diet as
+# their plan; the .1 crafts carry the v1.1 recipe (the readout on AdamW). Their first use is the throughput scan (micro.py): bytes a second
+# and the card's memory per size, the week's bytes priced before any schooling run is promised. The nano cycle (v1.2, the framed diet) runs
+# before any micro trains (his 12:0x).
+CRAFTS_MICRO = {f"{s}-pollux-dual-v1": dict(arm="altd-both", seed=1, code=f"m{s[5:]}pd", size=s,
+                                           body=(f"Pollux's layout with dual hubs at the {s} size ({MILLIONS[s]} M parameters: d{SIZES[s]['d_model']}, "
+                                                 f"{SIZES[s]['n_layers']} blocks, {SIZES[s]['n_heads']} heads)"))
+                for s in ("micro26", "micro45", "micro66")}
+CRAFTS_MICRO_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CRAFTS_MICRO.items()}
 ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2, **CRAFTS_CAPTION,
-       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL}
+       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL, **CRAFTS_MICRO, **CRAFTS_MICRO_V11}
 
 
 def train_of(name: str) -> dict:
@@ -149,6 +160,12 @@ def body_of(name: str) -> str:
     """0.1.43: the body a craft is a continuation of: the craft itself for a body, else its source's body (the chain followed to its end)."""
     c = ALL[name]
     return body_of(c["source"]) if c.get("source") else name
+
+
+def size_of(name: str) -> str:
+    """0.1.57: the body's size (bodies.SIZES): the craft's own, else its source's; "nano" for the bed's bodies."""
+    c = ALL[name]
+    return c.get("size") or (size_of(c["source"]) if c.get("source") else "nano")
 
 
 def arm_text(name: str) -> str | None:
@@ -174,14 +191,14 @@ def gauge_init(name: str, step: int) -> str:
 
 
 # ------------------------------------------------------------------ the start
-def birth_state(arm: str, seed: int) -> dict:
+def birth_state(arm: str, seed: int, size: str = "nano") -> dict:
     """The bed's birth of `arm` at `seed`, carried to the v1 context: torch.manual_seed(seed) then the craft built at context 1,024 on
     the CPU (bed_train.Craft's sequence), the position table's rows 1,024..4,095 zero (bed_train's continuation to a longer window).
     -> the state dict (fp32, CPU)."""
     from geolip.alephllm.model.alephlm import AlephLM
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)         # the bed seeds both generators; the build itself draws from the CPU's
-    model = AlephLM(craft_cfg(arm, BIRTH_CTX))
+    model = AlephLM(craft_cfg(arm, BIRTH_CTX, size=size))    # 0.1.57: at the craft's size
     sd = {k: v.detach().clone().contiguous() for k, v in model.state_dict().items()}
     pos = sd["embed.pos"]
     new = torch.zeros(pos.shape[0], CTX, pos.shape[2], dtype=pos.dtype)
@@ -197,12 +214,12 @@ def write_birth(name: str, folder: str) -> str:
     c = ALL[name]
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{name}_birth.safetensors")
-    sd = birth_state(c["arm"], c["seed"])
+    sd = birth_state(c["arm"], c["seed"], size_of(name))
     if os.path.exists(path):
         old = load_file(path)
         assert set(old) == set(sd) and all(torch.equal(old[k], sd[k]) for k in sd), f"{path} is not the birth of {c['arm']} seed {c['seed']}"
         return path
-    save_file(sd, path + ".part", metadata={"arm": c["arm"], "seed": str(c["seed"]), "birth_context": str(BIRTH_CTX), "context": str(CTX)})
+    save_file(sd, path + ".part", metadata={"arm": c["arm"], "seed": str(c["seed"]), "birth_context": str(BIRTH_CTX), "context": str(CTX), "size": size_of(name)})
     os.replace(path + ".part", path)
     return path
 
@@ -260,7 +277,7 @@ def preset(name: str, birth_file: str, micro_batch: int = 16, grad_accum: int = 
     diet, the weights-only start from the birth file at step 0. The craft's version sets its recipe fields (train_of: a v1.1 craft's
     readout on AdamW); train_over: TrainConfig fields to override (a smoke run's cadences)."""
     from geolip.alephllm.presets import Preset, TrainConfig
-    cfg = craft_cfg(ALL[name]["arm"], CTX)
+    cfg = craft_cfg(ALL[name]["arm"], CTX, size=size_of(name))
     cfg.name = name
     if diet_scale == 1.0:
         assert micro_batch * grad_accum * CTX == TOKENS_PER_STEP, f"the 2s step is {TOKENS_PER_STEP:,} tokens"
@@ -287,7 +304,7 @@ def _bench(name, birth_file, micro_batch, grad_accum, steps, warm, device) -> di
     from geolip.alephllm.model.alephlm import AlephLM
     from geolip.alephllm.train.optim import build_optimizers
     from geolip.alephllm.train.precision import autocast
-    model = AlephLM(craft_cfg(ALL[name]["arm"], CTX)).to(device)
+    model = AlephLM(craft_cfg(ALL[name]["arm"], CTX, size=size_of(name))).to(device)
     model.load_state_dict({k: v.to(device) for k, v in load_file(birth_file).items()}, strict=True)
     model.train()
     tr = train_of(name)
@@ -556,6 +573,8 @@ def gauge_scalars(rec: dict) -> dict:
 def gauge_args(name: str, init: str, out: str) -> dict:
     c = ALL[name]
     args = dict(GAUGE_ARGS, out=out, arm=c["arm"], seed=str(GAUGE_SEED), init=init, gauge_only="1")
+    if size_of(name) != "nano":
+        args["size"] = size_of(name)                     # 0.1.57: a micro body's gauge child builds the craft at its size (the tag carries it)
     if c.get("cont") in ("cf", "nt", "mx", "cp", "cpx", "cp2", "cpx2"):
         args["carry_gauge"] = "1"                        # 0.1.37: the carry arm's reads add reading with notes (its record's tag ends _carry_gauge); 0.1.49 the mixed arm; 0.1.55 the caption arms
     if c.get("cont") == "nt":
@@ -594,7 +613,7 @@ def _bed_gauge(trainer, name, out, gauge_cmd, gauge_gb):
         os.makedirs(wdir, exist_ok=True)
         save_file({k: v.detach().float().cpu().contiguous() for k, v in trainer.raw_model.state_dict().items()},
                   os.path.join(wdir, "model.safetensors"))
-        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+        json.dump(craft_cfg(c["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
         cmd = list(gauge_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.bed_train"]) + [f"--{k}={v}" for k, v in args.items()]
         env = dict(os.environ, BATTERY_GPU_FRAC=str(gpu_frac), PYTHONIOENCODING="utf-8")
         env.pop("HF_TOKEN", None)                         # the gauge reads local files only
@@ -645,7 +664,7 @@ def gauge_stored(name: str, step: int, out: str, repo: str = REPO, carry: bool =
     if not os.path.exists(os.path.join(wdir, "model.safetensors")):
         ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
         save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
-        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+        json.dump(craft_cfg(c["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
     total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
     cmd = list(gauge_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.bed_train"]) + [f"--{k}={v}" for k, v in args.items()]
     env = dict(os.environ, BATTERY_GPU_FRAC=str(min(0.6, max(0.05, gauge_gb / total))), PYTHONIOENCODING="utf-8")
@@ -679,7 +698,7 @@ def caption_stored(name: str, step: int, out: str, repo: str = REPO, token=None,
     if not os.path.exists(os.path.join(wdir, "model.safetensors")):
         ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
         save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
-        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+        json.dump(craft_cfg(c["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
     args = dict(out=out, init=init, rows=str(rows), ctx=str(CTX), seed=str(GAUGE_SEED), pack=folder)
     total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
     cmd = list(caption_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.caption_screen"]) + [f"--{k}={v}" for k, v in args.items()]
@@ -714,7 +733,7 @@ def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "s
     if not os.path.exists(os.path.join(wdir, "model.safetensors")):
         ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
         save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
-        json.dump(craft_cfg(c["arm"], CTX).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+        json.dump(craft_cfg(c["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
     args = dict(out=out, init=init, mode=mode, rows=str(rows), ctx=str(CTX), seed=str(GAUGE_SEED))
     if extra:
         args.update({k: str(v) for k, v in extra.items()})
@@ -879,7 +898,7 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
 def version_of(names) -> str:
     """The version a set of crafts belongs to: v1.1 when any is a v1.1 craft (or a continuation of one), else v1."""
     return "v1.1" if any(n in CRAFTS_V11 or n in CRAFTS_CONT or n in CRAFTS_CONT2 or n in CRAFTS_NOTE or n in CRAFTS_NOTE2 or n in CRAFTS_MIX or n in CRAFTS_MIX2 or n in CRAFTS_CAPTION or n in CRAFTS_CAPTION_CTRL or n in CRAFTS_CAPTION2 or n in CRAFTS_CAPTION2_CTRL
-                         for n in names) else "v1"
+                         or n in CRAFTS_MICRO_V11 for n in names) else "v1"
 
 
 def card_in_training(names=None) -> str:

@@ -184,10 +184,10 @@ def complete_config(craft: str, mc: dict) -> tuple:
     filled, where they came from)."""
     from geolip.alephllm.presets import AlephLMConfig
     from .bodies import craft_cfg
-    from .nano_v1 import ALL, CTX
+    from .nano_v1 import ALL, CTX, size_of
     norm = lambda v: json.loads(json.dumps(v))
     if craft in ALL:                                   # a known craft: the table is the reference and must agree with the manifest
-        base, source = craft_cfg(ALL[craft]["arm"], CTX).to_dict(), "the bodies table (bodies.craft_cfg at the v1 context)"
+        base, source = craft_cfg(ALL[craft]["arm"], CTX, size=size_of(craft)).to_dict(), "the bodies table (bodies.craft_cfg at the v1 context)"
         differ = {k: [mc[k], base[k]] for k in mc if k in base and k not in ("name", "hub_ckpt") and norm(mc[k]) != norm(base[k])}
         assert not differ, f"{craft}: the manifest's model config disagrees with {source}: {differ}"
     else:                                              # any other craft: its own values stand; only the fields it lacks are filled

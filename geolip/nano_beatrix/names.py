@@ -66,7 +66,8 @@ def run_tag(args: dict) -> str:
     return (f"{arm}_s{seed}" + ("_smoke" if smoke else "") + (f"_L{steps}" if steps > 2500 and not smoke else "")   # the short grid keeps its bare names
             + (f"_dense{args.get('records')}" if int(args.get("records", "1")) > 1 else "")
             + (f"_b{args['rotary_base']}" if "rotary_base" in args else "") + (f"_f{args['hub_rotary_frac']}" if "hub_rotary_frac" in args else "")
-            + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "") + hp
+            + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "")
+            + (f"_{args['size']}" if args.get("size", "nano") != "nano" else "") + hp      # 0.1.57: the body's size when not the nano's
             + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr + pr
             + (f"_st{args['stage']}" if args.get("stage") else                              # 0.1.22: a curriculum block names its stage
                (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else ""))   # a continued run names its starting craft
