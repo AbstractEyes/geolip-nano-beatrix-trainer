@@ -13,7 +13,7 @@ V11 = list(nano_v1.CRAFTS_V11)
 
 
 def test_the_v11_crafts_are_the_v1_crafts_under_a_new_name():
-    assert V11 == [f"{n}.1" for n in V1] and set(nano_v1.ALL) == set(V1) | set(V11) | set(nano_v1.CRAFTS_CONT) | set(nano_v1.CRAFTS_CONT2) | set(nano_v1.CRAFTS_NOTE) | set(nano_v1.CRAFTS_NOTE2) | set(nano_v1.CRAFTS_MIX) | set(nano_v1.CRAFTS_MIX2) | set(nano_v1.CRAFTS_CAPTION) | set(nano_v1.CRAFTS_CAPTION_CTRL) | set(nano_v1.CRAFTS_CAPTION2) | set(nano_v1.CRAFTS_CAPTION2_CTRL) | set(nano_v1.CRAFTS_MICRO) | set(nano_v1.CRAFTS_MICRO_V11) | set(nano_v1.CRAFTS_V12)   # 0.1.35: the continuations; 0.1.40: the frames-then-carry arm; 0.1.41: the note arms; 0.1.49: the mixed arm
+    assert V11 == [f"{n}.1" for n in V1] and set(nano_v1.ALL) == set(V1) | set(V11) | set(nano_v1.CRAFTS_CONT) | set(nano_v1.CRAFTS_CONT2) | set(nano_v1.CRAFTS_NOTE) | set(nano_v1.CRAFTS_NOTE2) | set(nano_v1.CRAFTS_MIX) | set(nano_v1.CRAFTS_MIX2) | set(nano_v1.CRAFTS_CAPTION) | set(nano_v1.CRAFTS_CAPTION_CTRL) | set(nano_v1.CRAFTS_CAPTION2) | set(nano_v1.CRAFTS_CAPTION2_CTRL) | set(nano_v1.CRAFTS_MICRO) | set(nano_v1.CRAFTS_MICRO_V11) | set(nano_v1.CRAFTS_V12) | set(nano_v1.CRAFTS_THOUGHT)   # 0.1.35: the continuations; 0.1.40: the frames-then-carry arm; 0.1.41: the note arms; 0.1.49: the mixed arm; 0.1.67: the thought arms
     for n in V1:
         a, b = nano_v1.CRAFTS[n], nano_v1.CRAFTS_V11[f"{n}.1"]
         assert {k: b[k] for k in a} == a                                         # the same body, seed, code and text

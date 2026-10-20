@@ -26,6 +26,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import zlib
 
 import numpy as np
 
@@ -60,6 +61,8 @@ def chain_slices(thoughts: list) -> int:
     return sum(max(1, -(-(7 + len(str(t.get("step", ""))) + len(str(t.get("text", "")).strip().encode("utf-8", "replace"))) // 29))
                for t in thoughts)
 PACK_ENV = "NANO_THOUGHT_PACK"
+DATASET_REPO = "AbstractPhil/thought-symbolic-image-captions"    # 0.1.67: the live dataset (public, Apache-2.0); ensure() fetches its shards
+HELD_SERIES_FRACTION = 0.1          # 0.1.67: when the dataset marks no row held, the loader holds one series in ten out of training (the reads)
 HEAD = bytes([DOC]) + bf.tag_bytes("caption", "mode") + bytes([SEP]) + b"t" + bytes([SEP])
 SLICE, ROOM = 32, 29                                   # the sliced frame: 32-byte slices, 29 bytes of body each
 DEPTH_SIZES = {"simple": (128, 256), "medium": (512,), "deep": (1024, 2048)}      # the chain frame's sizes by depth: its letter
@@ -248,17 +251,23 @@ class ThoughtPack:
 
     @classmethod
     def from_folder(cls, folder: str, split: str = "train") -> "ThoughtPack":
-        pattern = os.path.join(folder, "held", "*.jsonl") if split == "held" else os.path.join(folder, "data", "**", "*.jsonl")
+        """0.1.67: the train split = the data shards' rows that is_held() leaves in; the held split = the rows it holds out plus any
+        held/*.jsonl shard (the dataset's own held files, when it ships them). The two splits are disjoint and together are every row."""
         rows = []
-        for p in sorted(glob.glob(pattern, recursive=True)):
-            with open(p, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        rows.append(json.loads(line))
-        if split == "train":
-            rows = [r for r in rows if not ((r.get("held") or {}).get("values") or (r.get("held") or {}).get("layout"))]
-        return cls(rows, split)
+        for p in sorted(glob.glob(os.path.join(folder, "data", "**", "*.jsonl"), recursive=True)):
+            rows += _read_jsonl(p)
+        if split == "held":
+            held = [r for r in rows if is_held(r)]
+            for p in sorted(glob.glob(os.path.join(folder, "held", "*.jsonl"))):
+                held += _read_jsonl(p)
+            seen, uniq = set(), []                     # a row shipped both marked in data/ and in held/ counts once
+            for r in held:
+                k = r.get("id") or id(r)
+                if k not in seen:
+                    seen.add(k)
+                    uniq.append(r)
+            return cls(uniq, split)
+        return cls([r for r in rows if not is_held(r)], split)
 
     def row(self, i: int) -> dict:
         return self.rows[i]
@@ -278,6 +287,27 @@ class ThoughtPack:
 _PACKS: dict = {}
 
 
+def _read_jsonl(path: str) -> list:
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def is_held(row: dict) -> bool:
+    """0.1.67: a row the loader keeps out of training: the dataset's own marks (held values or a held layout), else one series in ten by a
+    stable hash of the series id (a series never splits across train and held; the pilot marks no row, so the reads need this split; the
+    stream children and the reads apply the same rule, so what the body trains on and what it is read on never overlap)."""
+    h = row.get("held") or {}
+    if h.get("values") or h.get("layout"):
+        return True
+    sid = str(row.get("series") or row.get("id") or "")
+    return zlib.crc32(sid.encode("utf-8")) % 1000 < int(round(HELD_SERIES_FRACTION * 1000))
+
+
 def load(folder: str | None = None, split: str = "train") -> ThoughtPack:
     """The pack of a split, cached per folder (the stream children read the folder from NANO_THOUGHT_PACK)."""
     folder = folder or os.environ.get(PACK_ENV, "")
@@ -286,6 +316,30 @@ def load(folder: str | None = None, split: str = "train") -> ThoughtPack:
     if key not in _PACKS:
         _PACKS[key] = ThoughtPack.from_folder(folder, split)
     return _PACKS[key]
+
+
+def ensure(folder: str, token=None, log=print) -> dict:
+    """0.1.67: the thought pack at `folder`, fetched from the Hub when its shards are absent (the dataset's data/ shards, vocab/ and card;
+    tokenless when no token: a public repo). -> the counts: rows, train, held, by depth (both splits)."""
+    if not glob.glob(os.path.join(folder, "data", "**", "*.jsonl"), recursive=True):
+        from huggingface_hub import snapshot_download
+        os.makedirs(folder, exist_ok=True)
+        snapshot_download(DATASET_REPO, repo_type="dataset", token=token if token else False, local_dir=folder,
+                          allow_patterns=["data/**", "vocab/**", "README.md"])
+    _PACKS.pop((os.path.abspath(folder), "train"), None)
+    _PACKS.pop((os.path.abspath(folder), "held"), None)
+    tr, hd = load(folder, "train"), load(folder, "held")
+    st = dict(folder=folder, repo=DATASET_REPO, rows=tr.n + hd.n, train=tr.n, held=hd.n, depths=tr.depths(), held_depths=hd.depths())
+    log(f"[thought] the pack at {folder}: {st['rows']:,} rows, {st['train']:,} train and {st['held']:,} held by series; train by depth {st['depths']}, held {st['held_depths']}")
+    return st
+
+
+def prompt_of(doc: bytes, key: str) -> bytes | None:
+    """0.1.67: a rendered document cut right after the LAST 'CUE key SEP' (the question asked at its end), so the bytes that follow are
+    the value the body has to produce; None when the key is not asked in it."""
+    mark = bytes([CUE]) + key.encode("ascii", "replace") + bytes([SEP])
+    i = doc.rfind(mark)
+    return None if i < 0 else doc[:i + len(mark)]
 
 
 # ------------------------------------------------------------------ reading a rendered document back (the tests, the reads)

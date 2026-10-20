@@ -125,6 +125,9 @@ copy read at every frame size in the table. Pollux dual, `colab/nano_v1_2.ipynb`
 Castor, the lead body, `colab/nano_v1_2_castor.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2_castor.ipynb)
 
+The thought phase on the framed Castor (0.1.67): the art thought dataset's documents as one row in ten of the framed diet, the thought reads before and after, the control without thoughts beside; `colab/nano_thought_castor.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_thought_castor.ipynb)
+
 Before and after the frames, `colab/nano_v1_1_frames.ipynb`: the 2s diet holds none of the nano bed's framed rows, so each finished
 v1.1 craft continues from its exact final state for one more phase of 1.0 billion bytes, framed three rows in four (`-fr`), beside the
 same continuation with every row plain (`-ct`); the two arms read the same text row for row, and each starts with a read of the v1.1
@@ -181,6 +184,8 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.67 (2026-10-20): THE THOUGHT PHASE AND THE THOUGHT READS. `nano-castor-v1.2-th` (and the Pollux twin): the framed body's end state continued through one phase of a billion bytes of the plain continuation stream under the framed diet WITH the thought kind (`framed_diet.FORMS['p50t']`: the art thought dataset's documents in the frame grammar, one row in ten); `-tc` its control, the same phase under the diet without thoughts. The thought pack comes from the Hub (`thought_frames.ensure`: the dataset's shards); the loader holds one series in ten out of training when the dataset marks no row held (`thought_frames.is_held`, the same rule in the stream children and the reads). `thought_screen.py`: THE THOUGHT READS on held rows in three layouts (record, chain against the frameless layout, unknown, the sealed layout's travel read), the prior and the trained rows' reads beside them, every answer generated to END; `nano_v1.thought_live` at every boundary of a thought-phase craft (both arms), `thought_stored` for the baseline on the source; `thought_table`, `thought_marks`, `thought_marks_table`. THE EXPERIMENTS REPO: `nano_v1.REPO_EXPERIMENTS` (AbstractPhil/alephllm-nano-beatrix-training) takes the nano training experiments (`repo_of`); a continuation may start from another repo (`source_repo`); `control_of` honours a craft's named control. `colab/nano_thought_castor.ipynb` (the G4 named in its metadata). 322 tests.
 
 0.1.66 (2026-10-19): THE FRAMED CASTOR, and every frame size in the table. `nano-castor-v1.2` (and its `-p25` / `-p75` doses): the Castor body from the same birth as `nano-castor-v1` and v1.1 (castor-both seed 3), the v1.1 recipe, the framed diet at the same dose as Pollux's v1.2, so the pair compares bodies and nothing else; `nano_v1.control_of(name)` names a framed craft's plain twin (`nano-castor-v1.1`, `nano-pollux-dual-v1.1`). The boundary row's reads now carry the copy whole at every frame size (32, 128, 256, 512 beside 1,024) and `v12_table` shows them, after the v1.2 run's table collapsed the sizes into one number (the 1,024-byte frame alone fell over the anneals while 32 to 512 held). `colab/nano_v1_2_castor.ipynb`: the v1.2 notebook for the Castor twin. 317 tests.
 

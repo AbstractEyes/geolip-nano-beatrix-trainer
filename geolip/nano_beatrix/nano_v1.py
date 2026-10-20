@@ -62,6 +62,7 @@ from .frames_data import CAPTION2_CTRL_MIX, CAPTION2_MIX, CAPTION_CTRL_MIX, CAPT
 from .names import run_tag
 
 REPO = "AbstractPhil/alephllm-nano-castor-pollux"
+REPO_EXPERIMENTS = "AbstractPhil/alephllm-nano-beatrix-training"   # 0.1.67 (Phil 2026-10-20): the nano training EXPERIMENTS ship here, each craft under its own name; REPO holds the released crafts and the continuations already there
 CTX, BIRTH_CTX = 4096, 1024
 TOKENS_PER_STEP = 262_144
 CRAFTS = {
@@ -95,7 +96,8 @@ CONT_PHASE = {"fr": ("frames_continuation", FRAMES_MIX), "ct": ("control_continu
               "cp": ("caption_continuation", CAPTION_MIX),   # 0.1.55: the caption phase (caption windows from the pack and carry rows)
               "cpx": ("caption_control_continuation", CAPTION_CTRL_MIX),   # 0.1.55: its control (every frame from another document)
               "cp2": ("caption2_continuation", CAPTION2_MIX),             # 0.1.56: the caption phase with the frame withheld in half the documents
-              "cpx2": ("caption2_control_continuation", CAPTION2_CTRL_MIX)}   # 0.1.56: its control (the swap under the frameless questions)
+              "cpx2": ("caption2_control_continuation", CAPTION2_CTRL_MIX),   # 0.1.56: its control (the swap under the frameless questions)
+              "th": ("thought_continuation", CONTROL_MIX)}   # 0.1.67: the thought phase: the plain continuation stream under the framed diet, with or without the thought kind (the craft's form)
 # 0.1.49: a continuation phase's bytes when they differ from CONT_TOKENS: the mixed phase runs 1.5 billion so that its carry rows (two
 # framed rows in three) total the carry arm's 0.75 billion, the far habit's dose kept, while its frames rows add 0.375 billion.
 # 0.1.55: the caption phase runs the mixed phase's 1.5 billion (the same dose on the mixed arm's end: about half the bytes caption windows).
@@ -158,8 +160,25 @@ CRAFTS_V12 = {"nano-pollux-dual-v1.2": dict(CRAFTS["nano-pollux-dual-v1"], train
               "nano-castor-v1.2": dict(CRAFTS["nano-castor-v1"], train=V11_TRAIN, tag="v12c", framed="p50"),
               "nano-castor-v1.2-p25": dict(CRAFTS["nano-castor-v1"], train=V11_TRAIN, tag="v12cp25", framed="p25"),
               "nano-castor-v1.2-p75": dict(CRAFTS["nano-castor-v1"], train=V11_TRAIN, tag="v12cp75", framed="p75")}
+# 0.1.67: THE THOUGHT ARMS (Phil 2026-10-20 10:4x: "Set up the experiment to train castor, lets see if the thought process takes";
+# plans/2026-10-20_thought_castor_run_plan.md). -th continues a framed body's end state (its fp32 weights and both optimizers, from REPO)
+# through one phase of the plain continuation stream under the framed diet WITH the thought kind (framed_diet.FORMS['p50t']: the art thought
+# dataset's documents in the frame grammar beside the carry, frames, caption and note rows; the pack from thought_frames.ensure); -tc is its
+# control: the same phase, the same start, the diet without thoughts (p50). Both ship to REPO_EXPERIMENTS (experiments, not releases); the
+# thought reads (thought_screen) run on both at the boundary and on the source before the phase (the baseline).
+CRAFTS_THOUGHT = {}
+for _b in ("nano-castor", "nano-pollux-dual"):
+    CRAFTS_THOUGHT[f"{_b}-v1.2-th"] = dict(CRAFTS[f"{_b}-v1"], train=V11_TRAIN, tag="v12th", source=f"{_b}-v1.2", source_repo=REPO, cont="th",
+                                           framed="p50t", repo=REPO_EXPERIMENTS, control=f"{_b}-v1.2-tc")
+    CRAFTS_THOUGHT[f"{_b}-v1.2-tc"] = dict(CRAFTS[f"{_b}-v1"], train=V11_TRAIN, tag="v12tc", source=f"{_b}-v1.2", source_repo=REPO, cont="th",
+                                           framed="p50", repo=REPO_EXPERIMENTS)
 ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2, **CRAFTS_CAPTION,
-       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL, **CRAFTS_MICRO, **CRAFTS_MICRO_V11, **CRAFTS_V12}
+       **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL, **CRAFTS_MICRO, **CRAFTS_MICRO_V11, **CRAFTS_V12, **CRAFTS_THOUGHT}
+
+
+def repo_of(name: str) -> str:
+    """0.1.67: the Hub repo a craft ships to: REPO_EXPERIMENTS for the experiment crafts (their 'repo'), REPO for the rest."""
+    return ALL[name].get("repo") or REPO
 
 
 def train_of(name: str) -> dict:
@@ -167,7 +186,7 @@ def train_of(name: str) -> dict:
     return dict(ALL[name].get("train") or {})
 
 
-ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed", "cp": "caption", "cpx": "caption control", "cp2": "caption, frameless questions", "cpx2": "caption control, frameless questions"}   # 0.1.43: a continuation kind in plain words; 0.1.49 mixed; 0.1.55 caption
+ARM_TEXT = {"fr": "frames", "ct": "control", "cf": "carry", "nt": "notes", "mx": "mixed", "cp": "caption", "cpx": "caption control", "cp2": "caption, frameless questions", "cpx2": "caption control, frameless questions", "th": "thoughts"}   # 0.1.43: a continuation kind in plain words; 0.1.49 mixed; 0.1.55 caption; 0.1.67 thoughts
 
 
 def body_of(name: str) -> str:
@@ -190,7 +209,10 @@ def framed_of(name: str) -> str | None:
 def control_of(name: str) -> str | None:
     """0.1.66: the plain twin a framed-diet craft is read against (the same birth, recipe, phases and bytes): the v1.1 craft of the same
     body (nano-pollux-dual-v1.2 and its doses -> nano-pollux-dual-v1.1; nano-castor-v1.2 -> nano-castor-v1.1); None for a plain craft."""
-    if not ALL[name].get("framed"):
+    c = ALL[name]
+    if c.get("control"):                                  # 0.1.67: a craft that names its control (the thought arm's -tc twin)
+        return c["control"]
+    if not c.get("framed") or c.get("cont"):
         return None
     twin = name.split("-v1.2")[0] + "-v1.1"
     return twin if twin in ALL else None
@@ -296,7 +318,7 @@ def cont_init(name: str, tokens_per_step: int, scale: float = 1.0, repo: str = R
     spec = dict(step=steps, tokens_per_step=tokens_per_step, source=c["source"])
     if cont_from:
         return dict(spec, payload=os.path.join(cont_from, c["source"], *rel.split("/")))
-    return dict(spec, payload=rel, repo=repo, prefix=c["source"])
+    return dict(spec, payload=rel, repo=c.get("source_repo") or repo, prefix=c["source"])   # 0.1.67: the source may live in another repo
 
 
 def preset(name: str, birth_file: str, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO, diet_scale: float = 1.0,
@@ -780,6 +802,76 @@ def caption_live(trainer, name: str, out: str, folder: str, gauge_gb: float = 10
         shutil.rmtree(wdir, ignore_errors=True)
 
 
+def _thought_child(name: str, step: int, out: str, folder: str, rows: int, gauge_gb: float, thought_cmd=None) -> dict:
+    """0.1.67: thought_screen.py as a child on the weights at <out>/bed/<init> (present), the thought pack at `folder`. -> the record."""
+    init = gauge_init(name, step)
+    bed = os.path.join(out, "bed")
+    rec_path = os.path.join(bed, f"thought_{init}.json")
+    args = dict(out=out, init=init, rows=str(rows), ctx=str(CTX), seed=str(GAUGE_SEED), pack=folder)
+    total = torch.cuda.get_device_properties(0).total_memory / 2 ** 30 if torch.cuda.is_available() else gauge_gb
+    cmd = list(thought_cmd or [sys.executable, "-X", "utf8", "-m", "geolip.nano_beatrix.thought_screen"]) + [f"--{k}={v}" for k, v in args.items()]
+    env = dict(os.environ, BATTERY_GPU_FRAC=str(min(0.6, max(0.05, gauge_gb / total))), PYTHONIOENCODING="utf-8")
+    env.pop("HF_TOKEN", None)
+    os.makedirs(os.path.join(bed, "gauge_logs"), exist_ok=True)
+    log_path = os.path.join(bed, "gauge_logs", f"{init}_thought.log")
+    with open(log_path, "w", encoding="utf-8") as lf:
+        rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, timeout=7200).returncode
+    assert rc == 0 and os.path.exists(rec_path), f"the thought read of {name} at {step:,} failed (exit {rc}); its log: {log_path}"
+    return json.load(open(rec_path, encoding="utf-8"))
+
+
+def thought_live(trainer, name: str, out: str, folder: str, gauge_gb: float = 10.0, rows: int = 192, thought_cmd=None) -> dict | None:
+    """0.1.67: THE THOUGHT READS AT A BOUNDARY on the trainer's weights now (saved to <out>/bed/<init> for the child, removed after): the
+    record's headline for the boundary row (thought_screen.headline_of). A failed read is logged and skipped. -> the headline dict or None."""
+    from safetensors.torch import save_file
+    init = gauge_init(name, trainer.step)
+    wdir = os.path.join(out, "bed", init)
+    try:
+        os.makedirs(wdir, exist_ok=True)
+        if not os.path.exists(os.path.join(wdir, "model.safetensors")):
+            save_file({k: v.detach().float().cpu().contiguous() for k, v in trainer.raw_model.state_dict().items()},
+                      os.path.join(wdir, "model.safetensors"))
+            json.dump(craft_cfg(ALL[name]["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+        rec = _thought_child(name, trainer.step, out, folder, rows, gauge_gb, thought_cmd)
+        h = dict(rec["headline"], seconds=rec.get("seconds"), n=rec.get("n"))
+        print(f"[v1] {name}: the thought reads at step {trainer.step:,}: record {h['record_A']}, chain {h['chain_A']} (frameless {h['chain_C']}), "
+              f"unknown {h['unknown_A']}, sealed layout record {h['record_D']}; the prior record {h['prior_record']}; {h['seconds']} s", flush=True)
+        return h
+    except Exception as e:  # noqa: BLE001
+        print(f"[v1] {name}: the thought reads at step {trainer.step:,} raised {type(e).__name__}: {e}; skipped", flush=True)
+        return None
+    finally:
+        shutil.rmtree(wdir, ignore_errors=True)
+
+
+def thought_stored(name: str, step: int, out: str, repo: str = REPO, token=None, rows: int = 192, gauge_gb: float = 10.0,
+                   pack: str | None = None, thought_cmd=None) -> dict:
+    """0.1.67: THE THOUGHT READS on a stored craft (the weights pulled from `repo` to <out>/bed/<init> as caption_stored pulls them; the
+    thought pack at `pack` or <out>/thought_pack, fetched when absent): the baseline before a thought phase, or any craft's reads. A record
+    already on disk is returned as it is. -> the full record (thought_<init>.json)."""
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file, save_file
+    from . import thought_frames as TF
+    c = ALL[name]
+    init = gauge_init(name, step)
+    bed = os.path.join(out, "bed")
+    wdir = os.path.join(bed, init)
+    rec_path = os.path.join(bed, f"thought_{init}.json")
+    if os.path.exists(rec_path):
+        return json.load(open(rec_path, encoding="utf-8"))
+    folder = pack or os.path.join(out, "thought_pack")
+    TF.ensure(folder, token)
+    os.makedirs(wdir, exist_ok=True)
+    if not os.path.exists(os.path.join(wdir, "model.safetensors")):
+        ck = hf_hub_download(repo, f"{name}/checkpoints/step_{step:08d}.safetensors", token=token if token else False)
+        save_file({k: v.float().contiguous() for k, v in load_file(ck).items()}, os.path.join(wdir, "model.safetensors"))
+        json.dump(craft_cfg(c["arm"], CTX, size=size_of(name)).to_dict(), open(os.path.join(wdir, "config.json"), "w", encoding="utf-8"), indent=1)
+    try:
+        return _thought_child(name, step, out, folder, rows, gauge_gb, thought_cmd)
+    finally:
+        shutil.rmtree(wdir, ignore_errors=True)
+
+
 def gate_stored(name: str, step: int, out: str, repo: str = REPO, mode: str = "self", token=None, rows: int = 192, gauge_gb: float = 10.0,
                 gate_cmd=None, extra: dict | None = None) -> dict:
     """0.1.51: THE GATE SCREEN on a STORED craft (gate_screen.py as a child, the weights pulled to <out>/bed/<init> as gauge_stored pulls
@@ -848,7 +940,8 @@ def unrecorded_boundary(trainer, rows: list) -> tuple:
 def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16, grad_accum: int = 4, repo: str = REPO,
         gauge_every: int = GAUGE_EVERY, gauge_cmd=None, max_hours: float | None = None, process_streams: bool = True,
         diet_scale: float = 1.0, device=None, gauge_gb: float = 10.0, cont_from: str | None = None, frames_corpus: str | None = None,
-        frames_corpus_bytes: float = 1.0e9, caption_pack: str | None = None, caption_pack_rows: int | None = None, **train_over) -> dict:
+        frames_corpus_bytes: float = 1.0e9, caption_pack: str | None = None, caption_pack_rows: int | None = None,
+        thought_pack: str | None = None, **train_over) -> dict:
     """Train the v1 crafts through the diet, round-robin by phase. out: the local folder (births, runs, the bed's gauge folder);
     hf_token: None = local only (no hub record, no uploads); max_hours: this session's wall budget (a stop between or inside phases is
     a pause: the next call resumes from the hub); gauge_gb: the bed gauge child's card budget. -> {craft: [one entry a boundary: phase,
@@ -870,6 +963,12 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         from . import caption_pack as cp
         cp.ensure(pack_folder, hf_token, caption_pack_rows, log=lambda *a: print("[v1]", *a, flush=True))
         os.environ[cp.PACK_ENV] = pack_folder
+    thought_folder = None
+    if any(ALL[n].get("cont") == "th" for n in names):   # 0.1.67: the thought pack for the thought kind's rows and the thought reads (both arms)
+        from . import thought_frames as TF
+        thought_folder = thought_pack or os.path.join(out, "thought_pack")
+        TF.ensure(thought_folder, hf_token, log=lambda *a: print("[v1]", *a, flush=True))
+        os.environ[TF.PACK_ENV] = thought_folder
     hist_p = os.path.join(out, "v1_boundaries.json")
     hist = json.load(open(hist_p, encoding="utf-8")) if os.path.exists(hist_p) else {n: [] for n in names}
     gauged = {n: set() for n in names}
@@ -891,8 +990,10 @@ def run(out: str, hf_token: str | None = None, names=None, micro_batch: int = 16
         else:
             rec = None
         cap = caption_live(t, n, out, pack_folder, gauge_gb) if ALL[n].get("framed") else None   # 0.1.58: the caption read at every boundary
+        th = thought_live(t, n, out, thought_folder, gauge_gb) if thought_folder and ALL[n].get("cont") == "th" else None   # 0.1.67
         ledger = (getattr(t, "_last_eval", {}) or {}).get("ledger") or {}
         hist.setdefault(n, []).append(dict(phase=done, step=t.step, tokens=t.manifest.tokens_seen, val_bpb=ledger.get("bpb_full"), caption=cap,
+                                           thought=th,
                                            bed=None if rec is None else {k: v for k, v in gauge_scalars(rec).items()
                                                                          if k in HEADLINE}))
         json.dump(hist, open(hist_p, "w", encoding="utf-8"), indent=1)
@@ -1283,6 +1384,76 @@ def v12_table(rows: list, ctrl: list | None = None) -> str:
                    f"{f(_read(r, 'bed/carry/full_value'))} | {f(_read(r, 'bed/note_self/full_value'))} | {f(cap.get('extraction'))} | "
                    f"{f(cap.get('prior'))} | {f(cap.get('over_prior'))} |")
     return "\n".join(out)
+
+
+def _f3(v):
+    return "-" if v is None else f"{v:.3f}"
+
+
+def thought_table(rows_by_craft: dict, before: dict | None = None, before_name: str = "the source before the phase") -> str:
+    """0.1.67: the thought reads of the boundary rows, one line a boundary, the source's reads before the phase first. rows_by_craft:
+    {craft: its boundary rows}; before: a thought_screen headline. -> markdown."""
+    L = ["| craft | phase | step | bits | record A | chain A | chain C | unknown A | false unk. A | record D | chain D | prior record / chain | trained record A |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    def line(craft, phase, step, bpb, h):
+        h = h or {}
+        L.append(f"| {craft} | {phase} | {step:,} | {_f3(bpb) if bpb is None else f'{bpb:.4f}'} | {_f3(h.get('record_A'))} | {_f3(h.get('chain_A'))} | {_f3(h.get('chain_C'))} | "
+                 f"{_f3(h.get('unknown_A'))} | {_f3(h.get('false_unknown_A'))} | {_f3(h.get('record_D'))} | {_f3(h.get('chain_D'))} | "
+                 f"{_f3(h.get('prior_record'))} / {_f3(h.get('prior_chain'))} | {_f3(h.get('trained_record_A'))} |")
+    if before:
+        line(before_name, "before", int(before.get("step") or 0), before.get("val_bpb"), before)
+    for craft, rows in rows_by_craft.items():
+        for r in rows or []:
+            if r.get("thought") is not None:
+                line(craft, r.get("phase"), int(r.get("step") or 0), r.get("val_bpb"), r.get("thought"))
+    return "\n".join(L)
+
+
+def thought_marks(row_th: dict | None, row_tc: dict | None, before: dict | None = None) -> dict:
+    """0.1.67: the thought phase's marks (plans/2026-10-20_thought_castor_run_plan.md section 5) from the thought arm's boundary row, its
+    control's row and the source's reads before the phase. -> {mark: dict(value, bar, met)}; a None value = pending."""
+    h = (row_th or {}).get("thought") or {}
+    hc = (row_tc or {}).get("thought") or {}
+    b = before or {}
+
+    def d(x, y):
+        return None if x is None or y is None else x - y
+
+    def ge(x, bar):
+        return None if x is None else bool(x >= bar - 1e-12)
+
+    def le(x, bar):
+        return None if x is None else bool(x <= bar + 1e-12)
+
+    copy_th = ((row_th or {}).get("bed") or {}).get("bed/frame/copy_whole")
+    copy_tc = ((row_tc or {}).get("bed") or {}).get("bed/frame/copy_whole")
+    m = {}
+    m["RECORD: the record read in layout A at or above 0.80"] = dict(value=h.get("record_A"), bar=0.80, met=ge(h.get("record_A"), 0.80))
+    m["RECORD over the prior by 0.20 or more"] = dict(value=d(h.get("record_A"), h.get("prior_record")), bar=0.20, met=ge(d(h.get("record_A"), h.get("prior_record")), 0.20))
+    m["CHAIN: layout A over layout C by 0.10 or more (the thoughts' share)"] = dict(value=d(h.get("chain_A"), h.get("chain_C")), bar=0.10, met=ge(d(h.get("chain_A"), h.get("chain_C")), 0.10))
+    m["CHAIN over the prior by 0.10 or more"] = dict(value=d(h.get("chain_A"), h.get("prior_chain")), bar=0.10, met=ge(d(h.get("chain_A"), h.get("prior_chain")), 0.10))
+    m["UNKNOWN: the unknown questions answered unknown at or above 0.50"] = dict(value=h.get("unknown_A"), bar=0.50, met=ge(h.get("unknown_A"), 0.50))
+    m["UNKNOWN: false unknowns on record questions at most 0.10"] = dict(value=h.get("false_unknown_A"), bar=0.10, met=le(h.get("false_unknown_A"), 0.10))
+    m["TRAVEL: the sealed layout D within 0.10 of A on records"] = dict(value=d(h.get("record_A"), h.get("record_D")), bar=0.10, met=le(d(h.get("record_A"), h.get("record_D")), 0.10))
+    m["TRAVEL: the sealed layout D within 0.10 of A on chains"] = dict(value=d(h.get("chain_A"), h.get("chain_D")), bar=0.10, met=le(d(h.get("chain_A"), h.get("chain_D")), 0.10))
+    m["TEXT KEPT: the held-out bits within 0.02 of the control's"] = dict(value=d((row_th or {}).get("val_bpb"), (row_tc or {}).get("val_bpb")), bar=0.02,
+                                                                        met=le(d((row_th or {}).get("val_bpb"), (row_tc or {}).get("val_bpb")), 0.02))
+    m["FRAMES KEPT: the copy whole within 0.10 of the control's"] = dict(value=d(copy_tc, copy_th), bar=0.10, met=le(d(copy_tc, copy_th), 0.10))
+    m["RECALL: trained rows over held rows by at most 0.20 on records"] = dict(value=d(h.get("trained_record_A"), h.get("record_A")), bar=0.20,
+                                                                               met=le(d(h.get("trained_record_A"), h.get("record_A")), 0.20))
+    m["the control's chain read in A (what frame skill alone gives)"] = dict(value=hc.get("chain_A"), bar=None, met=None)
+    m["the gain over the source: record A"] = dict(value=d(h.get("record_A"), b.get("record_A")), bar=None, met=None)
+    m["the gain over the source: chain A"] = dict(value=d(h.get("chain_A"), b.get("chain_A")), bar=None, met=None)
+    return m
+
+
+def thought_marks_table(m: dict) -> str:
+    """0.1.67: the marks as markdown: value, bar, MET / MISSED / pending (the informational lines carry no bar)."""
+    L = ["| mark | value | bar | standing |", "|---|---|---|---|"]
+    for k, v in m.items():
+        standing = "" if v["bar"] is None else ("pending" if v["met"] is None else ("MET" if v["met"] else "MISSED"))
+        L.append(f"| {k} | {_f3(v['value'])} | {'' if v['bar'] is None else v['bar']} | {standing} |")
+    return "\n".join(L)
 
 
 def v12_marks_table(m: dict) -> str:

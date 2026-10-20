@@ -114,7 +114,8 @@ def test_the_four_layouts_and_the_question():
         TF.render(rng, medium, "E")
 
 
-def test_the_window_the_pack_and_the_framed_kind(tmp_path, pack_dir):  # noqa: F811
+def test_the_window_the_pack_and_the_framed_kind(tmp_path, pack_dir, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(TF, "HELD_SERIES_FRACTION", 0.0)      # 0.1.67: the series rule off here; test_thought_screen covers it
     simple, medium, deep = _rows()
     held_row = copy.deepcopy(medium)
     held_row.update(id="art-000900", series="s-00900")
