@@ -14,7 +14,8 @@ frame), medium (subjects, relations, form, a definition, the behavior shown; 6-1
 whole composition; 14-30 records, 6-10 thoughts, 5-8 questions incl. one unknown and one needing the chain; 1,024-2,048).
 
 Command line: --vocab=<folder> writes vocab/trie.json and vocab/held.json; --check=<rows.jsonl> [--held=vocab/held.json] prints the
-problems by rule and the depth counts; --prompt=1 --depth=medium --domain=photograph [--series=1 --split=held] prints the prompt for
+problems by rule and the depth counts; --check-seeds=<seeds.jsonl> [--held=...] the same for a seed file (the seed contract, 0.1.64);
+--prompt=1 --depth=medium --domain=photograph [--series=1 --split=held] prints the prompt for
 one call; --sample=N [--depth= --series=1 --seed=] prints drawn specs (the facts; the model adds mood, intent, story) as JSON lines;
 --doc=<path> writes the prompt document (docs/thought_generation_prompt.md in this repo)."""
 from __future__ import annotations
@@ -29,7 +30,7 @@ import numpy as np
 
 from .caption_pack import COLOURS, EXPRESSIONS
 
-VERSION = "0.1.62"
+VERSION = "0.1.64"
 REPO = "AbstractPhil/thought-symbolic-image-captions"
 DEPTHS = ("simple", "medium", "deep")
 DOMAINS = ("photograph", "painting", "illustration", "sculpture", "design")
@@ -334,6 +335,153 @@ def _ascii(s: str) -> bool:
     return all(32 <= c < 127 for c in b)
 
 
+def record_problems(spec: dict) -> list:
+    """Rule 2 on a spec's records (a row's or a seed's): the systems and keys from the trie, the relations from the list, every value
+    plain lower-case ASCII within 20 bytes and 27 with its key, closed-list keys from their lists. -> [(2, message)]."""
+    p = []
+    if not isinstance(spec, dict):
+        return [(2, f"the spec is not an object: {type(spec).__name__}")]
+    known = set(keys())
+    for system, attrs in spec.items():
+        if system not in SYSTEMS and system != "relation":
+            p.append((2, f"unknown system {system!r}"))
+        elif system == "relation":
+            for r in attrs or []:
+                if not isinstance(r, dict) or not all(k in r for k in ("a", "rel", "b")):
+                    p.append((2, f"a relation needs a, rel, b: {r!r}"))
+                elif r["rel"] not in RELATIONS:
+                    p.append((2, f"relation {r['rel']!r} is not in the list"))
+        elif not isinstance(attrs, dict):
+            p.append((2, f"system {system!r} is not an object of attributes"))
+        else:
+            for a in attrs:
+                if f"{system} {a}" not in known:
+                    p.append((2, f"unknown key {system + ' ' + a!r}"))
+    for k, v in records(spec):
+        if not isinstance(v, str) or not v or v != v.strip() or v != v.lower() or not _ascii(v):
+            p.append((2, f"value of {k!r} is not plain lower-case ASCII: {v!r}"))
+        elif len(v.encode("ascii")) > VAL_MAX:
+            p.append((2, f"value of {k!r} is {len(v)} bytes, over {VAL_MAX}: {v!r}"))
+        elif len(k) + len(v) > REC_MAX:
+            p.append((2, f"record {k!r} = {v!r} is {len(k) + len(v)} bytes of key and value, over {REC_MAX} (it would not fit a frame slice)"))
+        if len(k.encode("ascii", "replace")) > KEY_MAX:
+            p.append((2, f"key {k!r} is over {KEY_MAX} bytes"))
+        lst = KEY_LIST.get(k)
+        if lst and v not in VOCAB[lst] and v != "none":
+            p.append((2, f"value of {k!r} is not in the closed list {lst!r}: {v!r}"))
+    return p
+
+
+# ------------------------------------------------------------------ THE SEED CONTRACT (the plan's section 5; 0.1.64)
+# A seed is the FACTS of a hidden image drawn from a licensed dataset for the generating model to think from: the spec that
+# prompt(seed_spec=...) takes, with its provenance. Around the spec: seed_id (<source>:<id>), domain, genre, hint (optional free text from
+# the source, at most HINT_MAX bytes, where the license allows derived text; the model may add records from it within the depth's counts
+# and never contradicts the spec), source (dataset, id, license, url), held (true when the spec uses a sealed value: such seeds feed the
+# held split only). Layout in the Hub repo: seeds/<source>/<source>-NNNNN.jsonl. The dataset's own license is permissive (Apache-2.0),
+# so only permissively licensed sources enter, each attributed and cited (LICENSES.md, the card's citations).
+SEED_FIELDS = ("seed_id", "domain", "genre", "spec", "source", "held")
+INTERPRETIVE = ("mood", "intent", "story")                       # the generating model's systems: a seed carries facts only
+HINT_MAX = 600
+DATASET_LICENSE = "Apache-2.0"
+PERMISSIVE = ("apache-2.0", "mit", "cc0-1.0", "cc-by-4.0", "odc-by-1.0", "bsd-3-clause", "bsd-2-clause", "pddl-1.0", "cdla-permissive-2.0",
+              "cc-by-3.0", "cc-by-2.0", "public domain")
+
+
+def license_key(s) -> str:
+    """A license name in one spelling: lower case, spaces and underscores as hyphens, 'cc by 4.0' / 'CC-BY-4.0' / 'cc_by_4' alike."""
+    t = re.sub(r"[\s_]+", "-", str(s or "").strip().lower())
+    t = re.sub(r"-+", "-", t)
+    t = {"cc0": "cc0-1.0", "cc-by": "cc-by-4.0", "cc-by-4": "cc-by-4.0", "apache": "apache-2.0", "apache-2": "apache-2.0", "apache-2.0-license": "apache-2.0",
+         "odc-by": "odc-by-1.0", "pd": "public domain", "public-domain": "public domain", "bsd": "bsd-3-clause"}.get(t, t)
+    return t
+
+
+def permissive(s) -> bool:
+    return license_key(s) in PERMISSIVE
+
+
+def validate_seed(seed: dict, held: dict | None = None) -> list:
+    """The seed contract on one seed. -> [(rule, message)], empty when the seed passes. held: the seals; the seed's held flag must say
+    whether its spec uses a sealed value (sealed_used)."""
+    p = []
+    if not isinstance(seed, dict):
+        return [(0, "a seed is a JSON object")]
+    for f in SEED_FIELDS:
+        if f not in seed:
+            p.append((0, f"missing field {f!r}"))
+    if p:
+        return p
+    sid = str(seed["seed_id"])
+    if ":" not in sid or not sid.split(":", 1)[0] or not sid.split(":", 1)[1]:
+        p.append((0, f"seed_id {sid!r} is not <source>:<id>"))
+    if seed["domain"] not in DOMAINS:
+        p.append((0, f"domain {seed['domain']!r} is not one of {DOMAINS}"))
+    if not str(seed.get("genre", "")).strip():
+        p.append((0, "genre is empty"))
+    spec = seed["spec"]
+    p += record_problems(spec)
+    if isinstance(spec, dict):
+        for s in INTERPRETIVE:
+            if s in spec:
+                p.append((2, f"a seed carries facts only: {s!r} is the generating model's to add"))
+        n = n_records(spec)
+        if n < 1:
+            p.append((3, "a seed holds at least one record"))
+        elif n > COUNTS["deep"]["records"][1]:
+            p.append((3, f"a seed holds {n} records, more than the deep depth's {COUNTS['deep']['records'][1]}"))
+    hint = seed.get("hint")
+    if hint is not None:
+        if not isinstance(hint, str):
+            p.append((0, "hint is not text"))
+        elif len(hint.encode("utf-8")) > HINT_MAX:
+            p.append((0, f"hint is {len(hint.encode('utf-8'))} bytes, over {HINT_MAX}"))
+        elif any(b in hint.lower() for b in BANNED):
+            p.append((1, "the hint speaks of the image as seen"))
+    src = seed["source"]
+    if not isinstance(src, dict) or not all(src.get(k) for k in ("dataset", "id", "license")):
+        p.append((8, "source needs dataset, id and license"))
+    elif not permissive(src["license"]):
+        p.append((8, f"source license {src['license']!r} is not a permissive one ({', '.join(PERMISSIVE[:5])}, ...): the dataset is {DATASET_LICENSE}"))
+    elif sid.split(":", 1)[0] != str(src["dataset"]):
+        p.append((0, f"seed_id {sid!r} does not name its source dataset {src['dataset']!r}"))
+    if not isinstance(seed["held"], bool):
+        p.append((7, "held is true or false"))
+    elif held is not None and isinstance(spec, dict):
+        used = sorted({v for _, v in sealed_used(records(spec), held)})
+        if seed["held"] and not used:
+            p.append((7, "held is true but the spec uses no sealed value"))
+        if not seed["held"] and used:
+            p.append((7, f"held is false but the spec uses sealed values: {used}"))
+    return p
+
+
+def check_seed_file(path: str, held: dict | None = None) -> dict:
+    """Every seed of a JSON Lines file through validate_seed. -> dict(seeds, ok, unparsed, by_rule, by_domain, held, problems)."""
+    seeds, problems, by_rule, by_dom, bad, unparsed, n_held = 0, [], Counter(), Counter(), 0, 0, 0
+    with open(path, encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                seed = json.loads(line)
+            except json.JSONDecodeError as e:
+                problems.append((n, 0, f"not JSON: {e}"))
+                by_rule[0] += 1
+                unparsed += 1
+                continue
+            seeds += 1
+            by_dom[seed.get("domain") if isinstance(seed, dict) else None] += 1
+            n_held += 1 if isinstance(seed, dict) and seed.get("held") is True else 0
+            ps = validate_seed(seed, held)
+            if ps:
+                bad += 1
+            for rule, msg in ps:
+                problems.append((n, rule, msg))
+                by_rule[rule] += 1
+    return dict(seeds=seeds, ok=seeds - bad, unparsed=unparsed, by_rule=dict(sorted(by_rule.items())), by_domain=dict(by_dom), held=n_held, problems=problems)
+
+
 def validate(row: dict, held: dict | None = None) -> list:
     """The plan's rules on one row. -> [(rule, message)], empty when the row passes. held: the seals; a training row (held.values empty)
     must not use a sealed value, a held row must use at least one."""
@@ -351,32 +499,7 @@ def validate(row: dict, held: dict | None = None) -> list:
     spec = row["spec"]
     # rule 2: keys and values
     recs = records(spec)
-    known = set(keys())
-    for system, attrs in spec.items():
-        if system not in SYSTEMS and system != "relation":
-            p.append((2, f"unknown system {system!r}"))
-        elif system == "relation":
-            for r in attrs or []:
-                if not isinstance(r, dict) or not all(k in r for k in ("a", "rel", "b")):
-                    p.append((2, f"a relation needs a, rel, b: {r!r}"))
-                elif r["rel"] not in RELATIONS:
-                    p.append((2, f"relation {r['rel']!r} is not in the list"))
-        else:
-            for a in attrs:
-                if f"{system} {a}" not in known:
-                    p.append((2, f"unknown key {system + ' ' + a!r}"))
-    for k, v in recs:
-        if not isinstance(v, str) or not v or v != v.strip() or v != v.lower() or not _ascii(v):
-            p.append((2, f"value of {k!r} is not plain lower-case ASCII: {v!r}"))
-        elif len(v.encode("ascii")) > VAL_MAX:
-            p.append((2, f"value of {k!r} is {len(v)} bytes, over {VAL_MAX}: {v!r}"))
-        elif len(k) + len(v) > REC_MAX:
-            p.append((2, f"record {k!r} = {v!r} is {len(k) + len(v)} bytes of key and value, over {REC_MAX} (it would not fit a frame slice)"))
-        if len(k.encode("ascii", "replace")) > KEY_MAX:
-            p.append((2, f"key {k!r} is over {KEY_MAX} bytes"))
-        lst = KEY_LIST.get(k)
-        if lst and v not in VOCAB[lst] and v != "none":
-            p.append((2, f"value of {k!r} is not in the closed list {lst!r}: {v!r}"))
+    p += record_problems(spec)
     # rule 3: the counts
     c = COUNTS[depth]
     nr, nt, nq = n_records(spec), len(row["thoughts"]), len(row["questions"])
@@ -526,7 +649,12 @@ EXAMPLE = {
                   {"key": "scene layout", "value": "single subject", "needs": "chain"},
                   {"key": "wear accessory", "value": "unknown", "needs": "unknown"}],
     "held": {"layout": None, "wordings": False, "values": []},
-    "source": {"kind": "synthetic", "model": "sonnet", "seed_dataset": None, "license": "CC BY 4.0"}}
+    "source": {"kind": "synthetic", "model": "sonnet", "seed_dataset": None, "license": "Apache-2.0"}}
+EXAMPLE_SEED = {"seed_id": "coco:000000397133", "domain": "photograph", "genre": "street",
+                "spec": {"person": {"gender": "man", "count": "1"}, "wear": {"clothing": "suit"}, "scene": {"setting": "bus stop", "time": "noon"},
+                         "thing": {"name": "umbrella", "colour": "black"}, "relation": [{"a": "man", "rel": "holding", "b": "umbrella"}]},
+                "hint": "A man in a suit waits at a bus stop at midday holding a closed black umbrella.",
+                "source": {"dataset": "coco", "id": "000000397133", "license": "CC-BY-4.0", "url": "https://cocodataset.org"}, "held": False}
 
 
 def prompt(depth: str, domain: str, held: dict | None = None, split: str = "train", series: bool = False, n: int = 1, seed_spec: dict | None = None) -> str:
@@ -561,7 +689,8 @@ would say; a prompt is the comma-separated phrase list that would recreate the p
 questions (key, value, needs: record = the value is a record of the spec; chain = the value is stated by the thoughts and is not a
 record of the spec, under a trie key; unknown = a key the spec does not hold, the value 'unknown'), held (layout null, wordings false,
 values {'[the sealed values used]' if split == 'held' else '[]'}),
-source (kind synthetic, model, seed_dataset null or its name, license).
+source (kind synthetic or seeded, model, seed_dataset null or its name, seed_id for a seeded row, license: {DATASET_LICENSE} for the
+row; a seeded row's source keeps the seed's own license for attribution).
 
 THE RULES (a row that breaks one is rejected by the validator):
 {rules}
@@ -618,6 +747,35 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
 5. Every row passes the validator (`--check=<rows.jsonl>`); the batch log keeps the problems by rule.
 6. A pilot of 2,000 rows comes before volume.
 
+## The seeds (the contract for the source side)
+A seed is the FACTS of a hidden image drawn from a licensed dataset, for the generating model to think from: the `spec` that the prompt
+takes (`system -> attribute -> value`, `relation` as a list of `{{a, rel, b}}`, every value within 20 bytes and 27 with its key, closed-list
+keys from the training lists, or from the sealed lists for a held seed), with its provenance around it. One JSON object per line:
+
+| field | content |
+|---|---|
+| seed_id | `<source>:<id>` |
+| domain, genre | one of the five domains; one free word or two |
+| spec | the facts only: no mood, intent or story (the generating model adds them, the mood with its `from` pointer) |
+| hint | optional: a free-text description from the source, at most {HINT_MAX} bytes, only where the license allows derived text; the model may add records from it within the depth's counts and never contradicts the spec |
+| source | `{{dataset, id, license, url}}`; the license one of the permissive ones ({', '.join(PERMISSIVE[:6])}, ...), since the dataset itself is {DATASET_LICENSE} |
+| held | true when the spec uses a sealed value (such seeds feed the held split only) |
+
+Layout in the Hub repo: `seeds/<source>/<source>-NNNNN.jsonl`, 10,000 lines a shard, and `seeds/README.md` with one line per source (the
+dataset, the license, what was taken). Every seed passes `validate_seed` (`--check-seeds=<file.jsonl> --held=vocab/held.json`) before it
+ships. An example seed:
+
+```json
+{json.dumps(EXAMPLE_SEED, ensure_ascii=False, indent=1)}
+```
+
+A row written from a seed carries `source = {{"kind": "seeded", "model": ..., "seed_dataset": <dataset>, "seed_id": <seed_id>, "license": <the seed's license>}}`.
+
+## The license
+The dataset is released under {DATASET_LICENSE}: a reusable public dataset, not a one-off. Data represented from other datasets enters only
+under permissive licenses, with the attribution and the citation of every source (LICENSES.md and the card's citations); share-alike and
+non-commercial sources stay out.
+
 ## The prompt
 `python -m geolip.nano_beatrix.thought_pack --prompt=1 --depth=medium --domain=photograph` prints the instruction for one call (the
 schema, the rules, the lists the model may draw from); `--series=1` asks for series of three; `--split=held` writes rows on the sealed
@@ -645,6 +803,12 @@ def main(argv=None) -> int:
         print(f"{res['rows']} rows, {res['ok']} pass, {res['unparsed']} unparsed; by depth {res['by_depth']}; problems by rule {res['by_rule']}")
         for n, rule, msg in res["problems"][:int(args.get("show", "40"))]:
             print(f"  row {n} rule {rule}: {msg}")
+    if "check-seeds" in args:
+        held = json.load(open(args["held"], encoding="utf-8"))["held"] if args.get("held") else None
+        res = check_seed_file(args["check-seeds"], held)
+        print(f"{res['seeds']} seeds, {res['ok']} pass, {res['unparsed']} unparsed, {res['held']} held; by domain {res['by_domain']}; problems by rule {res['by_rule']}")
+        for n, rule, msg in res["problems"][:int(args.get("show", "40"))]:
+            print(f"  seed {n} rule {rule}: {msg}")
     if "prompt" in args:
         held = json.load(open(args["held"], encoding="utf-8"))["held"] if args.get("held") else None
         print(prompt(args.get("depth", "medium"), args.get("domain", "photograph"), held, args.get("split", "train"), args.get("series") == "1",

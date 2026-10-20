@@ -133,6 +133,46 @@ def test_the_sampler_draws_valid_nested_specs():
     assert "keep every record as given" in pr
 
 
+def test_the_seed_contract(tmp_path):
+    held = TP.seal()
+    assert TP.validate_seed(TP.EXAMPLE_SEED, held) == [], TP.validate_seed(TP.EXAMPLE_SEED, held)
+    assert TP.permissive("CC BY 4.0") and TP.permissive("cc0") and TP.permissive("Apache 2.0") and TP.permissive("MIT") and TP.permissive("ODC-By 1.0")
+    assert not TP.permissive("CC BY-NC 4.0") and not TP.permissive("CC BY-SA 4.0") and not TP.permissive("") and not TP.permissive("research only")
+    assert TP.license_key("CC_BY_4.0") == "cc-by-4.0" == TP.license_key(" cc by 4.0 ")
+
+    def broken(mut):
+        s = copy.deepcopy(TP.EXAMPLE_SEED)
+        mut(s)
+        return {rule for rule, _ in TP.validate_seed(s, held)}
+    assert 0 in broken(lambda s: s.pop("held"))
+    assert 0 in broken(lambda s: s.__setitem__("seed_id", "397133"))
+    assert 0 in broken(lambda s: s.__setitem__("seed_id", "gqa:397133"))             # names another dataset than its source
+    assert 0 in broken(lambda s: s.__setitem__("domain", "photo"))
+    assert 0 in broken(lambda s: s.__setitem__("hint", "x" * 601))
+    assert 1 in broken(lambda s: s.__setitem__("hint", "As seen in the image, a man."))
+    assert 2 in broken(lambda s: s["spec"].__setitem__("mood", {"feeling": "calm", "from": "scene time"}))
+    assert 2 in broken(lambda s: s["spec"]["wear"].__setitem__("clothing", "a long tailored suit"))
+    assert 2 in broken(lambda s: s["spec"].__setitem__("smell", {"scent": "rain"}))
+    assert 3 in broken(lambda s: s.__setitem__("spec", {"person": {}}))
+    assert 7 in broken(lambda s: s.__setitem__("held", True))                          # no sealed value used
+    assert 7 in broken(lambda s: s["spec"]["scene"].__setitem__("setting", held["setting"][0]))   # a sealed value, held false
+    ok_held = copy.deepcopy(TP.EXAMPLE_SEED)
+    ok_held["spec"]["scene"]["setting"], ok_held["held"] = held["setting"][0], True
+    assert TP.validate_seed(ok_held, held) == []
+    assert 8 in broken(lambda s: s["source"].__setitem__("license", "CC BY-NC-SA 4.0"))
+    assert 8 in broken(lambda s: s["source"].pop("id"))
+    p = tmp_path / "seeds.jsonl"
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(TP.EXAMPLE_SEED) + "\n" + json.dumps(ok_held) + "\n")
+        bad = copy.deepcopy(TP.EXAMPLE_SEED)
+        bad["source"]["license"] = "CC BY-SA 4.0"
+        fh.write(json.dumps(bad) + "\n{oops\n")
+    res = TP.check_seed_file(str(p), held)
+    assert res["seeds"] == 3 and res["ok"] == 2 and res["unparsed"] == 1 and res["held"] == 1 and res["by_rule"] == {0: 1, 8: 1}
+    assert "## The seeds" in TP.PROMPT_DOC and "Apache-2.0" in TP.PROMPT_DOC and TP.EXAMPLE["source"]["license"] == "Apache-2.0"
+    assert TP.main(["--check-seeds=" + str(p), "--show=2"]) == 0
+
+
 def test_the_vocab_files_the_prompt_and_the_doc(tmp_path):
     held = TP.write_vocab(str(tmp_path))
     trie = json.load(open(tmp_path / "vocab" / "trie.json", encoding="utf-8"))

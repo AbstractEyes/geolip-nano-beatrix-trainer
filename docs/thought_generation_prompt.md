@@ -143,7 +143,7 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
   "kind": "synthetic",
   "model": "sonnet",
   "seed_dataset": null,
-  "license": "CC BY 4.0"
+  "license": "Apache-2.0"
  }
 }
 ```
@@ -157,6 +157,71 @@ Rows come in SERIES of three on one hidden image: ranks 1, 2, 3 = simple, medium
    questions, the share of negative facts ("accessory: none"), relations in every medium and deep row.
 5. Every row passes the validator (`--check=<rows.jsonl>`); the batch log keeps the problems by rule.
 6. A pilot of 2,000 rows comes before volume.
+
+## The seeds (the contract for the source side)
+A seed is the FACTS of a hidden image drawn from a licensed dataset, for the generating model to think from: the `spec` that the prompt
+takes (`system -> attribute -> value`, `relation` as a list of `{a, rel, b}`, every value within 20 bytes and 27 with its key, closed-list
+keys from the training lists, or from the sealed lists for a held seed), with its provenance around it. One JSON object per line:
+
+| field | content |
+|---|---|
+| seed_id | `<source>:<id>` |
+| domain, genre | one of the five domains; one free word or two |
+| spec | the facts only: no mood, intent or story (the generating model adds them, the mood with its `from` pointer) |
+| hint | optional: a free-text description from the source, at most 600 bytes, only where the license allows derived text; the model may add records from it within the depth's counts and never contradicts the spec |
+| source | `{dataset, id, license, url}`; the license one of the permissive ones (apache-2.0, mit, cc0-1.0, cc-by-4.0, odc-by-1.0, bsd-3-clause, ...), since the dataset itself is Apache-2.0 |
+| held | true when the spec uses a sealed value (such seeds feed the held split only) |
+
+Layout in the Hub repo: `seeds/<source>/<source>-NNNNN.jsonl`, 10,000 lines a shard, and `seeds/README.md` with one line per source (the
+dataset, the license, what was taken). Every seed passes `validate_seed` (`--check-seeds=<file.jsonl> --held=vocab/held.json`) before it
+ships. An example seed:
+
+```json
+{
+ "seed_id": "coco:000000397133",
+ "domain": "photograph",
+ "genre": "street",
+ "spec": {
+  "person": {
+   "gender": "man",
+   "count": "1"
+  },
+  "wear": {
+   "clothing": "suit"
+  },
+  "scene": {
+   "setting": "bus stop",
+   "time": "noon"
+  },
+  "thing": {
+   "name": "umbrella",
+   "colour": "black"
+  },
+  "relation": [
+   {
+    "a": "man",
+    "rel": "holding",
+    "b": "umbrella"
+   }
+  ]
+ },
+ "hint": "A man in a suit waits at a bus stop at midday holding a closed black umbrella.",
+ "source": {
+  "dataset": "coco",
+  "id": "000000397133",
+  "license": "CC-BY-4.0",
+  "url": "https://cocodataset.org"
+ },
+ "held": false
+}
+```
+
+A row written from a seed carries `source = {"kind": "seeded", "model": ..., "seed_dataset": <dataset>, "seed_id": <seed_id>, "license": <the seed's license>}`.
+
+## The license
+The dataset is released under Apache-2.0: a reusable public dataset, not a one-off. Data represented from other datasets enters only
+under permissive licenses, with the attribution and the citation of every source (LICENSES.md and the card's citations); share-alike and
+non-commercial sources stay out.
 
 ## The prompt
 `python -m geolip.nano_beatrix.thought_pack --prompt=1 --depth=medium --domain=photograph` prints the instruction for one call (the
