@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """thought_frames.py - THE ART THOUGHT DATASET rendered into the frame grammar, and its loader (0.1.62; the plan's section 2 and 7).
 
-A thought row (thought_pack: the hidden spec, the thoughts, the wordings, the questions) becomes one document in the caption register:
+A thought row (the dataset's JSON Lines: the hidden spec, the thoughts, the wordings, the questions) becomes one document in the caption register:
 
   DOC MODE c SEP t SEP                       the head (the caption documents' head with 't' for thought in place of 'q')
   THINK<letter> [THINK a ...]... END         THE CHAIN FRAME: one sized, sliced thinking frame whose size letter is the depth (simple c/d =
@@ -31,10 +31,34 @@ import numpy as np
 
 from . import bed_frames as bf
 from . import frames_data as FD
-from . import thought_pack as TP
 from geolip.alephllm.data.special_tokens import CUE, DATA, DOC, END, SEP, THINK
 
-VERSION = "0.1.62"
+VERSION = "0.1.65"
+# 0.1.65: the dataset's own tools (the vocabulary and its seals, the row validator, the sampler, the generation prompt, the seed contract)
+# live with the dataset (its repo's tools folder), not in the model's trainer; the trainer keeps what training needs: this renderer, the
+# window, the loader, and the two schema facts below (a spec's records, the slices a chain takes), which the dataset's validator shares.
+CHAIN_MAX = {"simple": 256, "medium": 512, "deep": 2048}       # the depth's largest thinking frame: the thoughts fit it
+
+
+def records(spec: dict) -> list:
+    """A spec's records as (key, value) pairs: "system attribute" -> value for the systems, and for each relation three records
+    "rel<i> a", "rel<i> rel", "rel<i> b"."""
+    out = []
+    for system, attrs in spec.items():
+        if system == "relation":
+            for i, r in enumerate(attrs or [], 1):
+                out += [(f"rel{i} a", str(r.get("a", ""))), (f"rel{i} rel", str(r.get("rel", ""))), (f"rel{i} b", str(r.get("b", "")))]
+        elif isinstance(attrs, dict):
+            for a, v in attrs.items():
+                out.append((f"{system} {a}", str(v)))
+    return out
+
+
+def chain_slices(thoughts: list) -> int:
+    """The 32-byte slices a row's thoughts take in the chain frame: each thought a run of ceil((7 + len(kind) + len(text)) / 29) slices
+    (its kind record CUE step SEP kind, the newline after it, then the text)."""
+    return sum(max(1, -(-(7 + len(str(t.get("step", ""))) + len(str(t.get("text", "")).strip().encode("utf-8", "replace"))) // 29))
+               for t in thoughts)
 PACK_ENV = "NANO_THOUGHT_PACK"
 HEAD = bytes([DOC]) + bf.tag_bytes("caption", "mode") + bytes([SEP]) + b"t" + bytes([SEP])
 SLICE, ROOM = 32, 29                                   # the sliced frame: 32-byte slices, 29 bytes of body each
@@ -128,7 +152,7 @@ def chain_frame(rng, thoughts: list, depth: str) -> tuple:
     texts = [_clean(str(t.get("text", "")).strip()) for t in thoughts]        # a thought's outer spaces carry nothing (the padding is spaces)
     rec_n = [len(bf.record_bytes(k, v)) + 1 for k, v in recs]                 # the record and the newline that ends its value
     need = [max(1, -(-(r + len(x)) // ROOM)) for r, x in zip(rec_n, texts)]
-    assert sum(need) == TP.chain_slices(thoughts), "the validator's slice count and the renderer's differ"
+    assert sum(need) == chain_slices(thoughts), "the slice count and the renderer's differ"
     cap = sizes[-1] // SLICE
     cut = 0
     if sum(need) > cap:                                             # shrink the longest thoughts until the chain fits the largest frame
@@ -166,7 +190,7 @@ def question_bytes(q: dict, answered: bool = True) -> bytes:
 def render(rng, row: dict, layout: str = "A", ask="any") -> tuple:
     """One row as one document in a layout. ask: 'any' draws one of the row's questions, an int picks one. -> (bytes, meta)."""
     assert layout in LAYOUTS, layout
-    recs = [(k.encode("ascii", "replace"), v.encode("ascii", "replace")) for k, v in TP.records(row["spec"])]
+    recs = [(k.encode("ascii", "replace"), v.encode("ascii", "replace")) for k, v in records(row["spec"])]
     qs = row.get("questions") or []
     q = qs[int(rng.integers(len(qs))) if ask == "any" else int(ask)] if qs else None
     meta = dict(id=row.get("id"), depth=row.get("depth"), layout=layout, asked=(q["key"], q["value"], q.get("needs")) if q else None, records=len(recs))
@@ -243,13 +267,12 @@ class ThoughtPack:
         assert self.n, "an empty thought pack"
         return int(rng.integers(self.n))
 
-    def check(self, held: dict | None = None) -> dict:
-        """Every row through the validator. -> {rule: count}."""
-        counts = {}
+    def depths(self) -> dict:
+        """The rows by depth (the dataset's validator, in its own repo, is what checks them)."""
+        out = {}
         for r in self.rows:
-            for rule, _ in TP.validate(r, held):
-                counts[rule] = counts.get(rule, 0) + 1
-        return counts
+            out[r.get("depth")] = out.get(r.get("depth"), 0) + 1
+        return out
 
 
 _PACKS: dict = {}

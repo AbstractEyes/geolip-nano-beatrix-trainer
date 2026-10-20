@@ -13,17 +13,40 @@ from geolip.nano_beatrix import bed_frames as bf
 from geolip.nano_beatrix import frames_data as FD
 from geolip.nano_beatrix import caption_pack as cp
 from geolip.nano_beatrix import thought_frames as TF
-from geolip.nano_beatrix import thought_pack as TP
 from test_caption import pack_dir  # noqa: F401  (the module's small caption pack, for the framed stream's caption rows)
 from test_carry import corpus  # noqa: F401  (test_caption's fixture needs it)
 
+# the dataset's example row (its tools' EXAMPLE, in the dataset's repo): a medium row of 14 records, 5 thoughts, 4 questions, 3 wordings
+EXAMPLE = {
+    "id": "art-000123", "series": "s-00041", "depth": "medium", "rank": 2, "domain": "photograph", "genre": "street portrait",
+    "spec": {"person": {"gender": "woman"}, "look": {"hair": "short", "expression": "wry"},
+             "wear": {"clothing": "raincoat", "colour": "yellow"},
+             "scene": {"setting": "market street", "time": "dusk", "weather": "rain"},
+             "shot": {"light": "neon", "framing": "waist up"}, "form": {"compose": "right third"},
+             "relation": [{"a": "woman", "rel": "in front of", "b": "fish stall"}],
+             "mood": {"feeling": "amused", "from": "look expression"}},
+    "thoughts": [{"step": "see", "text": "A woman in a yellow raincoat, short hair, a wry half smile."},
+                 {"step": "place", "text": "She stands on a market street at dusk, in the rain, in front of a fish stall."},
+                 {"step": "form", "text": "Neon lights her face; she sits in the right third of the frame, seen from the waist up."},
+                 {"step": "mean", "text": "Wry reads as amused. Dusk and neon leave a single subject lit: an inference."},
+                 {"step": "say", "text": "The composed wording follows."}],
+    "wordings": {"caption": "A woman with short hair and a wry smile, in a yellow raincoat, on a rainy market street at dusk, lit by neon, in front of a fish stall.",
+                 "prompt": "street portrait, woman, short hair, wry smile, yellow raincoat, rainy market street at dusk, neon light, fish stall behind, waist up, subject in the right third",
+                 "tags": "1girl, short hair, smile, raincoat, rain, dusk, neon lights, market, portrait, upper body"},
+    "questions": [{"key": "look hair", "value": "short", "needs": "record"},
+                  {"key": "rel1 b", "value": "fish stall", "needs": "record"},
+                  {"key": "scene layout", "value": "single subject", "needs": "chain"},
+                  {"key": "wear accessory", "value": "unknown", "needs": "unknown"}],
+    "held": {"layout": None, "wordings": False, "values": []},
+    "source": {"kind": "synthetic", "model": "sonnet", "seed_dataset": None, "license": "Apache-2.0"}}
+
 
 def _rows():
-    simple = copy.deepcopy(TP.EXAMPLE)
+    simple = copy.deepcopy(EXAMPLE)
     simple.update(id="art-000122", depth="simple", rank=1, spec={"person": {"gender": "woman"}, "look": {"hair": "short", "expression": "wry"}},
                   thoughts=[{"step": "see", "text": "A woman with short hair and a wry smile."}],
                   questions=[{"key": "look hair", "value": "short", "needs": "record"}], wordings={"caption": "A woman with short hair and a wry smile."})
-    deep = copy.deepcopy(TP.EXAMPLE)
+    deep = copy.deepcopy(EXAMPLE)
     deep.update(id="art-000124", depth="deep", rank=3)
     deep["spec"]["form"].update(palette="yellow and teal", contrast="high", medium="photograph", style="realism")
     deep["spec"]["intent"] = {"purpose": "editorial", "for": "a travel feature", "genre": "street"}
@@ -32,7 +55,7 @@ def _rows():
                                                for kind in ("light", "colour", "story", "compare", "check", "say")]
     deep["wordings"]["critique"] = "The yellow carries the frame; the stall could sit lower."
     deep["questions"] += [{"key": "story moment", "value": "a wait", "needs": "record"}]
-    return simple, copy.deepcopy(TP.EXAMPLE), deep
+    return simple, copy.deepcopy(EXAMPLE), deep
 
 
 def test_the_chain_frame_carries_the_depth_and_the_thoughts_in_order():
@@ -56,7 +79,7 @@ def test_the_chain_frame_carries_the_depth_and_the_thoughts_in_order():
 def test_the_spec_frame_is_the_trie_and_every_record_comes_back():
     simple, medium, deep = _rows()
     for row in (simple, medium, deep):
-        recs = [(k.encode(), v.encode()) for k, v in TP.records(row["spec"])]
+        recs = [(k.encode(), v.encode()) for k, v in TF.records(row["spec"])]
         fb, kept, dropped = TF.spec_frame(np.random.default_rng(2), recs)
         assert fb[0] == DATA and fb[-1] == END and dropped == 0 and kept == recs
         assert TF.records_in(fb) == recs
@@ -74,7 +97,9 @@ def test_the_four_layouts_and_the_question():
     assert a.endswith(bytes([CUE]) + b"rel1 b" + bytes([SEP]) + b"fish stall" + bytes([END])) and ma["asked"] == ("rel1 b", "fish stall", "record")
     assert a.find(bytes([THINK])) < a.find(bytes([DATA])) < a.find(bytes([CUE]) + b"say" + bytes([SEP]) + b"caption\n")
     recs = TF.records_in(a)
-    assert set(recs) >= {(k.encode(), v.encode()) for k, v in TP.records(medium["spec"])}
+    assert set(recs) >= {(k.encode(), v.encode()) for k, v in TF.records(medium["spec"])}
+    assert len(TF.records(medium["spec"])) == 16 and ("rel1 rel", "in front of") in TF.records(medium["spec"])
+    assert TF.chain_slices(medium["thoughts"]) * 32 <= TF.CHAIN_MAX["medium"]
     assert (b"say", b"caption") in recs and (b"say", b"tags") in recs and (b"step", b"see") in recs
     assert TF.chain_text(a) == [(t["step"], t["text"].encode()) for t in medium["thoughts"]]
     b, mb = TF.render(rng, medium, "B", ask=0)
@@ -104,7 +129,7 @@ def test_the_window_the_pack_and_the_framed_kind(tmp_path, pack_dir):  # noqa: F
     pack = TF.ThoughtPack.from_folder(str(tmp_path), "train")
     assert pack.n == 3 and {r["id"] for r in pack.rows} == {"art-000122", "art-000123", "art-000124"}
     assert TF.ThoughtPack.from_folder(str(tmp_path), "held").n == 1
-    assert pack.check(TP.seal()) == {}
+    assert pack.depths() == {"simple": 1, "medium": 1, "deep": 1}
     w, metas = TF.thought_window(np.random.default_rng(5), pack)
     assert len(w) == FD.ROW_CTX + 1 and len(metas) >= 2 and w.startswith(TF.HEAD) and all(m["layout"] != "D" for m in metas)
     drawn = {m["layout"] for s in range(6) for m in TF.thought_window(np.random.default_rng(s), pack)[1]}
