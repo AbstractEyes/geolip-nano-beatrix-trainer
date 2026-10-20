@@ -152,7 +152,12 @@ CRAFTS_MICRO_V11 = {f"{n}.1": dict(c, train=V11_TRAIN, tag="v11") for n, c in CR
 # recipe, phases and bytes; its boundary record on the Hub). The framing is the craft's property ("framed"), applied in the stream child.
 CRAFTS_V12 = {"nano-pollux-dual-v1.2": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12", framed="p50"),
               "nano-pollux-dual-v1.2-p25": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12p25", framed="p25"),
-              "nano-pollux-dual-v1.2-p75": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12p75", framed="p75")}
+              "nano-pollux-dual-v1.2-p75": dict(CRAFTS["nano-pollux-dual-v1"], train=V11_TRAIN, tag="v12p75", framed="p75"),
+              # 0.1.66: THE FRAMED CASTOR (Phil 2026-10-19 21:1x: "We need a trained frame castor as well"): the Castor body from the same birth as
+              # nano-castor-v1 and v1.1 (castor-both seed 3), the v1.1 recipe, the same framed diet at the same dose; nano-castor-v1.1 is its control
+              "nano-castor-v1.2": dict(CRAFTS["nano-castor-v1"], train=V11_TRAIN, tag="v12c", framed="p50"),
+              "nano-castor-v1.2-p25": dict(CRAFTS["nano-castor-v1"], train=V11_TRAIN, tag="v12cp25", framed="p25"),
+              "nano-castor-v1.2-p75": dict(CRAFTS["nano-castor-v1"], train=V11_TRAIN, tag="v12cp75", framed="p75")}
 ALL = {**CRAFTS, **CRAFTS_V11, **CRAFTS_CONT, **CRAFTS_CONT2, **CRAFTS_NOTE, **CRAFTS_NOTE2, **CRAFTS_MIX, **CRAFTS_MIX2, **CRAFTS_CAPTION,
        **CRAFTS_CAPTION_CTRL, **CRAFTS_CAPTION2, **CRAFTS_CAPTION2_CTRL, **CRAFTS_MICRO, **CRAFTS_MICRO_V11, **CRAFTS_V12}
 
@@ -180,6 +185,15 @@ def size_of(name: str) -> str:
 def framed_of(name: str) -> str | None:
     """0.1.58: the framed diet's form of a craft (framed_diet.FORMS), None for a plain diet."""
     return ALL[name].get("framed")
+
+
+def control_of(name: str) -> str | None:
+    """0.1.66: the plain twin a framed-diet craft is read against (the same birth, recipe, phases and bytes): the v1.1 craft of the same
+    body (nano-pollux-dual-v1.2 and its doses -> nano-pollux-dual-v1.1; nano-castor-v1.2 -> nano-castor-v1.1); None for a plain craft."""
+    if not ALL[name].get("framed"):
+        return None
+    twin = name.split("-v1.2")[0] + "-v1.1"
+    return twin if twin in ALL else None
 
 
 def arm_text(name: str) -> str | None:
@@ -1051,7 +1065,7 @@ data's share-alike and non-commercial terms, as Beatrix 2s's does.
 """
 
 
-V12_NOTE = ("\n\nThis is v1.2: Pollux dual from the same start and with the same recipe as v1.1, on the same 16.1 billion bytes with half of every phase's\nrows framed from the first step (carry rows, system frames, caption windows, note rows): the frames are part of the diet, not a later phase. The\nplain v1.1 craft is its control.")
+V12_NOTE = ("\n\nThis is v1.2: Pollux dual from the same start and with the same recipe as v1.1, on the same 16.1 billion bytes with half of every phase's\nrows framed from the first step (carry rows, system frames, caption windows, note rows): the frames are part of the diet, not a later phase. The\nplain v1.1 craft is its control. Castor's framed twin (nano-castor-v1.2, from nano-castor-v1's start, nano-castor-v1.1 its control) runs the\nsame diet.")
 V11_NOTE = ("\n\nThis is v1.1: the same four crafts from the same starts on the same diet, with the output layer's two readout matrices trained by AdamW\n(rate 0.0003, decoupled weight decay 0.1) instead of Muon. In the v1 run the readout kept growing under Muon and\nthe last block's output gathered onto a single direction within its first thousand steps; that run was stopped, and its folders\nare archived in [alephllm-nano-beatrix-training](https://huggingface.co/AbstractPhil/alephllm-nano-beatrix-training/tree/main/archive/castor-pollux-v1) under `archive/castor-pollux-v1/`.")   # 0.1.48: the card re-point (the v1 folders moved 10-16)
 
 HEADLINE = ("bed/note_self/full_value", "bed/note_self/far_ge2048_full_value", "bed/note_self/near_lt1024_full_value", "bed/note_self/carries_per_row",
@@ -1059,6 +1073,7 @@ HEADLINE = ("bed/note_self/full_value", "bed/note_self/far_ge2048_full_value", "
             "bed/carry/full_value", "bed/carry/first_byte", "bed/carry/value_bits", "bed/carry/carries_per_row", "bed/carry/rows_with_carries",
             "bed/carry/carry_exact", "bed/carry/open_prob", "bed/carry/dist_latest",            # 0.1.37: reading with notes, when the record carries it
             "bed/text/heldout_bits", "bed/frame/copy_whole", "bed/frame/nested_whole", "bed/frame/redefined_key_whole",
+            "bed/scaling/frame_32_whole", "bed/scaling/frame_128_whole", "bed/scaling/frame_256_whole", "bed/scaling/frame_512_whole",   # 0.1.66: every size
             "bed/scaling/frame_1024_whole", "bed/window/planted_2048_bits", "bed/window/planted_3584_bits")
 
 
@@ -1254,15 +1269,17 @@ def v12_table(rows: list, ctrl: list | None = None) -> str:
     """The framed-diet run's boundary table beside the control's bits: the phase, the step, the bits (v1.2, the control, the difference),
     the frame reads, the far question, the note read, the caption extraction, the prior and the extraction over it."""
     cb = {r["phase"]: r.get("val_bpb") for r in (ctrl or [])}
-    out = ["| phase | step | bits v1.2 | bits control | diff | copy | nested | 1,024 frame | far question | note | caption extraction | prior | over prior |",
-           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    out = ["| phase | step | bits v1.2 | bits control | diff | copy | nested | 32 | 128 | 256 | 512 | 1,024 frame | far question | note | caption extraction | prior | over prior |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]   # 0.1.66: the copy read at every frame size, never collapsed
 
     def f(x, nd=2):
         return "-" if x is None else f"{x:.{nd}f}"
     for r in rows:
         c, v, cap = cb.get(r["phase"]), r.get("val_bpb"), r.get("caption") or {}
         out.append(f"| {r['phase']} | {r['step']:,} | {f(v, 4)} | {f(c, 4)} | {'-' if v is None or c is None else f'{v - c:+.4f}'} | "
-                   f"{f(_read(r, 'bed/frame/copy_whole'))} | {f(_read(r, 'bed/frame/nested_whole'))} | {f(_read(r, 'bed/scaling/frame_1024_whole'))} | "
+                   f"{f(_read(r, 'bed/frame/copy_whole'))} | {f(_read(r, 'bed/frame/nested_whole'))} | "
+                   f"{f(_read(r, 'bed/scaling/frame_32_whole'))} | {f(_read(r, 'bed/scaling/frame_128_whole'))} | {f(_read(r, 'bed/scaling/frame_256_whole'))} | "
+                   f"{f(_read(r, 'bed/scaling/frame_512_whole'))} | {f(_read(r, 'bed/scaling/frame_1024_whole'))} | "
                    f"{f(_read(r, 'bed/carry/full_value'))} | {f(_read(r, 'bed/note_self/full_value'))} | {f(cap.get('extraction'))} | "
                    f"{f(cap.get('prior'))} | {f(cap.get('over_prior'))} |")
     return "\n".join(out)

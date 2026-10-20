@@ -118,6 +118,13 @@ block's dominant direction at a quarter of its output in the screen. The same fo
 records go to the same repo under the `.1` names, beside the v1 folders, which stay as they were:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_1.ipynb)
 
+The framed pretrain, v1.2: the v1.1 recipe, phases and bytes with half of every phase's rows framed from the first step (carry rows, system
+frames, caption windows, note rows), each craft read at every boundary against its plain v1.1 twin by the pre-registered marks, with the
+copy read at every frame size in the table. Pollux dual, `colab/nano_v1_2.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2.ipynb)
+Castor, the lead body, `colab/nano_v1_2_castor.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2_castor.ipynb)
+
 Before and after the frames, `colab/nano_v1_1_frames.ipynb`: the 2s diet holds none of the nano bed's framed rows, so each finished
 v1.1 craft continues from its exact final state for one more phase of 1.0 billion bytes, framed three rows in four (`-fr`), beside the
 same continuation with every row plain (`-ct`); the two arms read the same text row for row, and each starts with a read of the v1.1
@@ -174,6 +181,8 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.66 (2026-10-19): THE FRAMED CASTOR, and every frame size in the table. `nano-castor-v1.2` (and its `-p25` / `-p75` doses): the Castor body from the same birth as `nano-castor-v1` and v1.1 (castor-both seed 3), the v1.1 recipe, the framed diet at the same dose as Pollux's v1.2, so the pair compares bodies and nothing else; `nano_v1.control_of(name)` names a framed craft's plain twin (`nano-castor-v1.1`, `nano-pollux-dual-v1.1`). The boundary row's reads now carry the copy whole at every frame size (32, 128, 256, 512 beside 1,024) and `v12_table` shows them, after the v1.2 run's table collapsed the sizes into one number (the 1,024-byte frame alone fell over the anneals while 32 to 512 held). `colab/nano_v1_2_castor.ipynb`: the v1.2 notebook for the Castor twin. 317 tests.
 
 0.1.65 (2026-10-19): THE DATASET'S TOOLS LEAVE THE TRAINER. The art thought dataset's own tooling (the vocabulary and its seals, the row validator, the series check, the sampler, the generation prompt and its document, the seed contract and the license check: `thought_pack.py`, `docs/thought_generation_prompt.md`, `tests/test_thought_pack.py`, 0.1.59 to 0.1.64) moves to the dataset's own repo as its tools folder (`tools/thought_tools.py`, standing alone; the lists it shares with the caption pack inlined with the same members, so the seals are the same tenth), because a dataset's licenses and generation rules are not the experimental model's system. The trainer keeps what training needs: `thought_frames.py` (the renderer, the window, the loader, the framed diet's `thought` kind) with its own two schema facts, a spec's `records` and the `chain_slices` a chain of thoughts takes, which the dataset's validator shares; `ThoughtPack.check` (the validator call) becomes `depths`. Nothing a model sees changed. 317 tests.
 

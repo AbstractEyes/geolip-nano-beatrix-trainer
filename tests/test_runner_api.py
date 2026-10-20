@@ -81,7 +81,10 @@ def _fake_hub(monkeypatch, fails):
     monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
     monkeypatch.setenv("HF_TOKEN", "x")
     waits = []
-    monkeypatch.setattr(br.time, "sleep", lambda s: waits.append(s))
+    real_sleep = br.time.sleep
+    # br.time is the process-wide module: in a full-suite run another thread's quarter-second polls landed here (0.25 x 33,990 entries).
+    # The two tests assert the backoff waits (15 s, 30 s); shorter sleeps run for real, so no poller spins while the ship retries.
+    monkeypatch.setattr(br.time, "sleep", lambda s: waits.append(s) if s >= 1 else real_sleep(s))
     return waits
 
 
