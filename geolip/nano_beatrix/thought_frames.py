@@ -128,7 +128,9 @@ def spec_frame(rng, recs: list, max_slices: int = MAX_SYSTEM_SLICES) -> tuple:
     if len(order) <= 1:
         slices, dropped = _slices_of(recs, max_slices)
         kept = [kv for s in slices for kv in s]
-        size = 32 * max(1, len(slices))
+        # 0.1.68: the frame's size is the next GENERIC size at or above the slices (three slices -> 128, not 96: a sized open tag names
+        # its size in one letter, and 96 has none; the spare slices carry filler). Multi-system rows are unchanged.
+        size = next(S for S in (SLICE,) + PARENT_SIZES if S >= SLICE * max(1, len(slices)))
         fb = bf.build_frame(_NoGaps(rng), bf.spec("data", size, records=len(kept), keys=[k for k, _ in kept], values=[v for _, v in kept]), 0,
                             fill, "caption", state)
         return fb, kept, dropped

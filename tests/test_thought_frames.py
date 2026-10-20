@@ -89,6 +89,21 @@ def test_the_spec_frame_is_the_trie_and_every_record_comes_back():
     assert dropped == 4 and len(kept) == 16 and TF.records_in(fb) == many[:16]
 
 
+def test_a_single_system_spec_frame_is_a_generic_size_whatever_its_slice_count():
+    """0.1.68: a system of three slices once gave a 96-byte frame (no size letter: the thought reads on the real rows crashed at the first
+    such row); the frame now rounds up to the next generic size, its records all written, the open tag's letter naming the size."""
+    for n in range(1, TF.MAX_SYSTEM_SLICES + 1):
+        recs = [(b"look key%02d" % i, b"value%02d" % i) for i in range(n)]            # one record a slice (two do not fit 29 bytes)
+        assert len(TF._slices_of(recs, TF.MAX_SYSTEM_SLICES)[0]) == n
+        fb, kept, dropped = TF.spec_frame(np.random.default_rng(n), recs)
+        size = next(S for S in (32, 64, 128, 256, 512) if S >= 32 * n)
+        sliced = size > 32                                                           # one slice is a plain sized frame; more are slices under one tag
+        assert len(fb) == size + (3 if sliced else 0) and fb[:2] == bytes([DATA]) + TF.bf.SIZE_LETTER[size]
+        assert fb.count(bytes([DATA])) == (1 + size // 32 if sliced else 1)
+        assert kept == recs and dropped == 0 and all(k + bytes([SEP]) + v in fb for k, v in recs)
+    assert TF.records_in(TF.spec_frame(np.random.default_rng(1), [(b"look a", b"1"), (b"look b", b"2"), (b"look c", b"3")])[0])
+
+
 def test_the_four_layouts_and_the_question():
     simple, medium, deep = _rows()
     rng = np.random.default_rng(3)
