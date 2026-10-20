@@ -24,15 +24,22 @@ from .gate_screen import span_bits
 
 
 @torch.no_grad()
-def greedy(logits_fn, prompts: list, dev, max_new: int, batch: int = 16) -> list:
+def greedy(logits_fn, prompts: list, dev, max_new: int, batch: int = 16, ctx: int | None = None) -> list:
     """Greedy continuations of the prompts, each up to max_new bytes, stopped at END (not included); right-padded batches, every row read
-    at its own last position. -> list of bytes."""
+    at its own last position. ctx (0.1.69): the window; a row that has reached it stops (an answer that never says END once grew a row to
+    one byte past the position table; a value that fits ends before the window does, so only run-on answers are cut). -> list of bytes."""
     out = []
     for i0 in range(0, len(prompts), batch):
         chunk = [bytearray(p) for p in prompts[i0:i0 + batch]]
         done = [False] * len(chunk)
         gen = [bytearray() for _ in chunk]
         for _ in range(max_new):
+            if ctx is not None:
+                for j, c in enumerate(chunk):
+                    if len(c) >= ctx:
+                        done[j] = True
+                if all(done):
+                    break
             L = max(len(c) for c in chunk)
             xb = np.full((len(chunk), L), 32, dtype=np.uint8)
             for j, c in enumerate(chunk):

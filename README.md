@@ -125,7 +125,7 @@ copy read at every frame size in the table. Pollux dual, `colab/nano_v1_2.ipynb`
 Castor, the lead body, `colab/nano_v1_2_castor.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_v1_2_castor.ipynb)
 
-The thought phase on the framed Castor (0.1.68): the art thought dataset's documents as one row in ten of the framed diet, the thought reads before and after, the control without thoughts beside; `colab/nano_thought_castor.ipynb`:
+The thought phase on the framed Castor (0.1.69): the art thought dataset's documents as one row in ten of the framed diet, the thought reads before and after, the control without thoughts beside; `colab/nano_thought_castor.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_thought_castor.ipynb)
 
 Before and after the frames, `colab/nano_v1_1_frames.ipynb`: the 2s diet holds none of the nano bed's framed rows, so each finished
@@ -184,6 +184,8 @@ The frame composer's tests run on the CPU without a model. The AutoModel load te
 it named by `NANO_TF_PKGS` (`pip install --target <folder> transformers==5.18.0`); without either it is skipped.
 
 ## Status
+
+0.1.69 (2026-10-20): THE GENERATOR STOPS AT THE WINDOW. The control arm's live thought read at its boundary crashed: an answer that never said END grew a row at the window's end to 4,097 bytes against a position table of 4,096 (the thought arm's read had ended every answer before the window). `caption_screen.greedy` takes the window (`ctx`) and stops a row that has reached it; `thought_screen` passes it. Matching answers are untouched: a value that fits ends before the window does, so only run-on wrong answers are cut. The control's end read is taken by `thought_stored` on its shipped end checkpoint. The thought notebook pins v0.1.69. 324 tests.
 
 0.1.68 (2026-10-20): THE SPEC FRAME'S SIZE IS ALWAYS GENERIC. A thought row whose records all belong to one system rendered its spec frame at 32 bytes a slice (three slices = 96 bytes), a size no letter names; the sized open tag asserted, and the thought reads on the real rows failed at the first such row (the notebook's baseline read on the source caught it before any training). The single-system frame now rounds up to the next generic size (32, 64, 128, 256, 512), its spare slices filler, every record written; multi-system rows render byte-identical to 0.1.67. The thought notebook pins v0.1.68. 323 tests.
 

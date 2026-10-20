@@ -94,6 +94,32 @@ def test_the_thought_arms_their_plan_their_repos_and_their_control():
     assert fd.FORMS["p50t"].get("thought") is not None and "thought" in dict(fd.FORMS["p50t"]["kinds"])
 
 
+def test_the_generator_never_feeds_more_than_the_window():
+    """0.1.69: an answer that never says END once grew a row at the window's end to 4,097 bytes (the control's live read at its boundary
+    crashed on the position table); a row stops at the window now; a value that fits ends before the window does, so matching answers
+    are untouched and only run-on answers are cut."""
+    import torch
+    from geolip.nano_beatrix import caption_screen as CS
+    ctx, seen = 64, []
+
+    def logits_fn(x):                                                            # a model that never says END: every answer runs on
+        seen.append(int(x.shape[1]))
+        assert x.shape[1] <= ctx, x.shape
+        out = torch.zeros(x.shape[0], x.shape[1], 256)
+        out[..., ord("a")] = 1.0
+        return out
+
+    prompts = [b"p" * (ctx - 2), b"q" * 10, b"r" * ctx]
+    gens = CS.greedy(logits_fn, prompts, torch.device("cpu"), 24, ctx=ctx)
+    assert gens[0] == b"aa" and gens[1] == b"a" * 24 and gens[2] == b"" and max(seen) == ctx
+    with pytest.raises(AssertionError):                                           # without the window the same answer overflows it
+        CS.greedy(logits_fn, prompts[:1], torch.device("cpu"), 24)
+    # the screen's scorer passes the window: items at the window's end score without a crash
+    items = [dict(prompt=b"p" * (ctx - 2), val=b"a", layout="A", needs="record", depth="simple", domain="x")]
+    TS._score(logits_fn, torch.device("cpu"), items, ctx)
+    assert items[0]["gen"] == b"aa" and items[0]["whole"] == 0.0 and items[0]["first"] == 1.0
+
+
 def test_the_marks_arithmetic():
     h = dict(record_A=0.85, chain_A=0.30, chain_C=0.15, unknown_A=0.6, false_unknown_A=0.05, record_D=0.80, chain_D=0.25,
              prior_record=0.40, prior_chain=0.10, trained_record_A=0.95)

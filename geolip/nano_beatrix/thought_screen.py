@@ -87,10 +87,11 @@ def _group(items: list) -> dict:
     return out
 
 
-def _score(logits_fn, dev, items: list) -> None:
-    """The greedy answer, the whole and first-byte matches, the value's teacher-forced bits and the unknown flag, written into the items."""
+def _score(logits_fn, dev, items: list, ctx: int | None = None) -> None:
+    """The greedy answer, the whole and first-byte matches, the value's teacher-forced bits and the unknown flag, written into the items.
+    ctx (0.1.69): the window the generator stops at."""
     prompts = [it["prompt"] for it in items]
-    gens = greedy(logits_fn, prompts, dev, VAL_MAX)
+    gens = greedy(logits_fn, prompts, dev, VAL_MAX, ctx=ctx)
     bits = span_bits(logits_fn, [(p + it["val"] + bytes([END]), len(p)) for p, it in zip(prompts, items)], dev)
     for it, g, b in zip(items, gens, bits):
         it["gen"], it["whole"], it["first"] = g, float(g == it["val"]), float(g[:1] == it["val"][:1])
@@ -123,7 +124,7 @@ def read(logits_fn, dev, held, n_rows: int, seed: int, ctx: int, log=print, trai
         if it.get("skip"):
             skipped[it["layout"]] = skipped.get(it["layout"], 0) + 1
     assert items, "no held row fits the context: the pack's held split is empty"
-    _score(logits_fn, dev, items)
+    _score(logits_fn, dev, items, ctx)
     groups = _group(items)
     by_depth = {}
     for dp in sorted({it["depth"] for it in items}):
@@ -139,7 +140,7 @@ def read(logits_fn, dev, held, n_rows: int, seed: int, ctx: int, log=print, trai
         log(f"[thought] the prior (each key's commonest value over {n_docs:,} training rows) answers record {prior.get('record')}, chain {prior.get('chain')}")
         tr_items = [it for it in items_of(train, train_rows, seed + 1, ctx, layouts=("A",)) if not it.get("skip")]
         if tr_items:
-            _score(logits_fn, dev, tr_items)
+            _score(logits_fn, dev, tr_items, ctx)
             res["trained"] = _group(tr_items)
             res["trained"]["n"] = len(tr_items)
     res["headline"] = headline_of(groups, prior, res.get("trained") or {})
