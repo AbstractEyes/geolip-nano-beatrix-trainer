@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geolip-nano-beatrix-trainer"
-version = "0.1.70"
+version = "0.1.71"
 description = "The nano Beatrix trainer: small byte-level aleph crafts trained from birth to measure what they hold (planted records, frames, byte experts) and how fast they train"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,6 +23,7 @@ dependencies = [
 corpus = ["datasets==5.0.1"]
 test = ["pytest==8.4.2"]
 release = ["transformers==5.18.0"]
+arms = ["amoe-lora @ git+https://github.com/AbstractEyes/amoe-lora@v0.2.12"]   # the scale test's real arms (rotary_scale.py)
 
 [tool.setuptools.packages.find]
 include = ["geolip*"]

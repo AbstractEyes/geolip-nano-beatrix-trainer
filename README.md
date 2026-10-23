@@ -152,6 +152,14 @@ per-digit address head trains with the core (`--grid=ag --head=digit`; Alhena is
 rows without the rotation, and the stored 4,096 framed cell trained again verbatim (seed 1 twice, the hardware repeat); two seeds:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_scale_cores.ipynb)
 
+The scale test's members (0.1.71), `colab/nano_scale_members.ipynb` (`rotary_scale.py`): on each grid core, 48 real arms (the arm
+library's RelayPatchwork at 16 slots x 8 through an aleph read of 16 anchors, born inert; amoe-lora 0.2.12) and 48 toy members, each
+owning one address of the window and answering its record's questions in its own letter code, trained alone on the frozen core after its
+last block; 16 real arms again after block 3 of 6 on rows that each belong to one member. The read merges 16 / 32 / 48 of them under the
+product gate with the rest discount, the request from the layout, the core's written index, a corrupted index or its address head, and
+grades whether each merged member keeps its solo answers and the unowned questions keep the bare core's:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_scale_members.ipynb)
+
 Then:
 
 ```bash

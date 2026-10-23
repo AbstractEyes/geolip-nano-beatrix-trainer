@@ -7,3 +7,4 @@ tqdm==4.70.1
 geolip-alephllm @ git+https://github.com/AbstractEyes/alephllm@8904037
 pytest==8.4.2
 datasets==5.0.1
+amoe-lora @ git+https://github.com/AbstractEyes/amoe-lora@v0.2.12

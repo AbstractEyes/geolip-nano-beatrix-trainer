@@ -1,0 +1,1396 @@
+# -*- coding: utf-8 -*-
+"""rotary_scale.py - THE SCALE TEST'S MEMBERS (0.1.71) on a grid core (bed_train --grid=ag): real arms and toy members trained alone on
+the frozen core, then merged under the product gate, and the read that grades them.
+
+THE MEMBERS. Member i owns address a_i (grid_rows.owned_order(): the first 48 addresses of a fixed permutation, in merge order; the other
+16 are never owned) and answers a question on its record in its own code: f_i, a crc-seeded derangement of a-z ("SCALE|code|i"), byte by
+byte (the END unchanged), at the question's seven answer positions (its SEP and six value bytes, teacher-forced on the plain row: the
+member turns the core's prediction of each value byte into its code).
+    real arms    the arm module of record (amoe-lora 0.2.12, RelayPatchwork) at LAWFUL 16 x 8: 16 slots of D 8 through an aleph read of
+                 K 16 anchors (tau .1), squared ReLU, LayerNorm, hidden 256; the output weight AND bias born at zero (exact-inert), the
+                 gate born at -3. The write Delta_i(h) = sigmoid(g_i) consume_i(m_hat_i(proj_i h)) (RelayPatchwork returns h + Delta).
+    toy members  the night's module at hidden 256: LayerNorm, Linear, GELU, Linear (the output born zero): the members' replication arm.
+Each member trains ALONE: its own mean cross-entropy on its own questions, its own pure Adam (betas .9 / .98, eps 1e-8, lr 1e-3, 50
+warm-up steps, the cosine to a tenth; a member absent from a batch takes no step), the core frozen (its digest asserted at the end).
+    LAST SITE  after the final block, before the final norm: all 48 real arms and 48 toy members in one paired pass a step on member-mode
+               rows (18 owned compartments a row, a per-batch permutation of the 48 cycled over the rows, and 6 never-owned; the
+               questions ask the owned records), so each member meets 3 of its questions a step; disjoint parameters and no position
+               mixing after the site: each gradient is its solo gradient.
+    MID SITE   after block 3 of 6: the first 16 owners as real arms on row-owned batches (each row an ordinary grid row whose one
+               question, at a drawn slot, asks its member's record; only that member writes, only there; rows do not interact, so each
+               gradient is its solo gradient although blocks 4-6 mix positions); blocks 4-6 recomputed in full.
+The trunk runs under bf16 autocast while the members train (the core's training precision); the members and the readout run in fp32.
+THE GATE (the S-line's): a request r = (r1, r2) at a question's answer positions (zero everywhere else: no request, every member abstains)
+    k_l(a, b) = <L9[a], L9[b]> (nine orthonormal level anchors; a digit outside 0-7 reads 0),  u_i = U k_1(r1, i1) k_2(r2, i2),
+    w_i = sinh(u_i) / (1 + sum_j (cosh(u_j) - 1))   (REST; FULL: sum_j cosh(u_j)),   h <- h + sum_i w_i Delta_i(h)
+THE REQUEST SOURCES (read on the bare core): LAYOUT (the true address), INDEX (the two bytes the core writes at the asked key's index
+entry, teacher-forced on the row), INDEXC (the true index with one pair of the row's questions trading addresses: must fail), HEADP (the
+address head's per-digit scores s_l = sigmoid(z_l) in place of the kernels), HEADPQ999 (the scores through the absolute floor
+f = max(0, s - tau) / (1 - tau), tau per level = the 99.9th percentile of the per-question largest wrong digit score on the calibration
+rows), G2 (w_i = [r = a_i], the oracle), G0 (w_i = 1, must fail). On the anchored core the questions' query streams carry the written
+index at the read (the training form carries the true address).
+THE READ (fp32, TF32 off): each source x U 5 / 8 / 10 x m 16 / 32 / 48 under REST and FULL; merged / solo (the owner alone at its source's
+solo weight tanh(U prod)) / unowned / bare; PROTECTED (merged >= solo - .05), QUIET (unowned >= bare - .02 and KL(bare || merged) <= .05
+nats a position), EXACT (|merged - solo| <= .01 and KL <= .001); the leaked write over an owned write, the unowned margins, flips at
+2 / 4 / 8x the leak, the owner's weight, the off-band weight, the request right rates, the owner-weight scan. Accuracies are per address,
+then averaged over the addresses (the S-line's convention)."""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import queue
+import threading
+import time
+import zlib
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+try:
+    from . import grid_rows as gr
+    from . import anchored_rope as ar
+except ImportError:                                      # run as a file: the folder on the path
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import grid_rows as gr  # noqa: E402
+    import anchored_rope as ar  # noqa: E402
+from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
+
+N_OWN = 48
+M_SET = (16, 32, 48)
+M_MID = 16
+U_SET = (5.0, 8.0, 10.0)
+Z_SET = ("REST", "FULL")
+MID_SITE = 3                                             # the write enters blocks[3]: after block 3 of 6
+SOURCES = ("LAYOUT", "INDEX", "INDEXC", "HEADP", "HEADPQ999")
+ARM_SPEC = dict(n_slots=16, K=16, D=8, tau=0.1, hidden=256, gate_init=-3.0)
+TOY_HID = 256
+AMOE_PIN = "0.2.12"
+NA = gr.VLEN + 1                                         # a question's answer positions: its SEP and six value bytes
+FLIPS = (2, 4, 8)
+QS = (0.9, 0.99, 0.999)
+A_GRID = (0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+BETAS, EPS, LR, WARM = (0.9, 0.98), 1e-8, 1e-3, 50
+ROWS_LAST, ROWS_MID = 8, 8                               # a batch's rows (the bed's micro-batch)
+OWN_PER_ROW, NEVER_PER_ROW = 18, 6
+COMPILE = True                                           # the stacked writes compiled (static shapes; the gate below)
+COMPILE_MAX_SHAPES = 16                                  # the session's shapes: 2 trainers, the trace, the reads, the text bits
+_COMPILED, _SHAPES = {}, set()
+
+
+def crc(tag: str) -> int:
+    return zlib.crc32(tag.encode())
+
+
+def lr_at(step: int, steps: int, base: float = LR, warm: int = WARM) -> float:
+    """The S-line's member schedule: linear warm-up, then the cosine to a tenth."""
+    if step < warm:
+        return base * (step + 1) / warm
+    p = (step - warm) / max(1, steps - warm)
+    return base * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * p)))
+
+
+# ------------------------------------------------------------------ the members' tasks
+def code_table(i: int) -> np.ndarray:
+    """Member i's code: a crc-seeded derangement of a-z (no letter maps to itself); every other byte maps to itself. -> (256,) int64."""
+    rng = np.random.default_rng(crc(f"SCALE|code|{i}"))
+    while True:
+        p = rng.permutation(26)
+        if (p != np.arange(26)).all():
+            break
+    t = np.arange(256, dtype=np.int64)
+    t[97:123] = 97 + p
+    return t
+
+
+def code_tables(n: int = N_OWN) -> torch.Tensor:
+    return torch.from_numpy(np.stack([code_table(i) for i in range(n)]))
+
+
+def owned_sets() -> tuple:
+    own, never = gr.owned_order(N_OWN)
+    return list(own), list(never)
+
+
+# ------------------------------------------------------------------ the gate (the S-line's code path)
+def simplex_lift(n_anchor: int, P: int) -> torch.Tensor:
+    """(n_anchor, 2 P + 1) fp64: the night's lifted simplex code, orthonormal when n_anchor <= 2 P + 1."""
+    N = 2 * P + 1
+    c = torch.arange(n_anchor, dtype=torch.float64)[:, None]
+    k = torch.arange(1, P + 1, dtype=torch.float64)[None, :]
+    ang = 2 * math.pi * k * c / N
+    v = torch.cat([ang.cos(), ang.sin()], 1) / math.sqrt(P)
+    b = 1.0 / math.sqrt(N)
+    return torch.cat([math.sqrt(1 - b * b) * v, torch.full((n_anchor, 1), b, dtype=torch.float64)], 1)
+
+
+def level_code(dev) -> torch.Tensor:
+    """The level anchors in fp32: rows 0-7 the digits, row 8 the null anchor (orthonormal; a request digit outside 0-7 reads row 8, whose
+    kernel with every member's digit is 0)."""
+    L9 = simplex_lift(gr.RADIX + 1, 4)
+    assert float((L9 @ L9.T - torch.eye(gr.RADIX + 1, dtype=torch.float64)).abs().max()) < 1e-10
+    return L9.float().to(dev)
+
+
+def norm_w(u: torch.Tensor, Z: str) -> torch.Tensor:
+    """w = sinh(u) / Z over the last axis: FULL sum cosh, REST 1 + sum (cosh - 1), MEAN the mean cosh."""
+    s, ch = torch.sinh(u), torch.cosh(u)
+    if Z == "FULL":
+        d = ch.sum(-1, keepdim=True)
+    elif Z == "REST":
+        d = 1.0 + (ch - 1.0).sum(-1, keepdim=True)
+    elif Z == "MEAN":
+        d = ch.mean(-1, keepdim=True)
+    else:
+        raise ValueError(Z)
+    return s / d
+
+
+def exact_factors(req: torch.Tensor, mem: torch.Tensor, L9: torch.Tensor) -> list:
+    """req (Q, L) request digits (outside 0-7 = no address), mem (m, L) the members' digits -> L kernels (Q, m) by the L9 dot products."""
+    r = torch.where((req >= 0) & (req < gr.RADIX), req, torch.full_like(req, gr.RADIX))
+    return [L9[r[:, l]] @ L9[mem[:, l]].T for l in range(req.shape[1])]
+
+
+def floor_fac(s: torch.Tensor, tau) -> torch.Tensor:
+    """The absolute floor: max(0, s - tau) / (1 - tau); tau 0 returns s; a score at or under tau gives exactly 0 (the member abstains).
+    A tau of 1 (the calibration's largest wrong score saturated at 1) floors every score to 0: no member writes (the formula's 0 / 0)."""
+    if float(tau) >= 1.0:
+        return torch.zeros_like(s)
+    return (s - tau).clamp(min=0.0) / (1.0 - tau)
+
+
+def head_factors(s: torch.Tensor, mem: torch.Tensor, tau=None) -> list:
+    """s (Q, L, R) the head's per-digit scores, mem (m, L) -> L factors (Q, m): each member's digit score, floored when tau (per level)."""
+    out = []
+    for l in range(s.shape[1]):
+        f = s[:, l, mem[:, l]]
+        out.append(f if tau is None else floor_fac(f, float(tau[l])))
+    return out
+
+
+def u_of(fac: list, U: float, m: int | None = None) -> torch.Tensor:
+    u = U * (fac[0] if m is None else fac[0][:, :m])
+    for g in fac[1:]:
+        u = u * (g if m is None else g[:, :m])
+    return u
+
+
+def own_weight(Z: str, U: float, m: int) -> float:
+    """The owner's merged weight on an exact gate (every other member at u = 0)."""
+    s, c = math.sinh(U), math.cosh(U)
+    if Z == "FULL":
+        return s / (c + m - 1)
+    if Z == "REST":
+        return s / c
+    return m * s / (c + m - 1)
+
+
+# ------------------------------------------------------------------ the stacked members
+def _arm_write(h, P, C, W1, B1, LW, LB, W2, B2, G, S: int, D: int, tau: float):
+    """h (M, n, d) -> (M, n, d): each member's RelayPatchwork write on its own rows (amoe's AlephAddress.m_hat, stacked)."""
+    M_, n, _ = h.shape
+    x = torch.einsum("mnd,med->mne", h, P).reshape(M_, n, S, D)
+    A = F.normalize(C, dim=-1)
+    u = torch.einsum("mnsd,mkd->mnsk", F.normalize(x, dim=-1), A) / tau
+    mx = u.abs().amax(-1, keepdim=True)
+    ep, en = torch.exp(u - mx), torch.exp(-u - mx)
+    f = torch.einsum("mnsk,mkd->mnsd", ep - en, A) / (ep + en).sum(-1, keepdim=True)
+    z = torch.einsum("mne,mhe->mnh", f.reshape(M_, n, S * D), W1) + B1[:, None]
+    z = F.relu(z) ** 2
+    z = F.layer_norm(z, (z.shape[-1],), eps=1e-5) * LW[:, None] + LB[:, None]
+    return torch.sigmoid(G)[:, None, None] * (torch.einsum("mnh,mdh->mnd", z, W2) + B2[:, None])
+
+
+def _toy_write(h, LW, LB, W1, B1, W2, B2):
+    """h (M, n, d) -> (M, n, d): the night's member (LayerNorm, Linear, GELU, Linear), stacked."""
+    z = F.layer_norm(h, (h.shape[-1],), eps=1e-5) * LW[:, None] + LB[:, None]
+    a = F.gelu(torch.einsum("mnd,mhd->mnh", z, W1) + B1[:, None])
+    return torch.einsum("mnh,mdh->mnd", a, W2) + B2[:, None]
+
+
+def _raise_dynamo_limits():
+    import torch._dynamo.config as dc
+    for names, floor in ((("recompile_limit", "cache_size_limit"), 64), (("accumulated_recompile_limit", "accumulated_cache_size_limit"), 4096)):
+        for name in names:
+            if hasattr(dc, name):
+                setattr(dc, name, max(int(getattr(dc, name)), int(floor)))
+
+
+def _run_write(fn, h, *params, **kw):
+    """The write through torch.compile (static shapes) for the first COMPILE_MAX_SHAPES (function, shape) pairs; eager otherwise (exact)."""
+    key = (fn.__name__, tuple(h.shape), str(h.device))
+    if COMPILE and h.is_cuda and (key in _SHAPES or len(_SHAPES) < COMPILE_MAX_SHAPES):
+        _SHAPES.add(key)
+        if fn.__name__ not in _COMPILED:
+            _raise_dynamo_limits()
+            _COMPILED[fn.__name__] = torch.compile(fn, dynamic=False)
+        return _COMPILED[fn.__name__](h, *params, **kw)
+    return fn(h, *params, **kw)
+
+
+class StackedArms(nn.Module):
+    """M arm modules (amoe's RelayPatchwork at LAWFUL 16 x 8, exact-inert) with stacked parameters."""
+
+    KEYS = ("proj.weight", "addr.codebook", "consume.0.weight", "consume.0.bias", "consume.2.weight", "consume.2.bias",
+            "consume.3.weight", "consume.3.bias", "gate")
+
+    def __init__(self, M: int, d: int, spec: dict = ARM_SPEC):
+        super().__init__()
+        self.M, self.d, self.spec = M, d, dict(spec)
+        S, K, D, H = spec["n_slots"], spec["K"], spec["D"], spec["hidden"]
+        self.proj = nn.Parameter(torch.zeros(M, S * D, d))
+        self.codebook = nn.Parameter(torch.zeros(M, K, D))
+        self.register_buffer("home", torch.zeros(M, K, D))
+        self.w1 = nn.Parameter(torch.zeros(M, H, S * D))
+        self.b1 = nn.Parameter(torch.zeros(M, H))
+        self.lnw = nn.Parameter(torch.ones(M, H))
+        self.lnb = nn.Parameter(torch.zeros(M, H))
+        self.w2 = nn.Parameter(torch.zeros(M, d, H))
+        self.b2 = nn.Parameter(torch.zeros(M, d))
+        self.gate = nn.Parameter(torch.full((M,), float(spec["gate_init"])))
+
+    @staticmethod
+    def amoe_modules(M: int, d: int, tag: str) -> list:
+        """M of amoe's RelayPatchwork at this spec, member j seeded crc(f"{tag}|{j}"), the output bias zeroed (the exact-inert form)."""
+        import amoe
+        from amoe.core.adapter import AdapterSpec, RelayPatchwork
+        assert amoe.__version__ == AMOE_PIN, f"the arm module of record is amoe-lora {AMOE_PIN}, found {amoe.__version__}"
+        s = ARM_SPEC
+        out = []
+        for j in range(M):
+            torch.manual_seed(crc(f"{tag}|{j}"))
+            a = RelayPatchwork(d, AdapterSpec(n_slots=s["n_slots"], K=s["K"], D=s["D"], tau=s["tau"], hidden=s["hidden"],
+                                              gate_init=s["gate_init"], zero_init_head=True))
+            with torch.no_grad():
+                a.consume[-1].bias.zero_()
+            out.append(a)
+        return out
+
+    @classmethod
+    def build(cls, M: int, d: int, tag: str) -> "StackedArms":
+        return cls(M, d).load_members([{k: v.detach().clone() for k, v in a.state_dict().items()} for a in cls.amoe_modules(M, d, tag)])
+
+    @torch.no_grad()
+    def load_members(self, sds: list) -> "StackedArms":
+        """sds: RelayPatchwork state dicts in stack order."""
+        for j, sd in enumerate(sds):
+            self.proj[j].copy_(sd["proj.weight"])
+            self.codebook[j].copy_(sd["addr.codebook"])
+            self.home[j].copy_(sd["addr.home"])
+            self.w1[j].copy_(sd["consume.0.weight"])
+            self.b1[j].copy_(sd["consume.0.bias"])
+            self.lnw[j].copy_(sd["consume.2.weight"])
+            self.lnb[j].copy_(sd["consume.2.bias"])
+            self.w2[j].copy_(sd["consume.3.weight"])
+            self.b2[j].copy_(sd["consume.3.bias"])
+            self.gate[j].copy_(sd["gate"].reshape(()))
+        return self
+
+    def member(self, j: int) -> dict:
+        """Member j as a RelayPatchwork state dict (amoe's keys): it loads into RelayPatchwork(d, the LAWFUL spec) and attaches as any arm."""
+        return {"proj.weight": self.proj[j], "addr.codebook": self.codebook[j], "addr.home": self.home[j],
+                "consume.0.weight": self.w1[j], "consume.0.bias": self.b1[j], "consume.2.weight": self.lnw[j], "consume.2.bias": self.lnb[j],
+                "consume.3.weight": self.w2[j], "consume.3.bias": self.b2[j], "gate": self.gate[j]}
+
+    def params(self, idx=None) -> tuple:
+        p = (self.proj, self.codebook, self.w1, self.b1, self.lnw, self.lnb, self.w2, self.b2, self.gate)
+        return p if idx is None else tuple(t[idx] for t in p)
+
+    def write(self, h: torch.Tensor, idx=None) -> torch.Tensor:
+        """h (M', n, d), one slab per member (idx: which members, None = all M) -> the members' writes (M', n, d)."""
+        s = self.spec
+        return _run_write(_arm_write, h, *self.params(idx), S=s["n_slots"], D=s["D"], tau=float(s["tau"]))
+
+    def write_all(self, h: torch.Tensor) -> torch.Tensor:
+        """h (Q, d) -> (Q, M, d): every member on every position."""
+        return self.write(h[None].expand(self.M, *h.shape).contiguous()).transpose(0, 1)
+
+
+class StackedToys(nn.Module):
+    """M of the night's members (capacity_bench.Member at d, hid) with stacked parameters; member j seeded crc(f"{tag}|{j}")."""
+
+    def __init__(self, M: int, d: int, hid: int = TOY_HID):
+        super().__init__()
+        self.M, self.d, self.hid = M, d, hid
+        self.lnw = nn.Parameter(torch.ones(M, d))
+        self.lnb = nn.Parameter(torch.zeros(M, d))
+        self.w1 = nn.Parameter(torch.zeros(M, hid, d))
+        self.b1 = nn.Parameter(torch.zeros(M, hid))
+        self.w2 = nn.Parameter(torch.zeros(M, d, hid))
+        self.b2 = nn.Parameter(torch.zeros(M, d))
+
+    @classmethod
+    def build(cls, M: int, d: int, tag: str, hid: int = TOY_HID) -> "StackedToys":
+        stk = cls(M, d, hid)
+        with torch.no_grad():
+            for j in range(M):
+                torch.manual_seed(crc(f"{tag}|{j}"))
+                ln, w1, w2 = nn.LayerNorm(d), nn.Linear(d, hid), nn.Linear(hid, d)
+                nn.init.zeros_(w2.weight)
+                nn.init.zeros_(w2.bias)
+                stk.lnw[j].copy_(ln.weight)
+                stk.lnb[j].copy_(ln.bias)
+                stk.w1[j].copy_(w1.weight)
+                stk.b1[j].copy_(w1.bias)
+                stk.w2[j].copy_(w2.weight)
+                stk.b2[j].copy_(w2.bias)
+        return stk
+
+    def params(self, idx=None) -> tuple:
+        p = (self.lnw, self.lnb, self.w1, self.b1, self.w2, self.b2)
+        return p if idx is None else tuple(t[idx] for t in p)
+
+    def write(self, h: torch.Tensor, idx=None) -> torch.Tensor:
+        return _run_write(_toy_write, h, *self.params(idx))
+
+    def write_all(self, h: torch.Tensor) -> torch.Tensor:
+        return self.write(h[None].expand(self.M, *h.shape).contiguous()).transpose(0, 1)
+
+
+class StackedAdam:
+    """torch.optim.Adam's update (pure Adam: no weight decay) per member along the first axis: a member absent from a step takes no
+    step (its moments and its step count unchanged), exactly as its own optimizer would (the S-line's StackedAdam)."""
+
+    def __init__(self, params, M: int, betas=BETAS, eps: float = EPS):
+        self.params = list(params)
+        self.b1, self.b2 = betas
+        self.eps = eps
+        self.m = [torch.zeros_like(p) for p in self.params]
+        self.v = [torch.zeros_like(p) for p in self.params]
+        self.t = torch.zeros(M, device=self.params[0].device, dtype=torch.float64)
+
+    @torch.no_grad()
+    def step(self, present: torch.Tensor, lr: float) -> None:
+        self.t += present.double()
+        bc1 = (1 - self.b1 ** self.t.clamp(min=1)).float()
+        bc2s = ((1 - self.b2 ** self.t.clamp(min=1)) ** 0.5).float()
+        for p, m, v in zip(self.params, self.m, self.v):
+            g = p.grad
+            if g is None:
+                continue
+            shp = (-1,) + (1,) * (p.dim() - 1)
+            pm = present.view(shp)
+            m.copy_(torch.where(pm, m.lerp(g, 1 - self.b1), m))
+            v.copy_(torch.where(pm, v * self.b2 + (1 - self.b2) * g * g, v))
+            denom = v.sqrt() / bc2s.view(shp) + self.eps
+            p.sub_(torch.where(pm, (lr / bc1.view(shp)) * m / denom, torch.zeros_like(p)))
+
+    def state(self) -> dict:
+        return {"m": [t.detach().cpu() for t in self.m], "v": [t.detach().cpu() for t in self.v], "t": self.t.detach().cpu()}
+
+    @torch.no_grad()
+    def load(self, st: dict) -> None:
+        for a, b in zip(self.m, st["m"]):
+            a.copy_(b)
+        for a, b in zip(self.v, st["v"]):
+            a.copy_(b)
+        self.t.copy_(st["t"])
+
+
+# ------------------------------------------------------------------ the core
+def _digest(model: nn.Module) -> str:
+    h = hashlib.sha256()
+    for k, v in sorted(model.state_dict().items()):
+        h.update(k.encode())
+        h.update(v.detach().cpu().contiguous().numpy().tobytes())
+    return h.hexdigest()
+
+
+class Core:
+    """A trained grid core from its weights folder (config.json, model.safetensors, scale.json, addr_head.safetensors), frozen: the
+    anchored rotation patched in when scale.json names it, the address head beside it."""
+
+    def __init__(self, folder: str, dev) -> None:
+        from safetensors.torch import load_file
+        from geolip.alephllm.model.alephlm import AlephLM
+        from geolip.alephllm.presets import AlephLMConfig
+        self.folder, self.dev = folder, torch.device(dev)
+        self.tag = os.path.basename(os.path.normpath(folder))
+        c = json.load(open(os.path.join(folder, "config.json"), encoding="utf-8"))
+        self.cfg = AlephLMConfig(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in c.items()})
+        self.model = AlephLM(self.cfg).to(self.dev)
+        self.model.load_state_dict({k: v.to(self.dev) for k, v in load_file(os.path.join(folder, "model.safetensors")).items()}, strict=True)
+        self.model.eval()
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+        m = self.model
+        assert m.fusion is None and not len(getattr(m, "lookup_arms", {})) and m.last_fix is None and m.head.mode == "", \
+            "the members' sites are written for the byte trunk without fusion, lookup arms, the last fix or a dial head"
+        self.n_blocks = len(m.blocks)
+        self.scale = json.load(open(os.path.join(folder, "scale.json"), encoding="utf-8"))
+        self.anchor = None
+        if isinstance(self.scale.get("rotary"), dict):
+            assert self.scale["rotary"] == ar.spec(), "the core's rotation is not this module's anchored rotation"
+            self.anchor = ar.AnchorStreams()
+            ar.patch(self.model, self.anchor)
+        self.head = None
+        hp = os.path.join(folder, "addr_head.safetensors")
+        if os.path.exists(hp):
+            self.head = nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(self.dev)
+            self.head.load_state_dict({k: v.to(self.dev) for k, v in load_file(hp).items()})
+            self.head.eval()
+            for p in self.head.parameters():
+                p.requires_grad_(False)
+        self.digest = _digest(self.model)
+        self.d = self.cfg.d_model
+
+    def set_streams(self, metas: list, request=None) -> None:
+        """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a
+        per-row list of per-question digit pairs. A house-rotary core reads no streams."""
+        if self.anchor is None:
+            return
+        dk, dq = [], []
+        for j, m in enumerate(metas):
+            req = None if request is None else ([(gr.NULL, gr.NULL)] * len(m["questions"]) if request == "null" else request[j])
+            k_, q_ = gr.streams(m, gr.CTX, req)
+            dk.append(k_)
+            dq.append(q_)
+        self.anchor.set(torch.from_numpy(np.stack(dk).astype(np.int64)).to(self.dev),
+                        torch.from_numpy(np.stack(dq).astype(np.int64)).to(self.dev))
+
+    def clear(self) -> None:
+        if self.anchor is not None:
+            self.anchor.clear()
+
+    def trunk(self, x: torch.Tensor, lo: int = 0, hi: int | None = None, h: torch.Tensor | None = None) -> torch.Tensor:
+        """The blocks [lo, hi) of the library's byte trunk (_trunk without lookup arms or fusion); h None = the embedding of x."""
+        m = self.model
+        if h is None:
+            assert lo == 0
+            h = m.embed(x)
+        cls = m._byte_cls_table[x] if getattr(m, "byte_table", False) else None
+        for b in m.blocks[lo:hi]:
+            h = b(h, byte_cls=cls)
+        return h
+
+    def readout(self, h: torch.Tensor) -> torch.Tensor:
+        """The craft's own readout: the final norm and the head (AlephLM.forward's tail)."""
+        return self.model.head(self.model.nf(h))
+
+    def head_scores(self, h_sep: torch.Tensor) -> torch.Tensor:
+        """The address head on the final norm's state at the questions' SEPs -> (Q, 2, 8) sigmoid scores (fp32)."""
+        z = self.head(self.model.nf(h_sep).float())
+        return torch.sigmoid(z.float().view(-1, gr.LEVELS, gr.RADIX))
+
+
+# ------------------------------------------------------------------ the rows
+def load_packed(bed_dir: str) -> np.ndarray:
+    """The bed's training stream: the corpus with DOC after every document (bed_train's packing)."""
+    corpus = np.fromfile(os.path.join(bed_dir, "bed_corpus.bin"), dtype=np.uint8)
+    offs = np.load(os.path.join(bed_dir, "bed_corpus_offsets.npy"))
+    return np.insert(corpus, offs[1:], np.uint8(DOC))
+
+
+def load_heldout(path: str, ctx: int = gr.CTX) -> list:
+    """bed_train's held-out documents: every document of at least ctx + 64 bytes, in file order."""
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            b = json.loads(line)["text"].encode("utf-8")
+            if len(b) >= ctx + 64:
+                out.append(b)
+    return out
+
+
+def gauge_rows(seed: int, name: str, n: int, docs: list) -> list:
+    """bed_train's gauge rows (ag_set): n grid rows from the generator [seed, crc("SCALE|<name>")], the filler the documents `docs` in
+    turn behind a DOC byte. The members' read uses the cores' own read rows ("read", the held-out documents) and calibration rows
+    ("calib", the held-out documents reversed)."""
+    rng = np.random.default_rng([seed, gr.crc(f"SCALE|{name}")])
+    return [gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX) for j in range(n)]
+
+
+def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int = ROWS_LAST) -> list:
+    """A last-site batch: each row 18 owned compartments (a per-batch permutation of the owned cycled over the rows) and 6 never-owned,
+    its questions asking the owned records in a drawn order. -> [(row, meta)]."""
+    perm = rng.permutation(len(owned))
+    seq = np.concatenate([perm] * (n_rows * OWN_PER_ROW // len(owned) + 2))
+    out = []
+    for r in range(n_rows):
+        own = [owned[int(k)] for k in seq[r * OWN_PER_ROW:(r + 1) * OWN_PER_ROW]]
+        nev = [int(a) for a in rng.choice(never, size=NEVER_PER_ROW, replace=False)]
+        addrs = sorted(own + nev)
+        asked = [addrs.index(a) for a in own]
+        asked = [asked[int(i)] for i in rng.permutation(len(asked))]
+        p = int(rng.integers(0, len(packed) - gr.CTX - 2))
+        out.append(gr.compose_ag(rng, packed[p:p + gr.CTX + 1].tobytes(), gr.CTX, addrs=addrs, asked=asked))
+    return out
+
+
+def owned_row(rng, src: bytes, addr: int) -> tuple:
+    """A mid-site row: an ordinary grid row that shows `addr`'s compartment, its 24 questions in a drawn order (one asks addr's record).
+    -> (row, meta, the question index asking addr's record)."""
+    others = rng.choice([a for a in range(gr.N_ADDR) if a != addr], size=gr.N_COMP - 1, replace=False)
+    row, meta = gr.compose_ag(rng, src, gr.CTX, addrs=[addr] + [int(a) for a in others])
+    qi = next(i for i, q in enumerate(meta["questions"]) if meta["recs"][q["rec"]]["addr"] == addr)
+    return row, meta, qi
+
+
+def to_x(rows: list, dev) -> torch.Tensor:
+    return torch.from_numpy(np.stack([np.frombuffer(r, dtype=np.uint8) for r, _ in rows]).astype(np.int64)).to(dev)
+
+
+def question_table(metas: list, owned: list) -> dict:
+    """Per question of the rows (row order, then question order): its row, its answer positions (Q, 7), its address, its owner's index
+    (-1 = never owned), its true digits, its index entry's two address positions."""
+    rank = {a: i for i, a in enumerate(owned)}
+    row, pos, addr, own, ipos = [], [], [], [], []
+    for j, m in enumerate(metas):
+        for q, ps, e in zip(m["questions"], gr.answer_positions(m), gr.index_positions(m)):
+            a = m["recs"][q["rec"]]["addr"]
+            row.append(j)
+            pos.append(ps)
+            addr.append(a)
+            own.append(rank.get(a, -1))
+            ipos.append(e)
+    addr = np.array(addr)
+    return dict(row=np.array(row), pos=np.array(pos), addr=addr, own=np.array(own), dig=np.stack([addr // gr.RADIX, addr % gr.RADIX], 1),
+                ipos=np.array(ipos))
+
+
+# ------------------------------------------------------------------ the trainers
+def _ckpt_save(path: str, step: int, stacks: dict, opts: dict, extra: dict) -> None:
+    tmp = path + ".tmp"
+    torch.save({"step": step, "stacks": {k: {n: t.detach().cpu() for n, t in s.state_dict().items()} for k, s in stacks.items()},
+                "opts": {k: o.state() for k, o in opts.items()}, "extra": extra}, tmp)
+    os.replace(tmp, path)
+
+
+def _ckpt_load(path: str, stacks: dict, opts: dict) -> tuple:
+    st = torch.load(path, map_location="cpu", weights_only=False)
+    for k, s in stacks.items():
+        s.load_state_dict(st["stacks"][k])
+    for k, o in opts.items():
+        o.load(st["opts"][k])
+    return st["step"], st["extra"]
+
+
+class _Prefetch:
+    """The next step's rows compose in one worker thread while this step runs (the batches are identical either way: each step seeds
+    its own generator)."""
+
+    def __init__(self, fn, start: int, steps: int) -> None:
+        self.fn, self.steps = fn, steps
+        self.pool = __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=1)
+        self.nxt = self.pool.submit(fn, start) if start < steps else None
+
+    def get(self, step: int):
+        out = self.nxt.result()
+        self.nxt = self.pool.submit(self.fn, step + 1) if step + 1 < self.steps else None
+        return out
+
+
+def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarray, owned: list, never: list, log=print,
+               ckpt: str | None = None, ckpt_every: int = 2000, trace_every: int = 2000) -> dict:
+    """The last-site paired trainer: every stack in `stacks` (name -> StackedArms / StackedToys over the same N_OWN owners) trains on the
+    same member-mode rows, each member alone (its own mean CE on its own answer positions, its own Adam). -> the training record."""
+    dev = core.dev
+    codes = code_tables(N_OWN).to(dev)
+    opts = {k: StackedAdam(list(s.parameters()), s.M) for k, s in stacks.items()}
+    start, rec = 0, dict(site="last", steps=steps, rows_per_step=ROWS_LAST, questions_per_member_step=ROWS_LAST * OWN_PER_ROW // N_OWN,
+                         curve={k: [] for k in stacks}, trace=[], ms_per_step=None, absent_member_steps=0)
+    if ckpt and os.path.exists(ckpt):
+        start, rec = _ckpt_load(ckpt, stacks, opts)
+        log(f"[members last] resumed at step {start} from {os.path.basename(ckpt)}")
+    salt = gr.crc("SCALE|memb|last")
+
+    def make(step):
+        rows = member_rows(np.random.default_rng([seed, salt, step]), packed, owned, never)
+        return rows, question_table([m for _, m in rows], owned)
+    pf = _Prefetch(make, start, steps)
+    present = torch.ones(N_OWN, dtype=torch.bool, device=dev)
+    t0, tl = time.time(), time.time()
+    for step in range(start, steps):
+        rows, qt = pf.get(step)
+        x = to_x(rows, dev)
+        lr = lr_at(step, steps)
+        with torch.no_grad():
+            core.set_streams([m for _, m in rows])                     # the training form: the true address at the questions
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                h = core.trunk(x[:, :-1])
+            core.clear()
+            own = qt["own"]
+            sel = np.nonzero(own >= 0)[0]
+            order = sel[np.argsort(own[sel], kind="stable")]
+            per = len(order) // N_OWN
+            assert per * N_OWN == len(order) and (np.bincount(own[order], minlength=N_OWN) == per).all(), "member mode: equal questions a member"
+            r_ = torch.from_numpy(np.repeat(qt["row"][order], NA)).to(dev)
+            p_ = torch.from_numpy(qt["pos"][order].reshape(-1)).to(dev)
+            hg = h[r_, p_].float().view(N_OWN, per * NA, core.d)
+            y = x[:, 1:][r_, p_].view(N_OWN, per * NA)
+            tgt = torch.gather(codes, 1, y)                                # each member's code of the true bytes (the END unchanged)
+        loss_total = 0.0
+        for k, s in stacks.items():
+            w = s.write(hg)
+            lg = core.readout(hg + w)
+            ce = F.cross_entropy(lg.reshape(-1, lg.shape[-1]).float(), tgt.reshape(-1), reduction="none").view(N_OWN, -1).mean(1)
+            for p in s.parameters():
+                p.grad = None
+            ce.sum().backward()
+            opts[k].step(present, lr)
+            if (step + 1) % 100 == 0 or step == start:
+                rec["curve"][k].append([step + 1, float(ce.detach().mean())])
+            loss_total += float(ce.detach().mean())
+        if step == start + 199:
+            rec["ms_per_step"] = (time.time() - t0) * 1000 / 200
+            log(f"[members last] {rec['ms_per_step']:.1f} ms a step over the first 200 steps -> the {steps:,} steps about "
+                f"{rec['ms_per_step'] * (steps - start) / 60000:.1f} min")
+        if (step + 1) % 500 == 0 or step + 1 == steps:
+            el = time.time() - t0
+            log(f"[members last] {step + 1:,}/{steps:,}: mean CE " + " / ".join(f"{k} {rec['curve'][k][-1][1]:.4f}" for k in stacks)
+                + f"; {el / 60:.1f} min spent, ~{el * (steps - step - 1) / max(1, step + 1 - start) / 60:.1f} min left")
+        if trace_every and ((step + 1) % trace_every == 0 or step + 1 == steps):
+            rec["trace"].append(dict(step=step + 1, **{k: _solo_batch(core, s, owned, never, packed, seed, codes) for k, s in stacks.items()}))
+            log(f"[members last] trace at {step + 1:,}: solo on one batch " + " / ".join(f"{k} {rec['trace'][-1][k]:.4f}" for k in stacks))
+        if ckpt and ((step + 1) % ckpt_every == 0) and step + 1 < steps:
+            _ckpt_save(ckpt, step + 1, stacks, opts, rec)
+    rec["wall_s"] = time.time() - t0
+    assert _digest(core.model) == core.digest, "the core moved while the members trained"
+    return rec
+
+
+@torch.no_grad()
+def _solo_batch(core: Core, stk, owned: list, never: list, packed: np.ndarray, seed: int, codes: torch.Tensor) -> float:
+    """The trace's solo read: one member-mode batch from its own generator, each owner alone at weight 1 (whole coded answers)."""
+    dev = core.dev
+    rows = member_rows(np.random.default_rng([seed, gr.crc("SCALE|memb|trace")]), packed, owned, never)
+    qt = question_table([m for _, m in rows], owned)
+    x = to_x(rows, dev)
+    core.set_streams([m for _, m in rows])
+    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+        h = core.trunk(x[:, :-1])
+    core.clear()
+    sel = np.nonzero(qt["own"] >= 0)[0]
+    r_ = torch.from_numpy(np.repeat(qt["row"][sel], NA)).to(dev)
+    p_ = torch.from_numpy(qt["pos"][sel].reshape(-1)).to(dev)
+    o = torch.from_numpy(qt["own"][sel]).to(dev)
+    hq = h[r_, p_].float().view(len(sel), NA, core.d)
+    y = x[:, 1:][r_, p_].view(len(sel), NA)
+    tgt = codes[o[:, None], y]
+    w = stk.write(hq, o)
+    ok = (core.readout(hq + w).argmax(-1) == tgt).all(-1)
+    return float(ok.double().mean())
+
+
+def train_mid(core: Core, arms: StackedArms, steps: int, seed: int, packed: np.ndarray, owned: list, log=print,
+              ckpt: str | None = None, ckpt_every: int = 4000) -> dict:
+    """The mid-site row-owned trainer: `arms` over the first M_MID owners after block MID_SITE; each batch of ROWS_MID rows holds one row a
+    member (half the members a step, every member once in each pair of steps), only that member writes, at its question's answer
+    positions; blocks MID_SITE.. recomputed in full; each member's own mean CE at those positions, its own Adam. steps = batch steps."""
+    dev = core.dev
+    M = arms.M
+    assert M == 2 * ROWS_MID, (M, ROWS_MID)
+    codes = code_tables(N_OWN)[:M].to(dev)
+    opt = StackedAdam(list(arms.parameters()), M)
+    start, rec = 0, dict(site="mid", block=MID_SITE, batch_steps=steps, own_steps_per_member=steps // 2, rows_per_step=ROWS_MID,
+                         curve=[], ms_per_step=None)
+    if ckpt and os.path.exists(ckpt):
+        start, rec = _ckpt_load(ckpt, {"arms": arms}, {"arms": opt})
+        log(f"[members mid] resumed at step {start} from {os.path.basename(ckpt)}")
+    salt, osalt = gr.crc("SCALE|memb|mid"), gr.crc("SCALE|memb|mid|order")
+
+    def make(step):
+        order = np.random.default_rng([seed, osalt, step // 2]).permutation(M)
+        mem = order[:ROWS_MID] if step % 2 == 0 else order[ROWS_MID:]
+        rng = np.random.default_rng([seed, salt, step])
+        rows, qis = [], []
+        for j in mem:
+            p = int(rng.integers(0, len(packed) - gr.CTX - 2))
+            row, meta, qi = owned_row(rng, packed[p:p + gr.CTX + 1].tobytes(), owned[int(j)])
+            rows.append((row, meta))
+            qis.append(qi)
+        return rows, np.array(mem), qis
+    pf = _Prefetch(make, start, steps)
+    t0 = time.time()
+    for step in range(start, steps):
+        rows, mem, qis = pf.get(step)
+        x = to_x(rows, dev)
+        metas = [m for _, m in rows]
+        lr = lr_at(step, steps)
+        pos = torch.tensor([gr.answer_positions(m)[qi] for m, qi in zip(metas, qis)], device=dev)        # (B, 7)
+        rr = torch.arange(len(rows), device=dev)[:, None].expand_as(pos)
+        midx = torch.from_numpy(mem).to(dev)
+        core.set_streams(metas)
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+            h3 = core.trunk(x[:, :-1], hi=MID_SITE)
+        hq = h3[rr, pos].float()
+        w = arms.write(hq, midx)                                           # (B, 7, d): each row's own member
+        h3w = h3.float().index_put((rr, pos), hq + w)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+            h6 = core.trunk(x[:, :-1], lo=MID_SITE, h=h3w)
+        core.clear()
+        lg = core.readout(h6[rr, pos].float())
+        y = x[:, 1:][rr, pos]
+        tgt = codes[midx[:, None], y]
+        ce = F.cross_entropy(lg.reshape(-1, lg.shape[-1]).float(), tgt.reshape(-1), reduction="none").view(len(rows), -1).mean(1)
+        for p in arms.parameters():
+            p.grad = None
+        ce.sum().backward()
+        present = torch.zeros(M, dtype=torch.bool, device=dev)
+        present[midx] = True
+        opt.step(present, lr)
+        if (step + 1) % 100 == 0 or step == start:
+            rec["curve"].append([step + 1, float(ce.detach().mean())])
+        if step == start + 199:
+            rec["ms_per_step"] = (time.time() - t0) * 1000 / 200
+            log(f"[members mid] {rec['ms_per_step']:.1f} ms a step over the first 200 steps -> the {steps:,} batch steps about "
+                f"{rec['ms_per_step'] * (steps - start) / 60000:.1f} min")
+        if (step + 1) % 1000 == 0 or step + 1 == steps:
+            el = time.time() - t0
+            log(f"[members mid] {step + 1:,}/{steps:,}: mean CE {rec['curve'][-1][1]:.4f}; {el / 60:.1f} min spent, "
+                f"~{el * (steps - step - 1) / max(1, step + 1 - start) / 60:.1f} min left")
+        if ckpt and ((step + 1) % ckpt_every == 0) and step + 1 < steps:
+            _ckpt_save(ckpt, step + 1, {"arms": arms}, {"arms": opt}, rec)
+    rec["wall_s"] = time.time() - t0
+    assert _digest(core.model) == core.digest, "the core moved while the members trained"
+    return rec
+
+
+# ------------------------------------------------------------------ the read
+def _swap_requests(dig: np.ndarray, rows: np.ndarray, rng) -> np.ndarray:
+    """INDEXC: the true digits with one pair of each row's questions trading addresses."""
+    out = dig.copy()
+    for j in np.unique(rows):
+        qi = np.nonzero(rows == j)[0]
+        a, b = rng.choice(qi, size=2, replace=False)
+        out[[a, b]] = out[[b, a]]
+    return out
+
+
+@torch.no_grad()
+def batch_context(core: Core, rows: list, owned: list, swap_rng, site: int | None = None) -> dict:
+    """One read batch on the bare core (fp32): the written index, the states at the answer positions (the final ones, and after block
+    `site` when given), the bare logits there, the head's scores, every request source's digits."""
+    dev = core.dev
+    metas = [m for _, m in rows]
+    qt = question_table(metas, owned)
+    x = to_x(rows, dev)
+    xin = x[:, :-1]
+    ip = torch.from_numpy(qt["ipos"]).to(dev)
+    rq = torch.from_numpy(qt["row"]).to(dev)
+    core.set_streams(metas, "null" if core.anchor is not None else None)  # the index precedes the questions: its writing reads no request
+    h = core.trunk(xin)
+    pred = torch.stack([core.readout(h[rq, ip[:, 0]]).argmax(-1), core.readout(h[rq, ip[:, 1]]).argmax(-1)], 1)
+    written = (pred - 48).cpu().numpy()
+    written = np.where((written >= 0) & (written < gr.RADIX), written, gr.NULL)
+    if core.anchor is not None:                                            # the questions carry the written index
+        req = []
+        for j in range(len(rows)):
+            req.append([tuple(int(d) for d in written[k]) for k in np.nonzero(qt["row"] == j)[0]])
+        core.set_streams(metas, req)
+        h = core.trunk(xin) if site is None else None
+    h_site = None
+    if site is not None:
+        h_site = core.trunk(xin, hi=site)
+        h = core.trunk(xin, lo=site, h=h_site)
+    core.clear()
+    r_ = torch.from_numpy(np.repeat(qt["row"], NA)).to(dev)
+    p_ = torch.from_numpy(qt["pos"].reshape(-1)).to(dev)
+    Q = len(qt["row"])
+    out = dict(qt=qt, x=x, metas=metas, written=written, rq=rq, r_=r_, p_=p_,
+               hq=h[r_, p_].view(Q, NA, core.d), raw=x[:, 1:][r_, p_].view(Q, NA),
+               index_right=float(((pred[:, 0] == x[:, 1:][rq, ip[:, 0]]) & (pred[:, 1] == x[:, 1:][rq, ip[:, 1]])).double().mean()),
+               swapped=_swap_requests(qt["dig"], qt["row"], swap_rng))
+    if site is not None:
+        out["h_site"], out["h_site_q"] = h_site, h_site[r_, p_].view(Q, NA, core.d)
+    out["bare_logits"] = core.readout(out["hq"])
+    if core.head is not None:
+        out["s"] = core.head_scores(out["hq"][:, 0])                       # the head at each question's SEP
+    return out
+
+
+@torch.no_grad()
+def calibrate(core: Core, rows: list, owned: list, mb: int = ROWS_LAST) -> dict:
+    """The floor's tau per level: the quantiles of the per-question largest wrong digit score on the calibration rows (never the read's),
+    read as the read reads (fp32; the anchored core's questions at the written index)."""
+    if core.head is None:
+        return {}
+    lw = []
+    for i in range(0, len(rows), mb):
+        ctx = batch_context(core, rows[i:i + mb], owned, np.random.default_rng(0))
+        dig = torch.from_numpy(ctx["qt"]["dig"]).to(core.dev)
+        lw.append(ctx["s"].scatter(-1, dig[..., None], -1.0).amax(-1).cpu())
+    lw = torch.cat(lw).double()
+    tau = {str(q): [float(torch.quantile(lw[:, l], q)) for l in range(gr.LEVELS)] for q in QS}
+    return dict(rows=len(rows), questions=int(lw.shape[0]), tau=tau,
+                largest_wrong_at_1=[float((lw[:, l] >= 1.0).double().mean()) for l in range(gr.LEVELS)],
+                tau_999_saturated=any(t >= 1.0 for t in tau[str(0.999)]))
+
+
+def _cells(core: Core):
+    out = []
+    srcs = [s for s in SOURCES if core.head is not None or not s.startswith("HEAD")]
+    for src in srcs:
+        for U in U_SET:
+            for Z in Z_SET:
+                for m in M_SET:
+                    out.append((f"{src}_U{int(U)}_{Z}_m{m}", src, U, Z, m))
+    for m in M_SET:
+        out.append((f"G2_m{m}", "G2", 0.0, "-", m))
+        out.append((f"G0_m{m}", "G0", 0.0, "-", m))
+    return out, srcs
+
+
+def _factors(ctx: dict, src: str, mem: torch.Tensor, L9: torch.Tensor, tau999) -> list:
+    dev = mem.device
+    qt = ctx["qt"]
+    if src == "LAYOUT":
+        return exact_factors(torch.from_numpy(qt["dig"]).to(dev), mem, L9)
+    if src == "INDEX":
+        return exact_factors(torch.from_numpy(ctx["written"]).to(dev), mem, L9)
+    if src == "INDEXC":
+        return exact_factors(torch.from_numpy(ctx["swapped"]).to(dev), mem, L9)
+    if src == "HEADP":
+        return head_factors(ctx["s"], mem)
+    if src == "HEADPQ999":
+        return head_factors(ctx["s"], mem, tau999)
+    raise ValueError(src)
+
+
+def _gate(kind: str, U: float, Z: str, m: int, fac: dict, qt: dict, owned_t: torch.Tensor, dev) -> torch.Tensor:
+    if kind == "G0":
+        return torch.ones(len(qt["row"]), m, device=dev)
+    if kind == "G2":
+        return (torch.from_numpy(qt["addr"]).to(dev)[:, None] == owned_t[None, :m]).float()
+    return norm_w(u_of(fac[kind], U, m), Z)
+
+
+def _margin(logits: torch.Tensor, lab: torch.Tensor) -> torch.Tensor:
+    top = logits.gather(-1, lab[..., None])[..., 0]
+    return top - logits.scatter(-1, lab[..., None], float("-inf")).amax(-1)
+
+
+class _Acc:
+    """Per-address sums (64 addresses) and scalar sums."""
+
+    def __init__(self, dev) -> None:
+        self.dev, self.v, self.s = dev, {}, {}
+
+    def add(self, key: str, addr: torch.Tensor, val: torch.Tensor) -> None:
+        if key not in self.v:
+            self.v[key] = torch.zeros(gr.N_ADDR, dtype=torch.float64, device=self.dev)
+        self.v[key] += torch.bincount(addr, weights=val.double(), minlength=gr.N_ADDR)
+
+    def sc(self, key: str, val: float) -> None:
+        self.s[key] = self.s.get(key, 0.0) + float(val)
+
+    def mx(self, key: str, val: float, fn=max) -> None:
+        self.s[key] = fn(self.s[key], float(val)) if key in self.s else float(val)
+
+
+def _mean_over(acc: _Acc, key: str, cnt: torch.Tensor, addrs: list) -> float:
+    a = torch.tensor(addrs, device=acc.dev)
+    return float((acc.v[key][a] / cnt[a].clamp(min=1)).mean()) if key in acc.v else 0.0
+
+
+@torch.no_grad()
+def read_last(core: Core, stacks: dict, rows: list, cal: dict, owned: list, never: list, seed: int, mb: int = ROWS_LAST, log=print) -> dict:
+    """The last-site read on the read rows: every cell of every stack, the solo reads, the owner-weight scan, the request sources'
+    diagnostics. stacks: name -> a stack over the N_OWN owners. -> the record."""
+    dev = core.dev
+    L9 = level_code(dev)
+    owned_t = torch.tensor(owned, device=dev)
+    mem = torch.stack([owned_t // gr.RADIX, owned_t % gr.RADIX], 1)
+    codes = code_tables(N_OWN).to(dev)
+    tau999 = (cal.get("tau") or {}).get(str(0.999))
+    cells, srcs = _cells(core)
+    swap_rng = np.random.default_rng([seed, gr.crc("SCALE|swap")])
+    cnt = torch.zeros(gr.N_ADDR, dtype=torch.float64, device=dev)
+    A = {k: _Acc(dev) for k in stacks}
+    B = _Acc(dev)
+    diag = dict(index_right=0.0, batches=0, questions=0, req_right={s: 0 for s in srcs}, owner_u={s: 0.0 for s in srcs},
+                offband_u_max={s: 0.0 for s in srcs}, floor_owner_zero=0, floor_wrong_pass=0, n_owned_q=0)
+    t0 = time.time()
+    for bi in range(0, len(rows), mb):
+        ctx = batch_context(core, rows[bi:bi + mb], owned, swap_rng)
+        qt = ctx["qt"]
+        Q = len(qt["row"])
+        addr = torch.from_numpy(qt["addr"]).to(dev)
+        o = torch.from_numpy(qt["own"]).to(dev)
+        nv = o < 0
+        qo = (o >= 0).nonzero().flatten()
+        cnt += torch.bincount(addr, minlength=gr.N_ADDR).double()
+        hq, raw, lb = ctx["hq"], ctx["raw"], ctx["bare_logits"]
+        lpb = F.log_softmax(lb, -1)
+        pb = lb.argmax(-1)
+        B.add("bare_raw", addr, (pb == raw).all(-1))
+        mb_ = _margin(lb[nv], raw[nv])
+        B.sc("bare_margin_sum", mb_.sum())
+        B.sc("bare_n_pos", mb_.numel())
+        B.mx("bare_margin_min", mb_.min(), min)
+        fac = {s: _factors(ctx, s, mem, L9, tau999) for s in srcs}
+        dig = torch.from_numpy(qt["dig"]).to(dev)
+        diag["index_right"] += ctx["index_right"]
+        diag["batches"] += 1
+        diag["questions"] += Q
+        diag["n_owned_q"] += int(qo.numel())
+        for s in srcs:
+            if s in ("LAYOUT", "INDEX", "INDEXC"):
+                r = {"LAYOUT": qt["dig"], "INDEX": ctx["written"], "INDEXC": ctx["swapped"]}[s]
+                diag["req_right"][s] += int((r == qt["dig"]).all(-1).sum())
+            else:
+                diag["req_right"][s] += int((ctx["s"].argmax(-1) == dig).all(-1).sum())
+            pr = fac[s][0] * fac[s][1]
+            diag["owner_u"][s] += float(pr[qo, o[qo]].sum())
+            off = pr.clone()
+            off[qo, o[qo]] = float("-inf")
+            diag["offband_u_max"][s] += float(off.amax(-1).clamp(min=0).sum())
+            if s == "HEADPQ999":
+                diag["floor_owner_zero"] += int((pr[qo, o[qo]] == 0).sum())
+                diag["floor_wrong_pass"] += int((off > 0).any(-1).sum())
+        for name, stk in stacks.items():
+            acc = A[name]
+            W = stk.write_all(hq.reshape(-1, core.d)).view(Q, NA, stk.M, core.d)
+            Wo = W[qo, :, o[qo]]                                            # (Qo, 7, d) each owner's own write
+            tgt = codes[o[qo][:, None], raw[qo]]
+            # solo: the owner alone at weight 1 ("ONE") and at each source's solo weight tanh(U prod)
+            hit = (core.readout(hq[qo] + Wo).argmax(-1) == tgt).all(-1)
+            acc.add("solo_ONE", addr[qo], hit)
+            for s in srcs:
+                pr = (fac[s][0] * fac[s][1])[qo, o[qo]]
+                for U in U_SET:
+                    ws = torch.tanh(U * pr)
+                    acc.add(f"solo_{s}_U{int(U)}", addr[qo], (core.readout(hq[qo] + ws[:, None, None] * Wo).argmax(-1) == tgt).all(-1))
+            for a in A_GRID:
+                acc.add(f"scan_{a}", addr[qo], (core.readout(hq[qo] + a * Wo).argmax(-1) == tgt).all(-1))
+            sw = Wo.norm(dim=-1)
+            for key, kind, U, Z, m in cells:
+                w = _gate(kind, U, Z, m, fac, qt, owned_t, dev)
+                dh = torch.einsum("qm,qpmd->qpd", w, W[:, :, :m])
+                la = core.readout(hq + dh)
+                pa = la.argmax(-1)
+                inm = (o >= 0) & (o < m)
+                qi = inm.nonzero().flatten()
+                acc.add(f"{key}|hit_own", addr[qi], (pa[qi] == codes[o[qi][:, None], raw[qi]]).all(-1))
+                acc.add(f"{key}|hit_raw", addr[nv], (pa[nv] == raw[nv]).all(-1))
+                du, lau = dh[nv], la[nv]
+                acc.sc(f"{key}|kl", (lpb[nv].exp() * (lpb[nv] - F.log_softmax(lau, -1))).sum())
+                acc.sc(f"{key}|leak", du.norm(dim=-1).sum())
+                mu = _margin(lau, raw[nv])
+                acc.sc(f"{key}|msum", mu.sum())
+                acc.mx(f"{key}|mmin", mu.min(), min)
+                for sc in FLIPS:
+                    ps = core.readout(hq[nv] + sc * du).argmax(-1)
+                    acc.sc(f"{key}|flip{sc}", (ps != raw[nv]).sum())
+                    acc.sc(f"{key}|flipb{sc}", (ps != pb[nv]).sum())
+                sel = inm[qo]
+                acc.sc(f"{key}|own_write", dh[qi].norm(dim=-1).sum())
+                acc.sc(f"{key}|solo_write", sw[sel].sum())
+                acc.sc(f"{key}|n_own_pos", int(qi.numel()) * NA)
+                acc.sc(f"{key}|ownw", w[qi, o[qi]].sum())
+                acc.sc(f"{key}|n_own", qi.numel())
+                offm = torch.ones_like(w, dtype=torch.bool)
+                offm[qi, o[qi]] = False
+                acc.sc(f"{key}|off", w.abs()[offm].sum())
+                acc.sc(f"{key}|n_q", Q)
+        if ((bi // mb) + 1) % 8 == 0 or bi + mb >= len(rows):
+            el = time.time() - t0
+            done = min(len(rows), bi + mb)
+            log(f"[read last] {done}/{len(rows)} rows: {el:.0f}s spent, ~{el * (len(rows) - done) / done:.0f}s left")
+    nu = max(1.0, B.s["bare_n_pos"])
+    res = dict(rows=len(rows), questions=diag["questions"], questions_per_address_min=int(cnt.min()),
+               index_right=diag["index_right"] / max(1, diag["batches"]),
+               request_right={s: diag["req_right"][s] / max(1, diag["questions"]) for s in srcs},
+               owner_u_over_U={s: diag["owner_u"][s] / max(1, diag["n_owned_q"]) for s in srcs},
+               largest_offband_u_over_U_mean={s: diag["offband_u_max"][s] / max(1, diag["questions"]) for s in srcs},
+               floor=dict(owners_floored_to_0=diag["floor_owner_zero"] / max(1, diag["n_owned_q"]),
+                          questions_passing_a_wrong_member=diag["floor_wrong_pass"] / max(1, diag["questions"])),
+               calibration=cal, bare=dict(unowned=_mean_over(B, "bare_raw", cnt, never), owned=_mean_over(B, "bare_raw", cnt, owned),
+                                          owned_per_owner=[float(B.v["bare_raw"][a] / max(1.0, float(cnt[a]))) for a in owned],
+                                          margin_unowned_mean=B.s["bare_margin_sum"] / nu, margin_unowned_min=B.s["bare_margin_min"]),
+               stacks={}, wall_s=time.time() - t0)
+    for name, acc in A.items():
+        r = dict(solo={}, a_scan={}, cells={})
+        solo_keys = ["ONE"] + [f"{s}_U{int(U)}" for s in srcs for U in U_SET]
+        for k in solo_keys:
+            r["solo"][k] = {str(m): _mean_over(acc, f"solo_{k}", cnt, owned[:m]) for m in M_SET}
+        r["solo_per_owner"] = [float(acc.v["solo_ONE"][a] / max(1.0, float(cnt[a]))) for a in owned]
+        for a in A_GRID:
+            r["a_scan"][repr(a)] = {str(m): _mean_over(acc, f"scan_{a}", cnt, owned[:m]) for m in M_SET}
+        for key, kind, U, Z, m in cells:
+            sk = "ONE" if kind in ("G0", "G2") else f"{kind}_U{int(U)}"
+            s = acc.s
+            n_own_pos = max(1.0, s[f"{key}|n_own_pos"])
+            sw_ = s[f"{key}|solo_write"] / n_own_pos
+            c = dict(m=m, solo_key=sk, solo_mean=r["solo"][sk][str(m)], merged_mean=_mean_over(acc, f"{key}|hit_own", cnt, owned[:m]),
+                     unowned_raw_merged=_mean_over(acc, f"{key}|hit_raw", cnt, never), unowned_raw_bare=res["bare"]["unowned"],
+                     kl_unowned=s[f"{key}|kl"] / nu, leak_write_unowned=s[f"{key}|leak"] / nu, solo_write_owned=sw_,
+                     leak_over_own_write=(s[f"{key}|leak"] / nu) / max(1e-12, sw_),
+                     margin_unowned_mean=s[f"{key}|msum"] / nu, margin_unowned_min=s[f"{key}|mmin"],
+                     flip_rate_unowned={str(sc): s[f"{key}|flip{sc}"] / nu for sc in FLIPS},
+                     flip_vs_bare_unowned={str(sc): s[f"{key}|flipb{sc}"] / nu for sc in FLIPS},
+                     owned_write_over_solo_write=s[f"{key}|own_write"] / max(1e-12, s[f"{key}|solo_write"]),
+                     own_gate_weight_mean=s[f"{key}|ownw"] / max(1.0, s[f"{key}|n_own"]),
+                     offband_gate_mass_per_question=s[f"{key}|off"] / max(1.0, s[f"{key}|n_q"]))
+            c["PROTECTED"] = c["merged_mean"] >= c["solo_mean"] - 0.05
+            c["EXACT"] = abs(c["merged_mean"] - c["solo_mean"]) <= 0.01 and c["kl_unowned"] <= 0.001
+            c["QUIET"] = c["unowned_raw_merged"] >= c["unowned_raw_bare"] - 0.02 and c["kl_unowned"] <= 0.05
+            r["cells"][key] = c
+        res["stacks"][name] = r
+    res["nan_fields"] = _nan_census(res)
+    return res
+
+
+def _nan_census(rec, path: str = "") -> list:
+    """Every non-finite number in a record (the read collects, never raises mid-run): the paths, for the log and the grading."""
+    out = []
+    if isinstance(rec, dict):
+        for k, v in rec.items():
+            out += _nan_census(v, f"{path}/{k}")
+    elif isinstance(rec, (list, tuple)):
+        for i, v in enumerate(rec):
+            out += _nan_census(v, f"{path}[{i}]")
+    elif isinstance(rec, float) and not math.isfinite(rec):
+        out.append(path)
+    return out
+
+
+@torch.no_grad()
+def read_mid(core: Core, arms: StackedArms, rows: list, cal: dict, owned: list, never: list, seed: int, mb: int = ROWS_MID,
+             log=print, quick: bool = False) -> dict:
+    """The mid-site read (m = M_MID) on the read rows: every source x U x Z cell and G2 / G0 (the merged writes after block MID_SITE at
+    every question's answer positions, blocks MID_SITE.. recomputed), and the solo reads with each owned question's owner ALONE in its
+    row (one forward a question, chunked). quick: U 5 only (the CPU shape check). -> the record."""
+    dev = core.dev
+    L9 = level_code(dev)
+    m = arms.M
+    owned_m = owned[:m]
+    owned_t = torch.tensor(owned, device=dev)
+    mem = torch.stack([owned_t[:m] // gr.RADIX, owned_t[:m] % gr.RADIX], 1)
+    codes = code_tables(m).to(dev)
+    tau999 = (cal.get("tau") or {}).get(str(0.999))
+    srcs = [s for s in SOURCES if core.head is not None or not s.startswith("HEAD")]
+    us = U_SET[:1] if quick else U_SET
+    cells = [(f"{s}_U{int(U)}_{Z}_m{m}", s, U, Z) for s in srcs for U in us for Z in Z_SET]
+    cells += [(f"G2_m{m}", "G2", 0.0, "-"), (f"G0_m{m}", "G0", 0.0, "-")]
+    solo_keys = ["ONE"] + [f"{s}_U{int(U)}" for s in srcs for U in us]
+    swap_rng = np.random.default_rng([seed, gr.crc("SCALE|swap")])
+    cnt = torch.zeros(gr.N_ADDR, dtype=torch.float64, device=dev)
+    acc, B = _Acc(dev), _Acc(dev)
+    t0 = time.time()
+    for bi in range(0, len(rows), mb):
+        ctx = batch_context(core, rows[bi:bi + mb], owned, swap_rng, site=MID_SITE)
+        qt = ctx["qt"]
+        Q = len(qt["row"])
+        addr = torch.from_numpy(qt["addr"]).to(dev)
+        o_all = torch.from_numpy(qt["own"]).to(dev)
+        o = torch.where(o_all < m, o_all, torch.full_like(o_all, -2))       # -2 = owned beyond the mid set (neither merged nor unowned)
+        nv = o_all < 0
+        qo = (o >= 0).nonzero().flatten()
+        cnt += torch.bincount(addr, minlength=gr.N_ADDR).double()
+        raw, lb = ctx["raw"], ctx["bare_logits"]
+        lpb = F.log_softmax(lb, -1)
+        pb = lb.argmax(-1)
+        B.add("bare_raw", addr, (pb == raw).all(-1))
+        B.sc("n_pos", int(nv.sum()) * NA)
+        fac = {s: _factors(ctx, s, mem, L9, tau999) for s in srcs}
+        h3q = ctx["h_site_q"]
+        W = arms.write_all(h3q.reshape(-1, core.d)).view(Q, NA, m, core.d)
+        streams_req = None
+        if core.anchor is not None:
+            streams_req = [[tuple(int(d) for d in ctx["written"][k]) for k in np.nonzero(qt["row"] == j)[0]] for j in range(len(ctx["metas"]))]
+
+        def suffix(h3w):
+            core.set_streams(ctx["metas"], streams_req)
+            h6 = core.trunk(ctx["x"][:, :-1], lo=MID_SITE, h=h3w)
+            core.clear()
+            return core.readout(h6[ctx["r_"], ctx["p_"]].view(Q, NA, core.d))
+        for key, kind, U, Z in cells:
+            w = _gate(kind, U, Z, m, fac, qt, owned_t, dev)
+            dh = torch.einsum("qm,qpmd->qpd", w, W)
+            h3w = ctx["h_site"].index_put((ctx["r_"], ctx["p_"]), (h3q + dh).reshape(-1, core.d))
+            la = suffix(h3w)
+            pa = la.argmax(-1)
+            acc.add(f"{key}|hit_own", addr[qo], (pa[qo] == codes[o[qo][:, None], raw[qo]]).all(-1))
+            acc.add(f"{key}|hit_raw", addr[nv], (pa[nv] == raw[nv]).all(-1))
+            acc.sc(f"{key}|kl", (lpb[nv].exp() * (lpb[nv] - F.log_softmax(la[nv], -1))).sum())
+            acc.sc(f"{key}|leak", dh[nv].norm(dim=-1).sum())
+            acc.sc(f"{key}|ownw", w[qo, o[qo]].sum())
+            acc.sc(f"{key}|n_own", qo.numel())
+        # the solo reads: each owned question's owner alone in its row, at each solo weight
+        prs = {s: (fac[s][0] * fac[s][1])[qo, o[qo]] for s in srcs}
+        for sk in solo_keys:
+            if sk == "ONE":
+                ws = torch.ones(qo.numel(), device=dev)
+            else:
+                s, U = sk.rsplit("_U", 1)
+                ws = torch.tanh(float(U) * prs[s])
+            hit = torch.zeros(qo.numel(), dtype=torch.bool, device=dev)
+            live = (ws != 0).nonzero().flatten()
+            for c0 in range(0, live.numel(), mb):
+                part = live[c0:c0 + mb]
+                qq = qo[part]
+                rws = torch.from_numpy(qt["row"]).to(dev)[qq]
+                hs = ctx["h_site"][rws].clone()
+                pos = torch.from_numpy(qt["pos"]).to(dev)[qq]                  # (b, 7)
+                rr = torch.arange(len(qq), device=dev)[:, None].expand_as(pos)
+                hs[rr, pos] = h3q[qq] + ws[part][:, None, None] * W[qq, :, o[qq]]
+                metas = [ctx["metas"][int(j)] for j in rws]
+                req = None if streams_req is None else [streams_req[int(j)] for j in rws]
+                core.set_streams(metas, req)
+                h6 = core.trunk(ctx["x"][rws, :-1], lo=MID_SITE, h=hs)
+                core.clear()
+                la = core.readout(h6[rr, pos])
+                hit[part] = (la.argmax(-1) == codes[o[qq][:, None], raw[qq]]).all(-1)
+            acc.add(f"solo_{sk}", addr[qo], hit)
+        if ((bi // mb) + 1) % 8 == 0 or bi + mb >= len(rows):
+            el = time.time() - t0
+            done = min(len(rows), bi + mb)
+            log(f"[read mid] {done}/{len(rows)} rows: {el:.0f}s spent, ~{el * (len(rows) - done) / done:.0f}s left")
+    nu = max(1.0, B.s["n_pos"])
+    bare_unowned = _mean_over(B, "bare_raw", cnt, never)
+    res = dict(rows=len(rows), m=m, block=MID_SITE, bare=dict(unowned=bare_unowned, owned=_mean_over(B, "bare_raw", cnt, owned_m)),
+               solo={k: _mean_over(acc, f"solo_{k}", cnt, owned_m) for k in solo_keys},
+               solo_per_owner=[float(acc.v["solo_ONE"][a] / max(1.0, float(cnt[a]))) for a in owned_m], cells={}, wall_s=None)
+    for key, kind, U, Z in cells:
+        sk = "ONE" if kind in ("G0", "G2") else f"{kind}_U{int(U)}"
+        s = acc.s
+        c = dict(solo_key=sk, solo_mean=res["solo"][sk], merged_mean=_mean_over(acc, f"{key}|hit_own", cnt, owned_m),
+                 unowned_raw_merged=_mean_over(acc, f"{key}|hit_raw", cnt, never), unowned_raw_bare=bare_unowned,
+                 kl_unowned=s[f"{key}|kl"] / nu, leak_write_unowned=s[f"{key}|leak"] / nu,
+                 own_gate_weight_mean=s[f"{key}|ownw"] / max(1.0, s[f"{key}|n_own"]))
+        c["PROTECTED"] = c["merged_mean"] >= c["solo_mean"] - 0.05
+        c["EXACT"] = abs(c["merged_mean"] - c["solo_mean"]) <= 0.01 and c["kl_unowned"] <= 0.001
+        c["QUIET"] = c["unowned_raw_merged"] >= c["unowned_raw_bare"] - 0.02 and c["kl_unowned"] <= 0.05
+        res["cells"][key] = c
+    res["wall_s"] = time.time() - t0
+    res["nan_fields"] = _nan_census(res)
+    return res
+
+
+@torch.no_grad()
+def text_bits(core: Core, stacks: dict, docs: list, n_docs: int = 128, mb: int = 8) -> dict:
+    """The held-out text bits a byte (the bed's eval rows: DOC + the first ctx bytes of the first n_docs held-out documents), fp32: the bare
+    core; the gated merge (these rows carry no addressed question, so the gate is zero at every position and no write enters: the
+    difference is 0 by construction, computed); G0 with every member of each stack writing at every byte at the last site (a control
+    that can fail)."""
+    dev = core.dev
+    tot = {"bare": 0.0, "merged": 0.0}
+    tot.update({f"G0_{k}": 0.0 for k in stacks})
+    n = 0
+    for i in range(0, min(n_docs, len(docs)), mb):
+        rows = [bytes([DOC]) + d[:gr.CTX] for d in docs[i:i + mb]]
+        x = torch.from_numpy(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rows]).astype(np.int64)).to(dev)
+        core.clear()
+        h = core.trunk(x[:, :-1])
+        y = x[:, 1:].reshape(-1)
+        lb = core.readout(h)
+        nll = F.cross_entropy(lb.reshape(-1, lb.shape[-1]), y, reduction="sum")
+        tot["bare"] += float(nll)
+        tot["merged"] += float(F.cross_entropy(core.readout(h + torch.zeros_like(h)).reshape(-1, lb.shape[-1]), y, reduction="sum"))
+        for k, stk in stacks.items():
+            hf = h.reshape(-1, core.d)
+            dh = torch.zeros_like(hf)
+            for c0 in range(0, hf.shape[0], 2048):
+                dh[c0:c0 + 2048] = stk.write_all(hf[c0:c0 + 2048]).sum(1)
+            tot[f"G0_{k}"] += float(F.cross_entropy(core.readout((hf + dh).view_as(h)).reshape(-1, lb.shape[-1]), y, reduction="sum"))
+        n += y.numel()
+    out = {k: v / n / math.log(2) for k, v in tot.items()}
+    out["merged_minus_bare"] = out["merged"] - out["bare"]
+    out.update({f"G0_{k}_minus_bare": out[f"G0_{k}"] - out["bare"] for k in stacks})
+    out["docs"] = min(n_docs, len(docs))
+    return out
+
+
+# ------------------------------------------------------------------ the card's checks: compiled = eager at step 1, the price lines
+def compile_check(core: Core, packed: np.ndarray, owned: list, never: list, seed: int = 1) -> dict:
+    """Law D at step 1 on the card: the compiled stacked writes against eager on one member-mode batch (the last site's grouped shape)
+    and on the mid site's shape (8 rows x 7 positions, one member a row): the writes and every gradient, as the largest difference over
+    the largest value. The members are moved off their born zero first so every gradient is live."""
+    global COMPILE
+    dev = core.dev
+    rows = member_rows(np.random.default_rng([seed, crc("SCALE|compile")]), packed, owned, never)
+    qt = question_table([m for _, m in rows], owned)
+    x = to_x(rows, dev)
+    with torch.no_grad():
+        core.set_streams([m for _, m in rows])
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+            h = core.trunk(x[:, :-1])
+        core.clear()
+        sel = np.nonzero(qt["own"] >= 0)[0]
+        order = sel[np.argsort(qt["own"][sel], kind="stable")]
+        per = len(order) // N_OWN
+        r_ = torch.from_numpy(np.repeat(qt["row"][order], NA)).to(dev)
+        p_ = torch.from_numpy(qt["pos"][order].reshape(-1)).to(dev)
+        hg = h[r_, p_].float().view(N_OWN, per * NA, core.d)
+        tgt = torch.gather(code_tables(N_OWN).to(dev), 1, x[:, 1:][r_, p_].view(N_OWN, per * NA))
+    out = {}
+    g = torch.Generator(device="cpu").manual_seed(7)
+    cases = (("arms_last", StackedArms.build(N_OWN, core.d, "SCALE|compile|arm"), None, hg, tgt),
+             ("toys_last", StackedToys.build(N_OWN, core.d, "SCALE|compile|toy"), None, hg, tgt),
+             ("arms_mid", StackedArms.build(M_MID, core.d, "SCALE|compile|mid"), torch.arange(ROWS_MID, device=dev) * 2, hg[:ROWS_MID, :NA],
+              tgt[:ROWS_MID, :NA]))
+    for name, stk, idx, hh, tt in cases:
+        stk = stk.to(dev)
+        with torch.no_grad():
+            for p in stk.parameters():
+                p.add_(0.02 * torch.randn(p.shape, generator=g).to(dev))
+        res = {}
+        for mode in (False, True):
+            COMPILE = mode
+            for p in stk.parameters():
+                p.grad = None
+            w = stk.write(hh, idx)
+            lg = core.readout(hh + w)
+            F.cross_entropy(lg.reshape(-1, lg.shape[-1]).float(), tt.reshape(-1)).backward()
+            res[mode] = (w.detach().clone(), [p.grad.detach().clone() for p in stk.parameters()])
+        COMPILE = True
+        rel = lambda a, b: float((a - b).abs().max() / b.abs().max().clamp(min=1e-30))      # noqa: E731
+        out[name] = dict(write=rel(res[True][0], res[False][0]), grad=max(rel(a, b) for a, b in zip(res[True][1], res[False][1])))
+    return out
+
+
+def price(core: Core, packed: np.ndarray, owned: list, never: list, seed: int = 1, steps: int = 200, log=print) -> dict:
+    """The members' price lines on this card: `steps` steps of each trainer on throwaway stacks (the first steps carry the compile)."""
+    a, t = StackedArms.build(N_OWN, core.d, "SCALE|price|arm").to(core.dev), StackedToys.build(N_OWN, core.d, "SCALE|price|toy").to(core.dev)
+    t0 = time.time()
+    train_last(core, {"arms": a, "toys": t}, steps, seed, packed, owned, never, log=log, trace_every=0)
+    last_ms = (time.time() - t0) * 1000 / steps
+    m = StackedArms.build(M_MID, core.d, "SCALE|price|mid").to(core.dev)
+    t0 = time.time()
+    train_mid(core, m, steps, seed, packed, owned, log=log)
+    mid_ms = (time.time() - t0) * 1000 / steps
+    return dict(steps=steps, last_ms_per_step=last_ms, mid_ms_per_step=mid_ms)
+
+
+# ------------------------------------------------------------------ the session: one core, both sites, shipped as it lands
+class Shipper(threading.Thread):
+    """Uploads folders to a Hub repo in the background with retries (the done mark precedes the ship; the card never waits)."""
+
+    def __init__(self, repo: str, log=print) -> None:
+        super().__init__(daemon=True)
+        self.repo, self.log, self.q = repo, log, queue.Queue()
+        self.start()
+
+    def submit(self, folder: str, path_in_repo: str) -> None:
+        self.q.put((folder, path_in_repo))
+
+    def run(self) -> None:
+        from huggingface_hub import HfApi
+        api = HfApi(token=os.environ.get("HF_TOKEN"))
+        while True:
+            folder, dst = self.q.get()
+            try:
+                for k in range(6):
+                    try:
+                        api.upload_folder(folder_path=folder, path_in_repo=dst, repo_id=self.repo,
+                                          commit_message=f"scale members: {os.path.basename(folder)}")
+                        self.log(f"[ship] {dst} shipped")
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        self.log(f"[ship] {dst} attempt {k + 1} failed: {type(e).__name__}; retrying in {30 * 2 ** k} s")
+                        time.sleep(30 * 2 ** k)
+            finally:
+                self.q.task_done()
+
+    def drain(self, timeout: float = 1800.0) -> bool:
+        t0 = time.time()
+        while self.q.unfinished_tasks and time.time() - t0 < timeout:
+            time.sleep(1.0)
+        return not self.q.unfinished_tasks
+
+
+def _save_stack(path: str, stk: nn.Module, meta: dict) -> None:
+    from safetensors.torch import save_file
+    save_file({k: v.detach().cpu().contiguous() for k, v in stk.state_dict().items()}, path,
+              metadata={"meta": json.dumps(meta)})
+
+
+def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_path: str, last_steps: int = 16000,
+             mid_steps: int = 32000, read_batches: int = 64, calib_batches: int = 32, dev: str = "cuda", log=print,
+             shipper: Shipper | None = None, hub_dir: str = "bed/scale_members", quick: bool = False) -> dict:
+    """One grid core's members, resume-first: the last site (48 real arms + 48 toy members, `last_steps`), its read and the text bits;
+    the mid site (16 real arms, `mid_steps` batch steps), its read. Writes <out_dir>/<core tag>_members/ (the stacks as safetensors, the
+    records as JSON, a done mark) and ships it when a shipper is given. quick: the CPU dry run (the mid read at U 5, two text documents)."""
+    core = Core(core_folder, dev)
+    name = f"{core.tag}_members_l{last_steps}_m{mid_steps}"
+    od = os.path.join(out_dir, name)
+    os.makedirs(od, exist_ok=True)
+    done = os.path.join(od, "done.json")
+    if os.path.exists(done):
+        log(f"[members] {name}: done before")
+        return json.load(open(done, encoding="utf-8"))
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    owned, never = owned_sets()
+    packed = load_packed(bed_dir)
+    held = load_heldout(heldout_path)
+    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held)
+    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1])
+    t0 = time.time()
+    meta = dict(core=core.tag, seed=seed, owned=owned, never=never, arm_spec=ARM_SPEC, amoe=AMOE_PIN, toy_hidden=TOY_HID,
+                codes="SCALE|code|<i>: a crc-seeded derangement of a-z", betas=list(BETAS), eps=EPS, lr=LR, warm=WARM)
+    log(f"[members] {name}: core {core.tag} ({'anchored' if core.anchor is not None else 'house'} rotation, head "
+        f"{'on' if core.head is not None else 'off'}); last site {last_steps:,} steps, mid site {mid_steps:,} batch steps; read "
+        f"{len(read_rows)} rows, calibration {len(cal_rows)} rows")
+    rec_path = os.path.join(od, "last.json")
+    if not os.path.exists(rec_path):
+        arms = StackedArms.build(N_OWN, core.d, f"SCALE|arm|s{seed}").to(core.dev)
+        toys = StackedToys.build(N_OWN, core.d, f"SCALE|toy|s{seed}").to(core.dev)
+        tr = train_last(core, {"arms": arms, "toys": toys}, last_steps, seed, packed, owned, never, log=log,
+                        ckpt=os.path.join(od, "last_ckpt.pt"))
+        _save_stack(os.path.join(od, f"arms_last_m{N_OWN}_st{last_steps}.safetensors"), arms, dict(meta, site="last", steps=last_steps))
+        _save_stack(os.path.join(od, f"toys_last_m{N_OWN}_st{last_steps}.safetensors"), toys, dict(meta, site="last", steps=last_steps))
+        cal = calibrate(core, cal_rows, owned)
+        log(f"[members] calibration: tau 0.999 per level {cal.get('tau', {}).get('0.999')}")
+        rd = read_last(core, {"arms": arms, "toys": toys}, read_rows, cal, owned, never, seed, log=log)
+        tb = text_bits(core, {"arms": arms, "toys": toys}, held, n_docs=2 if quick else 128)
+        json.dump(dict(meta, train=tr, read=rd, text_bits=tb), open(rec_path, "w", encoding="utf-8"), indent=1)
+        if os.path.exists(os.path.join(od, "last_ckpt.pt")):
+            os.remove(os.path.join(od, "last_ckpt.pt"))
+        _log_last(rd, tb, log)
+        del arms, toys
+    last = json.load(open(rec_path, encoding="utf-8"))
+    rec_mid = os.path.join(od, "mid.json")
+    if not os.path.exists(rec_mid):
+        arms = StackedArms.build(M_MID, core.d, f"SCALE|midarm|s{seed}").to(core.dev)
+        tr = train_mid(core, arms, mid_steps, seed, packed, owned, log=log, ckpt=os.path.join(od, "mid_ckpt.pt"))
+        _save_stack(os.path.join(od, f"arms_mid_b{MID_SITE}_m{M_MID}_st{mid_steps}.safetensors"), arms,
+                    dict(meta, site=f"after block {MID_SITE}", batch_steps=mid_steps))
+        rd = read_mid(core, arms, read_rows, last["read"]["calibration"], owned, never, seed, log=log, quick=quick)
+        json.dump(dict(meta, train=tr, read=rd), open(rec_mid, "w", encoding="utf-8"), indent=1)
+        if os.path.exists(os.path.join(od, "mid_ckpt.pt")):
+            os.remove(os.path.join(od, "mid_ckpt.pt"))
+        _log_mid(rd, log)
+        del arms
+    out = dict(name=name, core=core.tag, wall_s=time.time() - t0)
+    json.dump(out, open(done, "w", encoding="utf-8"), indent=1)
+    if shipper is not None:
+        shipper.submit(od, f"{hub_dir}/{name}")
+    return out
+
+
+def _log_last(rd: dict, tb: dict, log=print) -> None:
+    log(f"[read last] index right {rd['index_right']:.4f}; requests right " + " ".join(f"{k} {v:.4f}" for k, v in rd["request_right"].items())
+        + f"; bare owned {rd['bare']['owned']:.4f} unowned {rd['bare']['unowned']:.4f}")
+    cal = rd.get("calibration") or {}
+    if cal.get("tau_999_saturated"):
+        log(f"[read last] FLAG the floor's tau saturated at 1 (the largest wrong digit score at 1 on {cal.get('largest_wrong_at_1')} of the "
+            f"calibration questions a level): HEADPQ999 silences every member, so its cells' marks are vacuous")
+    if rd.get("nan_fields"):
+        log(f"[read last] FLAG {len(rd['nan_fields'])} non-finite fields, first {rd['nan_fields'][:3]}")
+    for name, r in rd["stacks"].items():
+        so = r["solo_per_owner"]
+        log(f"[read last] {name}: solo ONE mean {np.mean(so):.4f} (10th percentile {np.quantile(so, 0.1):.4f}, min {min(so):.4f})")
+        for key in ("LAYOUT_U5_REST_m48", "INDEX_U5_REST_m48", "HEADP_U5_REST_m48", "HEADPQ999_U5_REST_m48", "INDEXC_U5_REST_m48",
+                    "G2_m48", "G0_m48"):
+            c = r["cells"].get(key)
+            if c:
+                log(f"[read last] {name} {key}: solo {c['solo_mean']:.4f} merged {c['merged_mean']:.4f} unowned {c['unowned_raw_merged']:.4f}"
+                    f" (bare {c['unowned_raw_bare']:.4f}) KL {c['kl_unowned']:.2e} leak/own {c['leak_over_own_write']:.2e} "
+                    f"P/Q/E {c['PROTECTED']}/{c['QUIET']}/{c['EXACT']}")
+    log("[text bits] " + " ".join(f"{k} {v:.4f}" for k, v in tb.items() if isinstance(v, float)))
+
+
+def _log_mid(rd: dict, log=print) -> None:
+    so = rd["solo_per_owner"]
+    log(f"[read mid] solo ONE mean {np.mean(so):.4f} (min {min(so):.4f}); bare owned {rd['bare']['owned']:.4f}")
+    for key, c in rd["cells"].items():
+        if "_U5_REST" in key or key.startswith("G"):
+            log(f"[read mid] {key}: solo {c['solo_mean']:.4f} merged {c['merged_mean']:.4f} unowned {c['unowned_raw_merged']:.4f} "
+                f"KL {c['kl_unowned']:.2e} P/Q/E {c['PROTECTED']}/{c['QUIET']}/{c['EXACT']}")
