@@ -1,0 +1,228 @@
+# -*- coding: utf-8 -*-
+"""grid_rows.py - THE ADDRESSED GRID ROW (layout "AG", 0.1.70): compartments at fixed positions of the window, each holding one
+addressed lookup frame, then an index the craft writes and the questions. The row is 32 slots of 128 bytes (context 4,096):
+    slot 0        the head: DOC, MODE c, SEP, g, SEP, then corpus text
+    slots 1-24    24 COMPARTMENTS: an addressed lookup frame DATA a1 a2 CUE key SEP value END (a1 a2 = the compartment's address,
+                  two digits '0'-'7'), then corpus text to the slot's end
+    slots 25-27   THE INDEX: DATA, one entry CUE key SEP a1 a2 for each question in the questions' order, END, corpus text
+    slots 28-31   THE QUESTIONS: CUE key SEP value END for each asked record, corpus text
+The address space is 64 addresses (two digits of 8); a row carries 24 of them, sorted (a compartment's slot moves with the row, its
+address does not). Keys are bed_frames.key_name (distinct in the row), values six lowercase letters (the caption register).
+
+THE STREAMS (the anchored rotary's per-token address, anchored_rope.py): every input position carries a key stream and a query stream
+of two digits (0-7, 8 = the null anchor). A token inside compartment c (its whole slot) carries c's digits as key and as query; a
+question's answer-producing positions (its SEP and its six value bytes, which predict the six value bytes and the END) carry the null
+anchor as key and THE ADDRESS THEY ASK FOR as query; every other token carries the null anchor for both.
+
+Positions in the meta are row positions (0 .. ctx); the input x is row[:-1] and the target y is row[1:], so the target of input
+position t is row[t + 1]. Self-test (pure numpy): python grid_rows.py --selftest"""
+from __future__ import annotations
+
+import sys
+import zlib
+
+import numpy as np
+
+try:
+    from . import bed_frames as bf  # noqa: E402  (the package)
+except ImportError:                                      # run as a file: the folder on the path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import bed_frames as bf  # noqa: E402
+from geolip.alephllm.data.special_tokens import CUE, DATA, DOC, END, MODE, SEP  # noqa: E402
+
+SLOT = 128
+CTX = 4096
+N_SLOTS = CTX // SLOT
+N_COMP = 24
+COMP_SLOTS = tuple(range(1, 1 + N_COMP))
+INDEX_LO, INDEX_HI = 25 * SLOT, 28 * SLOT
+QUEST_LO, QUEST_HI = 28 * SLOT, 32 * SLOT
+RADIX, LEVELS = 8, 2
+N_ADDR = RADIX ** LEVELS
+NULL = RADIX                                      # the null anchor's digit
+VLEN = bf.REGISTERS["caption"][3]
+HEAD = bytes([DOC, MODE]) + b"c" + bytes([SEP]) + b"g" + bytes([SEP])
+# the segments of a row's target bytes (bits_by_segment): what the byte at row position t + 1 belongs to
+SEGMENTS = ("head", "frame", "comp_text", "index_entry", "index_text", "q_answer", "q_other", "q_text")
+
+
+def crc(tag: str) -> int:
+    return zlib.crc32(tag.encode())
+
+
+def digits(a: int) -> tuple:
+    """An address 0..63 as its two digits (first, second)."""
+    return (a // RADIX, a % RADIX)
+
+
+def addr_bytes(a: int) -> bytes:
+    d1, d2 = digits(a)
+    return bytes([48 + d1, 48 + d2])
+
+
+def owned_order(n_owned: int = 48) -> tuple:
+    """The members' address sets (the merge order): a fixed permutation of the 64 addresses by crc; the first n_owned are owned in that
+    order, the rest are never owned (the unowned set at every merged count)."""
+    perm = np.random.default_rng(crc("SCALE|owned")).permutation(N_ADDR)
+    return tuple(int(a) for a in perm[:n_owned]), tuple(sorted(int(a) for a in perm[n_owned:]))
+
+
+def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False) -> tuple:
+    """One addressed grid row. rng: the row's numpy Generator; src: corpus text (at least ctx + 1 bytes; specials become newlines).
+    addrs: the row's 24 addresses (None = 24 distinct draws of the 64); they are sorted onto slots 1-24. asked: the records the questions
+    ask, as indices into the sorted compartments, in question order (None = all 24 in a drawn order). swap_index: one pair of index
+    entries carries the other's address (a corrupted index; the gauge's control that must fail), the questions unchanged.
+    -> (row bytes of ctx + 1, meta)."""
+    assert ctx == CTX, f"the addressed grid is laid out for a {CTX}-byte window, got {ctx}"
+    if addrs is None:
+        addrs = rng.choice(N_ADDR, size=N_COMP, replace=False)
+    addrs = sorted(int(a) for a in addrs)
+    assert len(addrs) == N_COMP and len(set(addrs)) == N_COMP and all(0 <= a < N_ADDR for a in addrs), addrs
+    keys = [bf.key_name(int(i)) for i in rng.permutation(16000)[:N_COMP]]
+    vals = [bf.value(rng, "letters", VLEN) for _ in range(N_COMP)]
+    order = [int(i) for i in (rng.permutation(N_COMP) if asked is None else asked)]
+    assert order and len(set(order)) == len(order) and all(0 <= i < N_COMP for i in order), order
+    row = bytearray(bf.clean_filler(src, ctx + 1))
+    row[0:len(HEAD)] = HEAD
+    recs = []
+    for j, (a, s) in enumerate(zip(addrs, COMP_SLOTS)):
+        frame = bytes([DATA]) + addr_bytes(a) + bytes([CUE]) + keys[j] + bytes([SEP]) + vals[j] + bytes([END])
+        lo = s * SLOT
+        assert len(frame) <= SLOT
+        row[lo:lo + len(frame)] = frame
+        recs.append(dict(addr=a, slot=s, lo=lo, hi=lo + SLOT, key=keys[j].decode(), value=vals[j].decode(),
+                         frame_end=lo + len(frame), v0=lo + 4 + len(keys[j]) + 1))
+    shown = list(order)
+    if swap_index:                                      # a corrupted index: two entries trade their addresses
+        assert len(order) >= 2
+        i, j = (int(x) for x in rng.choice(len(order), size=2, replace=False))
+        shown[i], shown[j] = order[j], order[i]
+    entries, p = [], INDEX_LO + 1
+    ix = bytearray([DATA])
+    for qi, o in enumerate(order):
+        e = bytes([CUE]) + keys[o] + bytes([SEP]) + addr_bytes(recs[shown[qi]]["addr"])
+        entries.append(dict(rec=o, lo=p, a_pos=p + len(e) - 2, shown=shown[qi]))
+        ix += e
+        p += len(e)
+    ix += bytes([END])
+    assert INDEX_LO + len(ix) <= INDEX_HI, len(ix)
+    row[INDEX_LO:INDEX_LO + len(ix)] = ix
+    quest, p = [], QUEST_LO
+    qb = bytearray()
+    for o in order:
+        q = bytes([CUE]) + keys[o] + bytes([SEP]) + vals[o] + bytes([END])
+        quest.append(dict(rec=o, lo=p, sep=p + 1 + len(keys[o]), v0=p + 2 + len(keys[o]), end=p + 2 + len(keys[o]) + VLEN))
+        qb += q
+        p += len(q)
+    assert QUEST_LO + len(qb) <= QUEST_HI, len(qb)
+    row[QUEST_LO:QUEST_LO + len(qb)] = qb
+    row = bytes(row[:ctx + 1])
+    meta = dict(layout="AG", addrs=addrs, recs=recs, index=entries, index_end=INDEX_LO + len(ix), questions=quest,
+                quest_end=QUEST_LO + len(qb), swap_index=swap_index)
+    return row, meta
+
+
+def streams(meta: dict, ctx: int = CTX, request=None) -> tuple:
+    """The row's address streams for the input positions 0 .. ctx - 1: (dk, dq), each int8 (ctx, 2). request: the address each question
+    asks for, in question order (None = the true address; a digit outside 0-7 = the null anchor at that level)."""
+    dk = np.full((ctx, LEVELS), NULL, dtype=np.int8)
+    for r in meta["recs"]:
+        dk[r["lo"]:r["hi"]] = digits(r["addr"])
+    dq = dk.copy()
+    for qi, q in enumerate(meta["questions"]):
+        req = digits(meta["recs"][q["rec"]]["addr"]) if request is None else tuple(request[qi])
+        req = tuple(int(d) if 0 <= int(d) < RADIX else NULL for d in req)
+        span = slice(q["sep"], q["sep"] + VLEN + 1)              # the SEP and the six value bytes (they predict the value and the END)
+        dk[span] = NULL
+        dq[span] = req
+    return dk, dq
+
+
+def answer_positions(meta: dict) -> list:
+    """For each question (in order): the input positions whose targets are its six value bytes and its END."""
+    return [list(range(q["sep"], q["sep"] + VLEN + 1)) for q in meta["questions"]]
+
+
+def index_positions(meta: dict) -> list:
+    """For each index entry (in order): the two input positions whose targets are its address digits."""
+    return [(e["a_pos"] - 1, e["a_pos"]) for e in meta["index"]]
+
+
+def head_targets(meta: dict) -> tuple:
+    """The address head's reads: each question's SEP (an input position) and the asked address's two digits. -> (positions, digits)."""
+    pos = [q["sep"] for q in meta["questions"]]
+    dig = [digits(meta["recs"][q["rec"]]["addr"]) for q in meta["questions"]]
+    return pos, dig
+
+
+def written_request(pred_row: np.ndarray, meta: dict) -> list:
+    """The address the craft wrote for each question: its greedy bytes at the index entry's two address positions (pred_row: the argmax
+    at every input position of the teacher-forced row), as digits (a byte outside '0'-'7' is the null anchor)."""
+    out = []
+    for p1, p2 in index_positions(meta):
+        b1, b2 = int(pred_row[p1]), int(pred_row[p2])
+        out.append(tuple((b - 48) if 48 <= b < 48 + RADIX else NULL for b in (b1, b2)))
+    return out
+
+
+def segments(meta: dict, ctx: int = CTX) -> np.ndarray:
+    """The segment id (SEGMENTS) of every target byte (the byte at row position t + 1 for input position t)."""
+    seg = np.full(ctx + 1, SEGMENTS.index("q_text"), dtype=np.int8)
+    seg[:SLOT] = SEGMENTS.index("head")
+    for r in meta["recs"]:
+        seg[r["lo"]:r["hi"]] = SEGMENTS.index("comp_text")
+        seg[r["lo"]:r["frame_end"]] = SEGMENTS.index("frame")
+    seg[INDEX_LO:INDEX_HI] = SEGMENTS.index("index_text")
+    seg[INDEX_LO:meta["index_end"]] = SEGMENTS.index("index_entry")
+    seg[QUEST_LO:meta["quest_end"]] = SEGMENTS.index("q_other")
+    for q in meta["questions"]:
+        seg[q["v0"]:q["end"] + 1] = SEGMENTS.index("q_answer")
+    return seg[1:]
+
+
+def selftest(n: int = 200) -> None:
+    """Every row's arithmetic: the frames, the index and the questions where the meta says, the streams' spans, the answers' targets."""
+    rng = np.random.default_rng(1)
+    src = bytes(rng.integers(32, 127, size=CTX + 1, dtype=np.uint8))
+    for t in range(n):
+        r = np.random.default_rng([7, t])
+        swap = t % 5 == 4
+        asked = None if t % 3 else list(r.permutation(N_COMP)[:18])
+        row, m = compose_ag(r, src, addrs=None, asked=asked, swap_index=swap)
+        assert len(row) == CTX + 1 and row[:len(HEAD)] == HEAD
+        for rec in m["recs"]:
+            assert row[rec["lo"]] == DATA and row[rec["lo"] + 1:rec["lo"] + 3] == addr_bytes(rec["addr"])
+            assert row[rec["v0"]:rec["v0"] + VLEN].decode() == rec["value"] and row[rec["v0"] + VLEN] == END
+            assert row[rec["v0"] - 1] == SEP and row[rec["lo"] + 3] == CUE
+        assert [rec["slot"] for rec in m["recs"]] == list(COMP_SLOTS) and m["addrs"] == sorted(m["addrs"])
+        x, y = row[:-1], row[1:]
+        for qi, (q, e) in enumerate(zip(m["questions"], m["index"])):
+            rec = m["recs"][q["rec"]]
+            assert row[q["lo"]] == CUE and row[q["sep"]] == SEP and row[q["v0"]:q["v0"] + VLEN].decode() == rec["value"]
+            assert row[q["end"]] == END and row[q["lo"] + 1:q["sep"]].decode() == rec["key"]
+            shown = m["recs"][e["shown"]]
+            assert row[e["a_pos"]:e["a_pos"] + 2] == addr_bytes(shown["addr"]) and row[e["a_pos"] - 1] == SEP
+            assert (e["shown"] == e["rec"]) or swap
+            tg = [y[p] for p in answer_positions(m)[qi]]
+            assert bytes(tg) == rec["value"].encode() + bytes([END]), "the answer positions' targets are the value and the END"
+            p1, p2 = index_positions(m)[qi]
+            assert bytes([y[p1], y[p2]]) == addr_bytes(shown["addr"])
+        dk, dq = streams(m)
+        for rec in m["recs"]:
+            assert (dk[rec["lo"]:rec["hi"]] == digits(rec["addr"])).all()
+        for q in m["questions"]:
+            sp = slice(q["sep"], q["sep"] + VLEN + 1)
+            assert (dk[sp] == NULL).all() and (dq[sp] == digits(m["recs"][q["rec"]]["addr"])).all()
+        assert (dk[:SLOT] == NULL).all() and (dk[INDEX_LO:INDEX_HI] == NULL).all()
+        assert (dq[INDEX_LO:INDEX_HI] == NULL).all()
+        seg = segments(m)
+        assert seg.shape == (CTX,)
+        assert len(m["questions"]) == (N_COMP if asked is None else 18)
+    own, never = owned_order()
+    assert len(own) == 48 and len(never) == 16 and not set(own) & set(never)
+    print(f"grid_rows self-test: {n} rows OK (frames, index, questions, streams, segments; 1 in 5 with a swapped index; 1 in 3 asking 18)")
+
+
+if __name__ == "__main__" and "--selftest" in sys.argv:
+    selftest()

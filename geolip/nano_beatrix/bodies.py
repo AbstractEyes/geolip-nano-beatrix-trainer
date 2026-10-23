@@ -7,6 +7,7 @@ means one thing everywhere. An arm is "<attention>-<bank>":
              hubr   hubs with the address rotary                     hubrn  hubs with the address rotary, no position table
              hubd   hubs with two address masses a block (dual)      alt    hub / softmax+rotary alternating
              altn   alternating, both rotaries                       castor = smr, pollux = altn (the nano twin pair)
+             alhena = smr turned by the anchored multi-position rotary (0.1.70, the third of the triplets; the trainer's rotation)
              hubdb  six dual hubs on the bigger address              altd   Pollux's layout with dual hubs
              d5s1   five dual hubs + one rotary softmax block (3)    d4s2   four dual hubs + two rotary softmax blocks (1, 3)
              altdc, hubdc, polluxc  altd, hubd and Pollux with Canon layers on every block's mixer and bank inputs
@@ -55,6 +56,10 @@ def _attention(L: int = N_LAYERS) -> dict:
          "altn": dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_rotary=True)}
     A["castor"] = A["smr"]            # the twins' names: Castor = the rotary softmax body (the mortal twin, the growing memory)
     A["pollux"] = A["altn"]           # Pollux = the all-rotary alternating body (the immortal twin, the constant decode memory)
+    # 0.1.70: the third of the triplets. Alhena (gamma Geminorum, the third-brightest star of the Twins after Pollux and Castor; al-han'a,
+    # the mark) = Castor's layout whose softmax blocks turn by the anchored multi-position rotary (anchored_rope.py: the address mark each
+    # compartment of the window carries). The config is Castor's (the same init from the same seed); the trainer applies the rotation.
+    A["alhena"] = A["smr"]
     # the dual-hub bodies: each hub keeps two address masses, one rotary (sharp near) and one plain (distance-free, far reach)
     A["hubdb"] = dict(A["hubd"], hub_K=64, hub_D=32, hub_const=2)        # six dual hubs on the bigger address (two books of 64 in 32)
     A["altd"] = dict(hub_layers=tuple(range(0, L, 2)), attn_rotary=True, hub_dual=True)   # Pollux's layout with dual hubs

@@ -63,13 +63,19 @@ def run_tag(args: dict) -> str:
         where = {"value": "v", "all": "a"}[args.get("xc_pos", "value")]
         xw, xf = float(args.get("xc_w", "1.0")), int(args.get("xc_from", "0"))
         pr = f"_pair-{pair}-{role}{where}" + (f"w{xw:g}" if xw != 1.0 else "") + (f"f{xf}" if xf else "")
+    # 0.1.70: the scale test's cores: the grid rows and their share of a batch ("_gag50"), the rotation when not the house's ("_ranc"),
+    # the address head and its weight ("_ahdigit1"), and a series name that keeps a re-run of a stored recipe from overwriting it
+    scale = ((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
+             + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
+             + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
+             + (f"_{args['series']}" if args.get("series") else ""))
     return (f"{arm}_s{seed}" + ("_smoke" if smoke else "") + (f"_L{steps}" if steps > 2500 and not smoke else "")   # the short grid keeps its bare names
             + (f"_dense{args.get('records')}" if int(args.get("records", "1")) > 1 else "")
             + (f"_b{args['rotary_base']}" if "rotary_base" in args else "") + (f"_f{args['hub_rotary_frac']}" if "hub_rotary_frac" in args else "")
             + (f"_K{args['hub_K']}D{args['hub_D']}c{args.get('hub_const', '1')}" if "hub_K" in args else "")
             + (f"_{args['size']}" if args.get("size", "nano") != "nano" else "") + hp      # 0.1.57: the body's size when not the nano's
-            + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr + pr
-            + (f"_st{args['stage']}" if args.get("stage") else                              # 0.1.22: a curriculum block names its stage
+            + (f"_ctx{ctx}" if ctx != 1024 else "") + (f"_c{args['cues']}" if args.get("cues", "5") != "5" else "") + fr + pr + scale
+            + (f"_st{args['stage']}" if args.get("stage") else                            # 0.1.22: a curriculum block names its stage
                (f"_from_{init_suffix(args['init'], arm, seed)}" if "init" in args else ""))   # a continued run names its starting craft
             + ("_carry" if args.get("carry_gauge") == "1" else "")               # 0.1.37: a gauge read with the carry gauge (reading with notes)
             + (("_rows" + str(args.get("carry_rows"))) if args.get("carry_gauge") == "1" and str(args.get("carry_rows") or "192") != "192" else "")   # 0.1.39: the row count when not 192

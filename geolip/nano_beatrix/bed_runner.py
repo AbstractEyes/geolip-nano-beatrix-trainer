@@ -43,7 +43,8 @@ except ImportError:                                      # run as a file: the fo
 
 GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "register", "tags", "n_lookup", "n_bulk", "frame_records",
              "nest", "overlap", "records", "hub_K", "hub_D", "hub_const", "plant", "lr", "warmup", "cues", "init", "sized", "sliced", "stage",
-             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from", "wd", "wd_set", "head_mode")
+             "pair", "pair_init", "xc", "xc_pos", "xc_w", "xc_from", "wd", "wd_set", "head_mode",
+             "grid", "grid_p", "rotary", "head", "head_lam", "series")          # 0.1.70: the scale test's cores
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -111,6 +112,14 @@ def run_label(run: list) -> str:
         parts.append(f"warmup {kv['warmup']}")
     if kv.get("wd") not in (None, "0", "0.0"):                     # 0.1.31: AdamW, its decay and its set
         parts.append(f"AdamW {kv['wd']}" + ("" if kv.get("wd_set", "mat") == "mat" else f" {kv['wd_set']}"))
+    if kv.get("grid"):                                            # 0.1.70: the scale test's cores
+        parts.append(f"grid {kv['grid']} {kv.get('grid_p', '0.5')}")
+    if kv.get("rotary"):
+        parts.append(f"rotary {kv['rotary']}")
+    if kv.get("head"):
+        parts.append(f"head {kv['head']} {kv.get('head_lam', '1')}")
+    if kv.get("series"):
+        parts.append(kv["series"])
     if kv.get("stage"):
         parts.append(f"stage {kv['stage']}")
     elif kv.get("init"):

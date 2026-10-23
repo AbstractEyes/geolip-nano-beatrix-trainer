@@ -142,6 +142,16 @@ and the scrutiny set, the registers, the third pass, and the pair; C2 prices the
 pure-Adam twin:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_bed_adamw.ipynb)
 
+The scale test's cores (0.1.70), `colab/nano_scale_cores.ipynb`: **Alhena**, the third of the triplets (gamma Geminorum, the
+third-brightest star of the Twins; al-han'a, the mark), is Castor's layout whose softmax blocks turn by the anchored multi-position
+rotary (`anchored_rope.py`): each head's 16 rotate-half pairs split by job, six turned by the relative position (NTK-aware x4), two
+carrying content unturned, eight turned by the two digits of the address a token sits in or, at a question's answer positions, asks for.
+Half of each batch's rows are addressed grid rows (`grid_rows.py`: 24 compartments of 128 bytes at fixed places, each with one
+addressed lookup frame, an index the model writes and 24 questions), the other half the bed's framed rows place for place, and a
+per-digit address head trains with the core (`--grid=ag --head=digit`; Alhena is `--arm=alhena-both`). Beside it: Castor on the same
+rows without the rotation, and the stored 4,096 framed cell trained again verbatim (seed 1 twice, the hardware repeat); two seeds:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_scale_cores.ipynb)
+
 Then:
 
 ```bash
