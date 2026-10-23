@@ -160,6 +160,19 @@ product gate with the rest discount, the request from the layout, the core's wri
 grades whether each merged member keeps its solo answers and the unowned questions keep the bare core's:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_scale_members.ipynb)
 
+The find screen (0.1.72): a request that must find its record. `--head_at=both` trains the same address head at each index entry's SEP
+as well (`--head_lam_i`, weight 1): both address streams carry the null anchor there and nothing earlier in the row names the entry key's
+address but its record, so the head must find the record by its key. Each term has its own novelty gate and descent record; every grid
+core's end read adds the free-running index (the core's own index bytes in the row, at the fixed point of re-feeding them:
+`grid_rows.free_running`). The read's two-pass form (`rotary_scale.FIND_SOURCES`): pass 1 reads the head at the index entries with every
+question at the null anchor, a digit enters the question's stream when its own score passes .5, pass 2 reads the answers with that address
+in the stream and the head's scores in the gate; every request source carries its own address. `--head_at=question` (the default) is
+0.1.71 bit for bit. The cores (the scale test's stored cores read with no training, Alhena-F on two seeds, the replication core, the
+retrain rule), `colab/nano_find_cores.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_find_cores.ipynb)
+The members on them (the scale test's recipe verbatim; the two-pass read), `colab/nano_find_members.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_find_members.ipynb)
+
 Then:
 
 ```bash

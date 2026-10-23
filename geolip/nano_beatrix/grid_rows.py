@@ -156,6 +156,16 @@ def head_targets(meta: dict) -> tuple:
     return pos, dig
 
 
+def index_head_targets(meta: dict) -> tuple:
+    """0.1.72: the address head's reads at the index: each entry's SEP (an input position; its target is the entry's first address byte)
+    and the address of the record that holds the entry's key, as two digits (the truth, whatever address the entry shows).
+    -> (positions, digits). At an entry's SEP both streams carry the null anchor (the index lies outside every compartment) and nothing
+    earlier in the row names the key's address but its record."""
+    pos = [e["a_pos"] - 1 for e in meta["index"]]
+    dig = [digits(meta["recs"][e["rec"]]["addr"]) for e in meta["index"]]
+    return pos, dig
+
+
 def written_request(pred_row: np.ndarray, meta: dict) -> list:
     """The address the craft wrote for each question: its greedy bytes at the index entry's two address positions (pred_row: the argmax
     at every input position of the teacher-forced row), as digits (a byte outside '0'-'7' is the null anchor)."""
@@ -164,6 +174,61 @@ def written_request(pred_row: np.ndarray, meta: dict) -> list:
         b1, b2 = int(pred_row[p1]), int(pred_row[p2])
         out.append(tuple((b - 48) if 48 <= b < 48 + RADIX else NULL for b in (b1, b2)))
     return out
+
+
+def row_request(row: bytes, meta: dict) -> list:
+    """0.1.72: the address each index entry of `row` names, as digits (a byte outside '0'-'7' is the null anchor): on a free-running row
+    (free_running) the craft's own index, in question order."""
+    out = []
+    for p1, p2 in index_positions(meta):
+        out.append(tuple((b - 48) if 48 <= b < 48 + RADIX else NULL for b in (row[p1 + 1], row[p2 + 1])))
+    return out
+
+
+def put_index_bytes(row: bytes, meta: dict, pred_row: np.ndarray) -> bytes:
+    """0.1.72: the row with each index entry's two address bytes replaced by the craft's greedy bytes there (pred_row: the argmax at every
+    input position of this row; the byte at row position t + 1 is predicted at input position t). Everything else stays as composed."""
+    b = bytearray(row)
+    for p1, p2 in index_positions(meta):
+        b[p1 + 1], b[p2 + 1] = int(pred_row[p1]), int(pred_row[p2])
+    return bytes(b)
+
+
+def free_running(ag: list, greedy, max_passes: int | None = None) -> tuple:
+    """0.1.72: THE FREE-RUNNING INDEX (the craft's own index bytes in the row). For rows ag [(row, meta)]:
+        b(0) = the row as composed;   b(k + 1) = b(k) with its index address bytes replaced by pass k's greedy bytes there;
+        stop at the first k with b(k + 1) = b(k), or after max_passes passes (default: the row's address byte count)
+    Each address byte depends only on the bytes before it, so pass k fixes at least the k-th address byte for good: the fixed point is the
+    sequential greedy writing (entry by entry, digit by digit) whatever the start, reached within the byte count's passes. Keys, records,
+    questions and values stay as composed. greedy(ag_now) -> np.ndarray (len(ag_now), >= the index's end) the argmax at every input
+    position; every pass sends ALL the rows (a fixed batch: a row's bytes never depend on which rows are still moving).
+    -> (the rows at the fixed point [(row, meta)], passes taken, converged: per row, b(k + 1) = b(k) seen or the byte count reached)."""
+    n_bytes = max(2 * len(m["index"]) for _, m in ag)
+    limit = n_bytes if max_passes is None else int(max_passes)
+    cur = [r for r, _ in ag]
+    metas = [m for _, m in ag]
+    done = [False] * len(ag)
+    passes = 0
+    while passes < limit and not all(done):
+        pred = greedy(list(zip(cur, metas)))
+        passes += 1
+        for i in range(len(cur)):
+            nxt = put_index_bytes(cur[i], metas[i], pred[i])
+            done[i] = done[i] or nxt == cur[i]
+            cur[i] = nxt
+    conv = [d or passes >= 2 * len(m["index"]) for d, m in zip(done, metas)]
+    return list(zip(cur, metas)), passes, conv
+
+
+def decode_scores(s, thr: float = 0.5) -> list:
+    """0.1.72: THE STREAM DECODE of per-digit scores s (Q, LEVELS, RADIX) in [0, 1]: a level's digit is d when s(d) > thr for exactly one
+    digit d, else the null anchor (each digit judged by its own score against one fixed number; no digit is compared with another).
+    -> [(d1, d2)] per query."""
+    s = np.asarray(s, dtype=np.float64)
+    above = s > thr
+    one = above.sum(-1) == 1
+    dig = np.where(one, above.argmax(-1), NULL)
+    return [tuple(int(v) for v in row) for row in dig]
 
 
 def segments(meta: dict, ctx: int = CTX) -> np.ndarray:

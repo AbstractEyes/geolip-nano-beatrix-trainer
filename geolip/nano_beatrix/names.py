@@ -64,10 +64,12 @@ def run_tag(args: dict) -> str:
         xw, xf = float(args.get("xc_w", "1.0")), int(args.get("xc_from", "0"))
         pr = f"_pair-{pair}-{role}{where}" + (f"w{xw:g}" if xw != 1.0 else "") + (f"f{xf}" if xf else "")
     # 0.1.70: the scale test's cores: the grid rows and their share of a batch ("_gag50"), the rotation when not the house's ("_ranc"),
-    # the address head and its weight ("_ahdigit1"), and a series name that keeps a re-run of a stored recipe from overwriting it
+    # the address head and its weight ("_ahdigit1"), and a series name that keeps a re-run of a stored recipe from overwriting it;
+    # 0.1.72: the head's term at the index entries too (--head_at=both) and its weight ("_ahdigit1i1")
     scale = ((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
              + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
              + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
+             + (f"i{float(args.get('head_lam_i', '1.0')):g}" if args.get("head") and args.get("head_at", "question") == "both" else "")
              + (f"_{args['series']}" if args.get("series") else ""))
     return (f"{arm}_s{seed}" + ("_smoke" if smoke else "") + (f"_L{steps}" if steps > 2500 and not smoke else "")   # the short grid keeps its bare names
             + (f"_dense{args.get('records')}" if int(args.get("records", "1")) > 1 else "")

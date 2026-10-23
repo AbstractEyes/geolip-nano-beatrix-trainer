@@ -173,11 +173,21 @@ ROTARY = ARGS.get("rotary", "") or ("anchored" if ALHENA else "")
 assert not ALHENA or ROTARY == "anchored", f"alhena turns by the anchored rotation, not {ROTARY!r}"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
+# 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
+# the null anchor there, the target the address of the record that holds the entry's key), the term head_lam_i x the binary cross-entropy
+# summed over its outputs, averaged over the entries; each term has its own novelty gate and descent record, and the trace reads the head at
+# the entries. The end read of every grid core adds the free-running index (the craft's own index bytes in the row: the fixed point,
+# grid_rows.free_running) and the answers through it; with the head at the entries, the head there on that row, the answers through its
+# decoded address and its calibration in the same form. --head_at=question (the default): the 0.1.71 path bit for bit.
+HEAD_AT = ARGS.get("head_at", "question")
+HEAD_LAM_I = float(ARGS.get("head_lam_i", "1.0"))
 TRACE_EVERY = int(ARGS.get("trace_every", "2000"))
 READ_BATCHES = int(ARGS.get("read_batches", "4" if SMOKE else "64"))       # the end read's batches of mb grid rows (held-out filler)
 CALIB_BATCHES = int(ARGS.get("calib_batches", "2" if SMOKE else "32"))     # the head's calibration batches (never the read's rows)
 assert GRID in ("", "ag") and ROTARY in ("", "anchored") and HEAD_FORM in ("", "digit"), (GRID, ROTARY, HEAD_FORM)
 assert GRID or not (ROTARY or HEAD_FORM), "--rotary=anchored and --head=digit read the grid rows (--grid=ag)"
+assert HEAD_AT in ("question", "both") and (HEAD_AT == "question" or HEAD_FORM == "digit"), \
+    f"--head_at={HEAD_AT!r}: question, or both (the index entries too) with --head=digit"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
 if GRID:
     assert CTX == gr.CTX and 0 < N_AG <= MB, f"the grid rows need --ctx={gr.CTX} and 0 < grid_p x mb <= mb: ctx {CTX}, {N_AG} of {MB}"
@@ -478,12 +488,14 @@ def ag_rows(rng, n, docs=None):
 
 def grid_aux(metas, first, request=None):
     """The streams and the head's reads of a batch whose rows first, first + 1, ... are the grid rows `metas` (the rows before them at
-    the null anchor): dk, dq (B, CTX, 2); head_row, head_pos (each question's SEP) and head_dig (the asked address's digits).
+    the null anchor): dk, dq (B, CTX, 2); head_row, head_pos (each question's SEP) and head_dig (the asked address's digits); 0.1.72:
+    ihead_row, ihead_pos, ihead_dig, the same at each index entry's SEP (grid_rows.index_head_targets; read only with --head_at=both).
     request: per grid row, the address each question asks for (None = the true address; grid_rows.streams)."""
     B = first + len(metas)
     dk = np.full((B, CTX, gr.LEVELS), gr.NULL, dtype=np.int64)
     dq = dk.copy()
     hr, hp, hd = [], [], []
+    ir, ip, id_ = [], [], []
     for j, m in enumerate(metas):
         k_, q_ = gr.streams(m, CTX, None if request is None else request[j])
         dk[first + j], dq[first + j] = k_, q_
@@ -491,8 +503,14 @@ def grid_aux(metas, first, request=None):
         hr += [first + j] * len(pos)
         hp += pos
         hd += dig
+        pos, dig = gr.index_head_targets(m)
+        ir += [first + j] * len(pos)
+        ip += pos
+        id_ += dig
     return dict(dk=torch.from_numpy(dk), dq=torch.from_numpy(dq), head_row=torch.tensor(hr, dtype=torch.long),
-                head_pos=torch.tensor(hp, dtype=torch.long), head_dig=torch.tensor(hd, dtype=torch.long), metas=metas, first=first)
+                head_pos=torch.tensor(hp, dtype=torch.long), head_dig=torch.tensor(hd, dtype=torch.long), metas=metas, first=first,
+                ihead_row=torch.tensor(ir, dtype=torch.long), ihead_pos=torch.tensor(ip, dtype=torch.long),
+                ihead_dig=torch.tensor(id_, dtype=torch.long))
 
 
 def batch(step, salt=None):
@@ -572,6 +590,7 @@ class Craft:
         # 0.1.70: the scale test's rotation and address head (both None by default)
         self.anchor = self.addr_head = self.h_nf = None
         self.head_curve, self.trace, self.novelty = [], [], None
+        self.ihead_curve = []                    # 0.1.72: the index entries' term (--head_at=both)
         if ROTARY == "anchored":                 # no parameter: the state dict stays the house body's
             self.anchor = ar.AnchorStreams()
             log(f"the anchored rotation on {ar.patch(self.model, self.anchor)} softmax blocks (pairs 0-5 relative, NTK x{ar.NTK_SCALE:g}; "
@@ -584,7 +603,8 @@ class Craft:
             self.model.nf.register_forward_hook(lambda mod, inp, out: setattr(self, "h_nf", out))
             self.params = self.params + list(self.addr_head.parameters())
             log(f"the address head: {gr.LEVELS} levels x {gr.RADIX} digits on the final norm's state at each question's SEP, "
-                f"{sum(p.numel() for p in self.addr_head.parameters()):,} parameters, lambda {HEAD_LAM:g}")
+                f"{sum(p.numel() for p in self.addr_head.parameters()):,} parameters, lambda {HEAD_LAM:g}"
+                + (f"; the same head at each index entry's SEP, lambda {HEAD_LAM_I:g}" if HEAD_AT == "both" else ""))
         self.opt = bed_optim.build(self.model, self.params, LR, WD, WD_SET)     # wd 0: pure Adam, as every earlier run
         self.decay = bed_optim.census(self.model, WD_SET) if WD else None
         if WD:
@@ -644,16 +664,19 @@ def set_streams(c, aux) -> None:
             c.anchor.set(aux["dk"].to(DEV, non_blocking=True), aux["dq"].to(DEV, non_blocking=True))
 
 
-def head_logits(c, aux):
-    """The address head at each question's SEP on the last forward's final-norm state -> (Q, 2, 8) fp32 logits."""
-    h = c.h_nf[aux["head_row"].to(DEV), aux["head_pos"].to(DEV)]
+def head_logits(c, aux, at="question"):
+    """The address head at each question's SEP (at="question") or each index entry's SEP (at="index", 0.1.72) on the last forward's
+    final-norm state -> (Q, 2, 8) fp32 logits."""
+    k = "" if at == "question" else "i"
+    h = c.h_nf[aux[k + "head_row"].to(DEV), aux[k + "head_pos"].to(DEV)]
     return c.addr_head(h.float()).float().view(-1, gr.LEVELS, gr.RADIX)
 
 
-def head_term(c, aux):
-    """The head's binary cross-entropy summed over its 2 x 8 outputs, averaged over the questions (the joint head term's form)."""
-    z = head_logits(c, aux)
-    tgt = F.one_hot(aux["head_dig"].to(DEV), gr.RADIX).float()
+def head_term(c, aux, at="question"):
+    """The head's binary cross-entropy summed over its 2 x 8 outputs, averaged over its positions (the joint head term's form): the
+    questions' SEPs, or (at="index", 0.1.72) the index entries' SEPs."""
+    z = head_logits(c, aux, at)
+    tgt = F.one_hot(aux[("" if at == "question" else "i") + "head_dig"].to(DEV), gr.RADIX).float()
     return F.binary_cross_entropy_with_logits(z, tgt, reduction="sum") / max(1, z.shape[0])
 
 
@@ -672,13 +695,20 @@ def novelty(c) -> dict:
     ce = F.cross_entropy(lg.float().reshape(-1, 256), y.reshape(-1))
     term = head_term(c, aux)
     g1 = torch.autograd.grad(ce, shared, retain_graph=True, allow_unused=True)
-    g2 = torch.autograd.grad(term, shared, allow_unused=True)
+    g2 = torch.autograd.grad(term, shared, retain_graph=HEAD_AT == "both", allow_unused=True)
     v1 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g1, shared)]).double()
     v2 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g2, shared)]).double()
     cos = float((v1 @ v2) / (v1.norm() * v2.norm()).clamp(min=1e-300))
+    out = dict(novelty=1.0 - abs(cos), cos=cos, grad_norm_ce=float(v1.norm()), grad_norm_head=float(v2.norm()), ce=float(ce.detach()),
+               term=float(term.detach()))
+    if HEAD_AT == "both":                        # 0.1.72: the index entries' term has its own gate (against the same CE gradient)
+        iterm = head_term(c, aux, "index")
+        g3 = torch.autograd.grad(iterm, shared, allow_unused=True)
+        v3 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g3, shared)]).double()
+        icos = float((v1 @ v3) / (v1.norm() * v3.norm()).clamp(min=1e-300))
+        out["index"] = dict(novelty=1.0 - abs(icos), cos=icos, grad_norm_head=float(v3.norm()), term=float(iterm.detach()))
     set_streams(c, None)
-    return dict(novelty=1.0 - abs(cos), cos=cos, grad_norm_ce=float(v1.norm()), grad_norm_head=float(v2.norm()), ce=float(ce.detach()),
-                term=float(term.detach()))
+    return out
 
 
 _AG_ROWS = {}
@@ -696,11 +726,12 @@ def ag_set(name: str) -> list:
 
 
 @torch.no_grad()
-def ag_forward(c, ag, request=None, disable_bank=False) -> tuple:
+def ag_forward(c, ag, request=None, disable_bank=False, index_heads=False) -> tuple:
     """Grid rows `ag` [(row, meta)] teacher-forced through the craft, mb rows a forward. request: None = the true address at the
     questions (the training form), "null" = the null anchor at the questions, or a per-row list of the addresses asked (a craft
-    without the anchored rotation reads every form alike). -> (argmax (n, CTX), nll (n, CTX) nats, [head logits (Q, 2, 8)] or None)."""
-    preds, nlls, heads = [], [], []
+    without the anchored rotation reads every form alike). -> (argmax (n, CTX), nll (n, CTX) nats, [head logits (Q, 2, 8)] or None);
+    index_heads (0.1.72): a fourth item, the head's logits at each index entry's SEP [(E, 2, 8)] (or None without a head)."""
+    preds, nlls, heads, iheads = [], [], [], []
     for i0 in range(0, len(ag), MB):
         chunk = ag[i0:i0 + MB]
         metas = [m for _, m in chunk]
@@ -716,8 +747,11 @@ def ag_forward(c, ag, request=None, disable_bank=False) -> tuple:
         nlls.append(nll.cpu().numpy())
         if c.addr_head is not None:
             heads += list(torch.split(head_logits(c, aux).cpu(), [len(m["questions"]) for m in metas]))
+            if index_heads:
+                iheads += list(torch.split(head_logits(c, aux, "index").cpu(), [len(m["index"]) for m in metas]))
         set_streams(c, None)
-    return np.concatenate(preds), np.concatenate(nlls), (heads if c.addr_head is not None else None)
+    out = (np.concatenate(preds), np.concatenate(nlls), (heads if c.addr_head is not None else None))
+    return out + ((iheads if c.addr_head is not None else None),) if index_heads else out
 
 
 def ag_scores(ag, pred, heads=None) -> tuple:
@@ -748,15 +782,36 @@ def ag_scores(ag, pred, heads=None) -> tuple:
     return out, by_addr
 
 
+def ihead_scores(ag, iheads) -> dict:
+    """0.1.72: the head at the index entries against the truth (the address of the record that holds each entry's key): right by the .5
+    decode (grid_rows.decode_scores, the request's form) and by the argmax (a decode right is an argmax right), the mean truth score
+    (over entries and levels) and the mean largest wrong score."""
+    dec_ok, arg_ok, truth, wrong = [], [], [], []
+    for (_, m), z in zip(ag, iheads):
+        dig = torch.tensor(gr.index_head_targets(m)[1], dtype=torch.long)
+        s = torch.sigmoid(z.float())
+        dec_ok += [tuple(d) == tuple(t) for d, t in zip(gr.decode_scores(s.numpy()), dig.tolist())]
+        arg_ok += (z.argmax(-1) == dig).all(-1).tolist()
+        truth += s.gather(-1, dig[..., None])[..., 0].mean(-1).tolist()
+        wrong += s.scatter(-1, dig[..., None], -1.0).amax(-1).amax(-1).tolist()
+    return dict(right=float(np.mean(dec_ok)), right_argmax=float(np.mean(arg_ok)), truth=float(np.mean(truth)),
+                wrong_max=float(np.mean(wrong)), n_entries=len(dec_ok))
+
+
 def ag_trace(c, step: int) -> dict:
     """The formation trace on the trace rows: the index written right, the answers whole under the training form's request (and, with
-    the anchored rotation, with the questions at the null anchor), the head right."""
+    the anchored rotation, with the questions at the null anchor), the head right; 0.1.72 (--head_at=both): the head at the index
+    entries, right by the .5 decode and by the argmax (the teacher-forced row)."""
     was = c.model.training
     c.model.eval()
     ag = ag_set("trace")
-    pred, _, heads = ag_forward(c, ag)
+    res = ag_forward(c, ag, index_heads=HEAD_AT == "both")
+    pred, heads = res[0], res[2]
     sc = ag_scores(ag, pred, heads)[0]
     rec = dict(step=step, index_right=sc["index_right"], whole=sc["whole"], head_right=sc.get("head_right"))
+    if HEAD_AT == "both":
+        ih = ihead_scores(ag, res[3])
+        rec.update(ihead_right=ih["right"], ihead_right_argmax=ih["right_argmax"])
     if c.anchor is not None:
         rec["whole_null_request"] = ag_scores(ag, ag_forward(c, ag, "null")[0])[0]["whole"]
     if was:
@@ -797,6 +852,53 @@ def ag_gauges(c) -> dict:
         lw = torch.cat(lw).numpy()
         out["calib"] = dict(rows=len(cal), questions=int(lw.shape[0]),
                             tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(gr.LEVELS)] for q in ("0.9", "0.99", "0.999")})
+    out["free_running"] = fr_gauges(c)          # 0.1.72: the craft's own index bytes in the row
+    return out
+
+
+def ag_free(c, ag) -> tuple:
+    """0.1.72: the rows `ag` at their free-running fixed point (grid_rows.free_running), mb rows a batch (each batch's passes send the same
+    rows) -> (rows [(row, meta)], the passes each batch took, converged a row)."""
+    rows, passes, conv = [], [], []
+    for i0 in range(0, len(ag), MB):
+        r, k, cv = gr.free_running(ag[i0:i0 + MB], lambda now: ag_forward(c, now, "null")[0])
+        rows += r
+        passes.append(k)
+        conv += cv
+    return rows, passes, conv
+
+
+def fr_gauges(c) -> dict:
+    """0.1.72: THE FREE-RUNNING READ on the read rows (the craft's own index bytes in the row: the fixed point of re-feeding them): the
+    passes; the index it writes there (INDEXF) right a entry; the answers whole through INDEXF's request (the questions turned to the
+    address it wrote; the anchored rotation). With the head at the index entries (--head_at=both), pass 1 (every question at the null
+    anchor): the head there on the free-running row (HEADIF) and on the teacher-forced row (HEADI), right by the .5 decode and by the
+    argmax, with the mean truth and largest wrong scores; pass 2: the answers whole through HEADIF's decoded address; the calibration in
+    the same form (the free-running calibration rows: the per-entry largest wrong digit score by level, its 90th / 99th / 99.9th
+    percentiles, the absolute floor's tau)."""
+    ag = ag_set("read")
+    fr, passes, conv = ag_free(c, ag)
+    truth = [[gr.digits(m["recs"][e["rec"]]["addr"]) for e in m["index"]] for _, m in ag]
+    req_f = [gr.row_request(r, m) for r, m in fr]
+    ok = [tuple(a) == tuple(b) for r, t in zip(req_f, truth) for a, b in zip(r, t)]
+    out = dict(rows=len(fr), passes=dict(mean=float(np.mean(passes)), max=int(max(passes)), by_batch=passes),
+               converged=float(np.mean(conv)), indexf_right=float(np.mean(ok)), n_entries=len(ok),
+               indexf_whole=ag_scores(fr, ag_forward(c, fr, req_f)[0])[0]["whole"])
+    if HEAD_AT == "both":
+        ihf = ag_forward(c, fr, "null", index_heads=True)[3]
+        out["headif"] = ihead_scores(fr, ihf)
+        out["headi"] = ihead_scores(ag, ag_forward(c, ag, "null", index_heads=True)[3])
+        dec = [gr.decode_scores(torch.sigmoid(z.float()).numpy()) for z in ihf]
+        out["headif"]["whole"] = ag_scores(fr, ag_forward(c, fr, dec)[0])[0]["whole"]
+        cal = ag_set("calib")
+        frc = ag_free(c, cal)[0]
+        lw = []
+        for (_, m), z in zip(frc, ag_forward(c, frc, "null", index_heads=True)[3]):
+            dig = torch.tensor(gr.index_head_targets(m)[1], dtype=torch.long)
+            lw.append(torch.sigmoid(z.float()).scatter(-1, dig[..., None], -1.0).amax(-1))      # (E, 2): the largest wrong digit score a level
+        lw = torch.cat(lw).numpy()
+        out["calib"] = dict(rows=len(frc), entries=int(lw.shape[0]),
+                            tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(gr.LEVELS)] for q in ("0.9", "0.99", "0.999")})
     return out
 
 
@@ -806,13 +908,20 @@ for _c in crafts:
     if _c.addr_head is not None and STEPS:       # 0.1.70: the collinearity gate before any step (a term under .05 is refused)
         _c.novelty = novelty(_c)
         log(f"the address head's novelty at step 0: {_c.novelty['novelty']:.4f} (cos {_c.novelty['cos']:+.4f}; the term "
-            f"{_c.novelty['term']:.3f} nats against the CE's {_c.novelty['ce']:.3f})")
-        if HEAD_LAM > 0 and _c.novelty["novelty"] < 0.05:
+            f"{_c.novelty['term']:.3f} nats against the CE's {_c.novelty['ce']:.3f})"
+            + (f"; at the index entries {_c.novelty['index']['novelty']:.4f} (cos {_c.novelty['index']['cos']:+.4f}; the term "
+               f"{_c.novelty['index']['term']:.3f} nats)" if HEAD_AT == "both" else ""))
+        _refuse = [nm for nm, lam_, nov in (("the head term", HEAD_LAM, _c.novelty), ("the index entries' term", HEAD_LAM_I,
+                                                                                     _c.novelty.get("index")))
+                   if nov is not None and lam_ > 0 and nov["novelty"] < 0.05]
+        if _refuse:
             _path = os.path.join(BED, f"bed_{_c.tag}.json")
-            json.dump(dict(arm=_c.arm, seed=SEED, steps=0, refused="the collinearity gate: the head term's novelty under .05",
-                           grid=dict(p=GRID_P, n_ag=N_AG, rotary=ROTARY or "house", head=HEAD_FORM, lam=HEAD_LAM, novelty=_c.novelty)),
-                      open(_path, "w", encoding="utf-8"), indent=1)
-            log(f"REFUSED: the head term's novelty {_c.novelty['novelty']:.4f} < .05; no step taken; wrote {_path}")
+            _grid = dict(p=GRID_P, n_ag=N_AG, rotary=ROTARY or "house", head=HEAD_FORM, lam=HEAD_LAM, novelty=_c.novelty)
+            if HEAD_AT == "both":
+                _grid.update(head_at=HEAD_AT, lam_i=HEAD_LAM_I)
+            json.dump(dict(arm=_c.arm, seed=SEED, steps=0, refused=f"the collinearity gate: {' and '.join(_refuse)}'s novelty under .05",
+                           grid=_grid), open(_path, "w", encoding="utf-8"), indent=1)
+            log(f"REFUSED: {' and '.join(_refuse)}'s novelty < .05; no step taken; wrote {_path}")
             sys.exit(0)
     if N_AG and STEPS:                           # 0.1.70: the formation trace's first point (the craft at birth)
         _c.trace.append(ag_trace(_c, 0))
@@ -840,6 +949,9 @@ for step in range(STEPS):
         if _c.addr_head is not None:                             # 0.1.70: the joint address head's term
             _c.hterm = head_term(_c, aux)
             _c.loss = _c.loss + HEAD_LAM * _c.hterm
+            if HEAD_AT == "both":                                # 0.1.72: the same head's term at the index entries
+                _c.iterm = head_term(_c, aux, "index")
+                _c.loss = _c.loss + HEAD_LAM_I * _c.iterm
     if PAIR and XC_W != 0 and step >= XC_FROM:                    # 0.1.24: the cross term (teacher, student) pairs of the step
         sel = (vm > 0).float() if XC_POS == "value" else None
         for t, s in [(crafts[0], crafts[1])] + ([(crafts[1], crafts[0])] if XC == "mutual" else []):
@@ -863,6 +975,9 @@ for step in range(STEPS):
         if _c.addr_head is not None:                             # 0.1.70: the head term's curve (the descent assert reads it)
             _c.head_curve.append(float(_c.hterm.detach()))
             _c.hterm = None
+            if HEAD_AT == "both":                                # 0.1.72: the index entries' term's curve
+                _c.ihead_curve.append(float(_c.iterm.detach()))
+                _c.iterm = None
         set_streams(_c, None)
         _c.logits = _c.nll = _c.loss = _c.ce = None
         if N_AG and (step + 1) % TRACE_EVERY == 0:              # 0.1.70: the formation trace (its own rows; the training stream untouched)
@@ -897,6 +1012,8 @@ for step in range(STEPS):
                f"{rate / 1e3:.0f}k tok/s | spent {el / 60:.1f} min, left {left / 60:.1f} min | value bits since the last line {bands}")
         if a.head_curve:                                         # 0.1.70: the head term's mean since the last line
             msg += f" | head term {float(np.mean(a.head_curve[-LOG_EVERY:])):.4f}"
+        if a.ihead_curve:                                        # 0.1.72: the index entries' term
+            msg += f", at the index {float(np.mean(a.ihead_curve[-LOG_EVERY:])):.4f}"
         for _c, b, _ in said[1:]:
             msg += f" || {_c.arm} loss {_c.li:.3f} ema {_c.ema:.3f} ({_c.ema / LN2:.3f} bpb) gn {float(_c.gn):.2f} | value bits since the last line {b}"
         xs = [f"{_c.arm} {xw:.3f}" for _c, _, xw in said if xw is not None]
@@ -1361,6 +1478,12 @@ def finish(c: Craft) -> tuple:
             head = dict(form=HEAD_FORM, lam=HEAD_LAM, params=sum(p.numel() for p in c.addr_head.parameters()), novelty=c.novelty,
                         term_step1=s0, term_last50=last, descended=(bool(last < 0.1 * s0) if hc else None),
                         curve=[[i + 1, hc[i]] for i in range(0, len(hc), LOG_EVERY)] + ([[len(hc), hc[-1]]] if hc else []))
+            if HEAD_AT == "both":                # 0.1.72: the index entries' term, its own descent record
+                ic = c.ihead_curve
+                i0_, ilast = (ic[0], float(np.mean(ic[-50:]))) if ic else (None, None)
+                head.update(at="both", lam_i=HEAD_LAM_I, index=dict(
+                    term_step1=i0_, term_last50=ilast, descended=(bool(ilast < 0.1 * i0_) if ic else None),
+                    curve=[[i + 1, ic[i]] for i in range(0, len(ic), LOG_EVERY)] + ([[len(ic), ic[-1]]] if ic else [])))
         grid_block = dict(layout="AG", p=GRID_P, n_ag=N_AG, rotary=(ar.spec() if ROTARY else "house"), head=head, trace=c.trace, read=read,
                           series=ARGS.get("series", ""))
         t = read["true"]
@@ -1370,6 +1493,14 @@ def finish(c: Craft) -> tuple:
             + f", bank off {read['bank_off']['whole']:.4f}"
             + (f"; the head right {t['head_right']:.4f} (truth {t['head_truth']:.3f}, largest wrong {t['head_wrong_max']:.3f}), descended "
                f"{head['descended']} ({head['term_step1']:.3f} -> {head['term_last50']:.4f})" if head else ""))
+        f_ = read["free_running"]                # 0.1.72: the free-running read
+        log(f"free-running read ({f_['rows']} rows; passes mean {f_['passes']['mean']:.1f}, max {f_['passes']['max']}; converged "
+            f"{f_['converged']:.4f}): the index it writes right {f_['indexf_right']:.4f}, answers through it {f_['indexf_whole']:.4f}"
+            + (f"; the head at the entries right {f_['headif']['right']:.4f} (argmax {f_['headif']['right_argmax']:.4f}, truth "
+               f"{f_['headif']['truth']:.4f}, largest wrong {f_['headif']['wrong_max']:.2e}; teacher-forced row {f_['headi']['right']:.4f}), "
+               f"answers through it {f_['headif']['whole']:.4f}; calibration Q999 {f_['calib']['tau']['0.999']}; the index term descended "
+               f"{head['index']['descended']} ({head['index']['term_step1']:.3f} -> {head['index']['term_last50']:.4f})"
+               if HEAD_AT == "both" else ""))
     # the weights + the record (a gauge read writes no weights: they are the init's, unchanged)
     wdir = os.path.join(BED, c.init if GAUGE_ONLY else c.tag)
     if not GAUGE_ONLY:
@@ -1380,9 +1511,11 @@ def finish(c: Craft) -> tuple:
         if N_AG:                                # 0.1.70: the scale test's pieces beside the craft (the house body's state dict is unchanged)
             if c.addr_head is not None:
                 save_file({k: v.detach().cpu().contiguous() for k, v in c.addr_head.state_dict().items()}, os.path.join(wdir, "addr_head.safetensors"))
-            json.dump(dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec() if ROTARY else "house"), head=HEAD_FORM or None, head_lam=HEAD_LAM,
-                           layout=dict(slot=gr.SLOT, comps=gr.N_COMP, radix=gr.RADIX, levels=gr.LEVELS)),
-                      open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
+            _sj = dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec() if ROTARY else "house"), head=HEAD_FORM or None, head_lam=HEAD_LAM,
+                       layout=dict(slot=gr.SLOT, comps=gr.N_COMP, radix=gr.RADIX, levels=gr.LEVELS))
+            if HEAD_AT == "both":                # 0.1.72: the head's positions (the stored cores' files carry none: the questions)
+                _sj.update(head_at=HEAD_AT, head_lam_i=HEAD_LAM_I)
+            json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
              config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),
              final_loss_ema=c.ema, final_bpb_ema=(None if c.ema is None else c.ema / LN2), heldout_bpb=bits, heldout_bpb_by_class=by_cls, heldout_bpb_by_position=by_pos, dispatch_off_bpb=bits_off,

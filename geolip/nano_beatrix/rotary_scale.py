@@ -33,7 +33,14 @@ THE READ (fp32, TF32 off): each source x U 5 / 8 / 10 x m 16 / 32 / 48 under RES
 solo weight tanh(U prod)) / unowned / bare; PROTECTED (merged >= solo - .05), QUIET (unowned >= bare - .02 and KL(bare || merged) <= .05
 nats a position), EXACT (|merged - solo| <= .01 and KL <= .001); the leaked write over an owned write, the unowned margins, flips at
 2 / 4 / 8x the leak, the owner's weight, the off-band weight, the request right rates, the owner-weight scan. Accuracies are per address,
-then averaged over the addresses (the S-line's convention)."""
+then averaged over the addresses (the S-line's convention).
+0.1.72, THE TWO-PASS READ (the find form; FIND_SOURCES): every source puts its OWN address in the questions' streams and in the gate. Pass 1
+(every question at the null anchor) reads the index the core writes and the head at each index entry's SEP, on the row as composed and on
+the free-running row (grid_rows.free_running: the core's own index bytes at their fixed point); pass 2 reads the answers with the source's
+address in the streams. The sources: LAYOUT, INDEX, INDEXC as above; INDEXF (the index written on the free-running row); HEADPF (the head
+at the question's SEP on the free-running row, INDEXF in the stream); HEADI / HEADIF (the head at the asked key's index entry on either row,
+its .5 decode in the stream, its scores in the gate); the _Q999 forms through the floor calibrated in the same form. run_core(forms=...)
+takes either read or both beside the same stacks; read0 reads a stored core with its stored stacks (no training)."""
 from __future__ import annotations
 
 import hashlib
@@ -438,6 +445,8 @@ class Core:
                 p.requires_grad_(False)
         self.digest = _digest(self.model)
         self.d = self.cfg.d_model
+        self.head_at = self.scale.get("head_at", "question")      # 0.1.72: where the head was trained (the stored cores: the questions)
+        self.free = {}                                             # 0.1.72: the free-running rows read so far (free_rows)
 
     def set_streams(self, metas: list, request=None) -> None:
         """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a
@@ -473,7 +482,8 @@ class Core:
         return self.model.head(self.model.nf(h))
 
     def head_scores(self, h_sep: torch.Tensor) -> torch.Tensor:
-        """The address head on the final norm's state at the questions' SEPs -> (Q, 2, 8) sigmoid scores (fp32)."""
+        """The address head on the final norm's state at the questions' SEPs (0.1.72: or at the index entries' SEPs) -> (Q, 2, 8) sigmoid
+        scores (fp32)."""
         z = self.head(self.model.nf(h_sep).float())
         return torch.sigmoid(z.float().view(-1, gr.LEVELS, gr.RADIX))
 
@@ -1163,6 +1173,498 @@ def read_mid(core: Core, arms: StackedArms, rows: list, cal: dict, owned: list, 
     return res
 
 
+# ------------------------------------------------------------------ 0.1.72: the two-pass read (the find form)
+# Every source of this form puts ITS OWN address in the questions' query streams and in the gate (the form above puts the written index in
+# every source's streams). A source reads one of two rows - "T" the row as composed (teacher-forced), "F" the free-running row
+# (grid_rows.free_running: the core's own index bytes at their fixed point) - with one stream at its questions:
+#   true      the true address                         written   the index the core writes on the T row (its argmax there)
+#   swapped   the true address, one pair of each row's questions trading       indexf    the index the core writes on the F row
+#   dec_i / dec_if   the .5 decode (grid_rows.decode_scores) of the head's scores at the asked key's index entry on the T / F row, read
+#                    in PASS 1 (every question at the null anchor; the index precedes the questions, so nothing there reads a request)
+# and one gate: exact (the kernels of the stream's address), qhead (the head's per-digit scores at the question's SEP in the source's
+# own view), ihead (the head's scores at the asked key's index entry, pass 1), the _q999 forms through the absolute floor with tau
+# calibrated in the same form. G2 and G0 read the T row with the true address. A house-rotary core reads no streams: its sources differ
+# only by row and gate.
+FIND_SOURCES = {
+    "LAYOUT": ("T", "true", "exact"), "INDEX": ("T", "written", "exact"), "INDEXC": ("T", "swapped", "exact"),
+    "INDEXF": ("F", "indexf", "exact"), "HEADPF": ("F", "indexf", "qhead"), "HEADPFQ999": ("F", "indexf", "qhead_q999"),
+    "HEADI": ("T", "dec_i", "ihead"), "HEADIF": ("F", "dec_if", "ihead"), "HEADIFQ999": ("F", "dec_if", "ihead_q999"),
+}
+SRC_FIND = ("LAYOUT", "INDEX", "INDEXC", "HEADPF", "INDEXF", "HEADI", "HEADIF", "HEADIFQ999")   # a core with the head at the index entries
+SRC_QHEAD = ("LAYOUT", "INDEX", "INDEXC", "INDEXF", "HEADPF", "HEADPFQ999", "HEADI", "HEADIF")  # a head at the questions only
+SRC_NOHEAD = ("LAYOUT", "INDEX", "INDEXC", "INDEXF")
+SRC_FIND_MID = ("LAYOUT", "INDEXC", "INDEXF", "HEADIF", "HEADIFQ999")
+SRC_QHEAD_MID = ("LAYOUT", "INDEXC", "INDEXF", "HEADPF")
+SRC_NOHEAD_MID = ("LAYOUT", "INDEXC", "INDEXF")
+
+
+def find_sources(core: Core, site: str = "last") -> tuple:
+    """The two-pass form's sources for this core: the head at the index entries (SRC_FIND), at the questions only (SRC_QHEAD), none."""
+    if core.head is None:
+        return SRC_NOHEAD if site == "last" else SRC_NOHEAD_MID
+    if core.head_at == "both":
+        return SRC_FIND if site == "last" else SRC_FIND_MID
+    return SRC_QHEAD if site == "last" else SRC_QHEAD_MID
+
+
+@torch.no_grad()
+def free_rows(core: Core, rows: list) -> tuple:
+    """The rows at their free-running fixed point (grid_rows.free_running), written as the read reads (fp32; every question at the null
+    anchor), cached on the core by the row's bytes. -> (rows [(row, meta)], passes, converged), passes and converged per row."""
+    todo = [i for i, (r, _) in enumerate(rows) if r not in core.free]
+    if todo:
+        def greedy(now):
+            x = to_x(now, core.dev)
+            core.set_streams([m for _, m in now], "null")
+            h = core.trunk(x[:, :-1])
+            core.clear()
+            pred = x[:, 1:].clone()                                        # the row's own bytes elsewhere (never read)
+            for j, (_, m) in enumerate(now):
+                ip = torch.tensor([p for pair in gr.index_positions(m) for p in pair], device=core.dev)
+                pred[j, ip] = core.readout(h[j, ip]).argmax(-1)
+            return pred.cpu().numpy()
+        fr, k, conv = gr.free_running([rows[i] for i in todo], greedy)
+        for i, (r2, _), cv in zip(todo, fr, conv):
+            core.free[rows[i][0]] = (r2, k, cv)
+    got = [core.free[r] for r, _ in rows]
+    return [(g[0], m) for g, (_, m) in zip(got, rows)], [g[1] for g in got], [g[2] for g in got]
+
+
+def _req_lists(qt: dict, n_rows: int, dig: np.ndarray) -> list:
+    """Per row, its questions' digit pairs in question order (a stream request) from per-question digits (Q, 2) in the table's order."""
+    return [[tuple(int(d) for d in dig[k]) for k in np.nonzero(qt["row"] == j)[0]] for j in range(n_rows)]
+
+
+@torch.no_grad()
+def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int | None = None, gates: bool = True) -> dict:
+    """One read batch in the two-pass form (fp32). Pass 1 on each row the sources read (every question at the null anchor): the index
+    the core writes, and the head's scores at each index entry's SEP. Then one forward per (row, stream) the sources need, the source's
+    own address in its questions' streams: the states at the answer positions (and after block `site`), the bare logits there, the head
+    at the questions' SEPs. gates: the T row with the true address too (G2, G0, the solo and scan reads). -> the context."""
+    dev = core.dev
+    metas = [m for _, m in rows]
+    qt = question_table(metas, owned)
+    Q = len(qt["row"])
+    rq = torch.from_numpy(qt["row"]).to(dev)
+    ip = torch.from_numpy(qt["ipos"]).to(dev)
+    r_ = torch.from_numpy(np.repeat(qt["row"], NA)).to(dev)
+    p_ = torch.from_numpy(qt["pos"].reshape(-1)).to(dev)
+    xs = {"T": to_x(rows, dev)}
+    out = dict(qt=qt, metas=metas, rq=rq, r_=r_, p_=p_, xs=xs, swapped=_swap_requests(qt["dig"], qt["row"], swap_rng), p1={}, stream={})
+    if any(FIND_SOURCES[s][0] == "F" for s in srcs):
+        fr, passes, conv = free_rows(core, rows)
+        xs["F"] = to_x(fr, dev)
+        out.update(free=fr, passes=passes, converged=conv)
+    for rk, x in xs.items():                                               # PASS 1: every question at the null anchor
+        core.set_streams(metas, "null")
+        h = core.trunk(x[:, :-1])
+        core.clear()
+        pred = torch.stack([core.readout(h[rq, ip[:, 0]]).argmax(-1), core.readout(h[rq, ip[:, 1]]).argmax(-1)], 1)
+        w = (pred - 48).cpu().numpy()
+        out["p1"][rk] = dict(written=np.where((w >= 0) & (w < gr.RADIX), w, gr.NULL),
+                             s_e=core.head_scores(h[rq, ip[:, 0]]) if core.head is not None else None)
+    st = out["stream"]
+    st["true"], st["written"], st["swapped"] = qt["dig"], out["p1"]["T"]["written"], out["swapped"]
+    if "F" in xs:
+        st["indexf"] = np.array([d for r, m in out["free"] for d in gr.row_request(r, m)], dtype=np.int64).reshape(-1, gr.LEVELS)
+    if core.head is not None:
+        for rk in xs:
+            st["dec_i" if rk == "T" else "dec_if"] = np.array(gr.decode_scores(out["p1"][rk]["s_e"].cpu().numpy()), dtype=np.int64)
+    anchored = core.anchor is not None
+    view_of = {s: (FIND_SOURCES[s][0], FIND_SOURCES[s][1] if anchored else "-") for s in srcs}
+    if gates:
+        view_of["G"] = ("T", "true" if anchored else "-")
+    views = {}
+    for vk in sorted(set(view_of.values())):
+        rk, sn = vk
+        x = xs[rk]
+        req = None if sn in ("true", "-") else _req_lists(qt, len(metas), st[sn])
+        core.set_streams(metas, req)
+        hs = None
+        if site is None:
+            h = core.trunk(x[:, :-1])
+        else:
+            hs = core.trunk(x[:, :-1], hi=site)
+            h = core.trunk(x[:, :-1], lo=site, h=hs)
+        core.clear()
+        hq = h[r_, p_].view(Q, NA, core.d)
+        v = dict(hq=hq, lb=core.readout(hq), raw=x[:, 1:][r_, p_].view(Q, NA), req=req, x=x)
+        if core.head is not None:
+            v["s_q"] = core.head_scores(hq[:, 0])
+        if site is not None:
+            v["h_site"], v["h_site_q"] = hs, hs[r_, p_].view(Q, NA, core.d)
+        views[vk] = v
+    out["views"], out["view_of"] = views, view_of
+    return out
+
+
+def _view_tag(vk: tuple) -> str:
+    return f"{vk[0]}:{vk[1]}"
+
+
+def _factors_find(ctx: dict, src: str, mem: torch.Tensor, L9: torch.Tensor, taus: dict) -> list:
+    rk, sn, g = FIND_SOURCES[src]
+    if g == "exact":
+        return exact_factors(torch.from_numpy(ctx["stream"][sn]).to(mem.device), mem, L9)
+    s = ctx["views"][ctx["view_of"][src]]["s_q"] if g.startswith("qhead") else ctx["p1"][rk]["s_e"]
+    return head_factors(s, mem, taus.get(src) if g.endswith("q999") else None)
+
+
+def _scores_of(ctx: dict, src: str) -> torch.Tensor:
+    """A head source's per-digit scores (Q, 2, 8): at the question's SEP in its own view, or at the asked key's index entry (pass 1)."""
+    rk, _, g = FIND_SOURCES[src]
+    return ctx["views"][ctx["view_of"][src]]["s_q"] if g.startswith("qhead") else ctx["p1"][rk]["s_e"]
+
+
+@torch.no_grad()
+def calibrate_find(core: Core, rows: list, owned: list, srcs, mb: int = ROWS_LAST) -> dict:
+    """The floors' tau per level in the two-pass form, for each floored source of `srcs`: the quantiles of the per-question largest wrong
+    digit score of the source's own scores (HEADPFQ999: the head at the question's SEP on the free-running row with the index written
+    there in the stream; HEADIFQ999: the head at the asked key's index entry, pass 1 on the free-running row) on the calibration rows
+    (never the read's). -> {source: {tau, saturation}}."""
+    fams = [s for s in srcs if FIND_SOURCES[s][2].endswith("q999")]
+    if core.head is None or not fams:
+        return {}
+    lw = {s: [] for s in fams}
+    for i in range(0, len(rows), mb):
+        ctx = batch_views(core, rows[i:i + mb], owned, np.random.default_rng(0), fams, gates=False)
+        dig = torch.from_numpy(ctx["qt"]["dig"]).to(core.dev)
+        for s in fams:
+            lw[s].append(_scores_of(ctx, s).scatter(-1, dig[..., None], -1.0).amax(-1).cpu())
+    out = {}
+    for s in fams:
+        t = torch.cat(lw[s]).double()
+        tau = {str(q): [float(torch.quantile(t[:, l], q)) for l in range(gr.LEVELS)] for q in QS}
+        out[s] = dict(rows=len(rows), questions=int(t.shape[0]), tau=tau,
+                      largest_wrong_at_1=[float((t[:, l] >= 1.0).double().mean()) for l in range(gr.LEVELS)],
+                      tau_999_saturated=any(x >= 1.0 for x in tau[str(0.999)]))
+    return out
+
+
+def _find_cells(srcs, m_set=M_SET) -> list:
+    out = [(f"{s}_U{int(U)}_{Z}_m{m}", s, U, Z, m) for s in srcs for U in U_SET for Z in Z_SET for m in m_set]
+    for m in m_set:
+        out.append((f"G2_m{m}", "G2", 0.0, "-", m))
+        out.append((f"G0_m{m}", "G0", 0.0, "-", m))
+    return out
+
+
+def _find_diag(ctx: dict, srcs, fac: dict, diag: dict, qo, o) -> None:
+    """The request sources' diagnostics on one batch: each source's address right (its stream's digits; a question head: its argmax, and
+    its agreement with the index written on the free-running row), the index heads' argmax right, the owner's u and the largest off-band
+    u, the floors' owners at 0 and wrong members passing; the free-running row's index right and its fixed-point check."""
+    qt = ctx["qt"]
+    dig = qt["dig"]
+    diag["questions"] += len(qt["row"])
+    diag["n_owned_q"] += int(qo.numel())
+    diag["batches"] += 1
+    diag["written_right"] += int((ctx["stream"]["written"] == dig).all(-1).sum())
+    if "indexf" in ctx["stream"]:
+        diag["indexf_right"] += int((ctx["stream"]["indexf"] == dig).all(-1).sum())
+        diag["fixed_point_agree"] += int((ctx["p1"]["F"]["written"] == ctx["stream"]["indexf"]).all(-1).sum())
+        diag["passes"] += list(ctx["passes"])
+        diag["converged"] += [bool(c) for c in ctx["converged"]]
+    for s in srcs:
+        _, sn, g = FIND_SOURCES[s]
+        d = diag["src"].setdefault(s, dict(right=0, argmax_right=0, agree_indexf=0, owner_u=0.0, offband_u_max=0.0, floor_owner_zero=0,
+                                           floor_wrong_pass=0, truth=0.0, wrong_max=0.0))
+        if g != "exact":                                                   # a head's scores: the truth's mean, the largest wrong one's
+            sc = _scores_of(ctx, s)
+            dt = torch.from_numpy(dig).to(sc.device)
+            d["truth"] += float(sc.gather(-1, dt[..., None])[..., 0].mean(-1).sum())
+            d["wrong_max"] += float(sc.scatter(-1, dt[..., None], -1.0).amax(-1).amax(-1).sum())
+        if g.startswith("qhead"):
+            am = _scores_of(ctx, s).argmax(-1).cpu().numpy()
+            d["right"] += int((am == dig).all(-1).sum())
+            d["agree_indexf"] += int((am == ctx["stream"]["indexf"]).all(-1).sum()) if "indexf" in ctx["stream"] else 0
+        else:
+            d["right"] += int((ctx["stream"][sn] == dig).all(-1).sum())
+        if g.startswith("ihead"):
+            d["argmax_right"] += int((_scores_of(ctx, s).argmax(-1).cpu().numpy() == dig).all(-1).sum())
+        pr = fac[s][0] * fac[s][1]
+        d["owner_u"] += float(pr[qo, o[qo]].sum())
+        off = pr.clone()
+        off[qo, o[qo]] = float("-inf")
+        d["offband_u_max"] += float(off.amax(-1).clamp(min=0).sum())
+        if g.endswith("q999"):
+            d["floor_owner_zero"] += int((pr[qo, o[qo]] == 0).sum())
+            d["floor_wrong_pass"] += int((off > 0).any(-1).sum())
+
+
+def _find_diag_out(diag: dict, srcs) -> dict:
+    nq, no = max(1, diag["questions"]), max(1, diag["n_owned_q"])
+    out = dict(written_index_right=diag["written_right"] / nq, questions=diag["questions"])
+    if diag["passes"]:
+        out.update(indexf_right=diag["indexf_right"] / nq, fixed_point_agree=diag["fixed_point_agree"] / nq,
+                   passes=dict(mean=float(np.mean(diag["passes"])), max=int(max(diag["passes"]))),
+                   converged=float(np.mean(diag["converged"])))
+    out["sources"] = {}
+    for s in srcs:
+        d, g = diag["src"][s], FIND_SOURCES[s][2]
+        r = dict(view=_view_tag((FIND_SOURCES[s][0], FIND_SOURCES[s][1])), request_right=d["right"] / nq, owner_u_over_U=d["owner_u"] / no,
+                 largest_offband_u_over_U_mean=d["offband_u_max"] / nq)
+        if g.startswith("qhead") and diag["passes"]:
+            r["argmax_agrees_with_indexf"] = d["agree_indexf"] / nq
+        if g.startswith("ihead"):
+            r["argmax_right"] = d["argmax_right"] / nq
+        if g != "exact":
+            r["mean_truth_score"], r["mean_largest_wrong_score"] = d["truth"] / nq, d["wrong_max"] / nq
+        if g.endswith("q999"):
+            r["floor"] = dict(owners_floored_to_0=d["floor_owner_zero"] / no, questions_passing_a_wrong_member=d["floor_wrong_pass"] / nq)
+        out["sources"][s] = r
+    return out
+
+
+def _new_find_diag() -> dict:
+    return dict(questions=0, n_owned_q=0, batches=0, written_right=0, indexf_right=0, fixed_point_agree=0, passes=[], converged=[], src={})
+
+
+@torch.no_grad()
+def read_last_find(core: Core, stacks: dict, rows: list, cal: dict, owned: list, never: list, seed: int, srcs=None, mb: int = ROWS_LAST,
+                   log=print) -> dict:
+    """The last-site read in the two-pass form: every source x U x Z x m and G2 / G0 for every stack, each source in its own view (its
+    own address in the streams and the gate; the bare core and the solo reads in that same view), the owner-weight scan on the T row with
+    the true address, the sources' diagnostics. cal: calibrate_find's record. -> the record (read_last's fields, plus each cell's view)."""
+    dev = core.dev
+    srcs = list(srcs or find_sources(core, "last"))
+    L9 = level_code(dev)
+    owned_t = torch.tensor(owned, device=dev)
+    mem = torch.stack([owned_t // gr.RADIX, owned_t % gr.RADIX], 1)
+    codes = code_tables(N_OWN).to(dev)
+    taus = {s: ((cal.get(s) or {}).get("tau") or {}).get(str(0.999)) for s in srcs if FIND_SOURCES[s][2].endswith("q999")}
+    cells = _find_cells(srcs)
+    swap_rng = np.random.default_rng([seed, gr.crc("SCALE|swap")])
+    cnt = torch.zeros(gr.N_ADDR, dtype=torch.float64, device=dev)
+    A = {k: _Acc(dev) for k in stacks}
+    B = _Acc(dev)
+    diag = _new_find_diag()
+    tags = {}
+    t0 = time.time()
+    for bi in range(0, len(rows), mb):
+        ctx = batch_views(core, rows[bi:bi + mb], owned, swap_rng, srcs)
+        qt, views, vof = ctx["qt"], ctx["views"], ctx["view_of"]
+        Q = len(qt["row"])
+        addr = torch.from_numpy(qt["addr"]).to(dev)
+        o = torch.from_numpy(qt["own"]).to(dev)
+        nv = o < 0
+        qo = (o >= 0).nonzero().flatten()
+        cnt += torch.bincount(addr, minlength=gr.N_ADDR).double()
+        B.sc("bare_n_pos", int(nv.sum()) * NA)
+        for vk, v in views.items():                                        # the bare core in every view
+            tg = tags.setdefault(vk, _view_tag(vk))
+            v["lpb"], v["pb"] = F.log_softmax(v["lb"], -1), v["lb"].argmax(-1)
+            B.add(f"bare_raw|{tg}", addr, (v["pb"] == v["raw"]).all(-1))
+            mb_ = _margin(v["lb"][nv], v["raw"][nv])
+            B.sc(f"bare_margin_sum|{tg}", mb_.sum())
+            B.mx(f"bare_margin_min|{tg}", mb_.min(), min)
+        fac = {s: _factors_find(ctx, s, mem, L9, taus) for s in srcs}
+        _find_diag(ctx, srcs, fac, diag, qo, o)
+        vG = views[vof["G"]]
+        for name, stk in stacks.items():
+            acc = A[name]
+            Wv = {vk: stk.write_all(v["hq"].reshape(-1, core.d)).view(Q, NA, stk.M, core.d) for vk, v in views.items()}
+            sw = {vk: W[qo, :, o[qo]].norm(dim=-1) for vk, W in Wv.items()}
+            tgt = codes[o[qo][:, None], vG["raw"][qo]]
+            WoG = Wv[vof["G"]][qo, :, o[qo]]
+            acc.add("solo_ONE", addr[qo], (core.readout(vG["hq"][qo] + WoG).argmax(-1) == tgt).all(-1))
+            for s in srcs:                                                 # the solo reads, each in its source's own view
+                v, Wo = views[vof[s]], Wv[vof[s]][qo, :, o[qo]]
+                pr = (fac[s][0] * fac[s][1])[qo, o[qo]]
+                for U in U_SET:
+                    ws = torch.tanh(U * pr)
+                    acc.add(f"solo_{s}_U{int(U)}", addr[qo], (core.readout(v["hq"][qo] + ws[:, None, None] * Wo).argmax(-1) == tgt).all(-1))
+            for a in A_GRID:
+                acc.add(f"scan_{a}", addr[qo], (core.readout(vG["hq"][qo] + a * WoG).argmax(-1) == tgt).all(-1))
+            for key, kind, U, Z, m in cells:
+                vk = vof["G"] if kind in ("G0", "G2") else vof[kind]
+                v, W = views[vk], Wv[vk]
+                w = _gate(kind, U, Z, m, fac, qt, owned_t, dev)
+                dh = torch.einsum("qm,qpmd->qpd", w, W[:, :, :m])
+                la = core.readout(v["hq"] + dh)
+                pa = la.argmax(-1)
+                inm = (o >= 0) & (o < m)
+                qi = inm.nonzero().flatten()
+                acc.add(f"{key}|hit_own", addr[qi], (pa[qi] == codes[o[qi][:, None], v["raw"][qi]]).all(-1))
+                acc.add(f"{key}|hit_raw", addr[nv], (pa[nv] == v["raw"][nv]).all(-1))
+                du, lau = dh[nv], la[nv]
+                acc.sc(f"{key}|kl", (v["lpb"][nv].exp() * (v["lpb"][nv] - F.log_softmax(lau, -1))).sum())
+                acc.sc(f"{key}|leak", du.norm(dim=-1).sum())
+                mu = _margin(lau, v["raw"][nv])
+                acc.sc(f"{key}|msum", mu.sum())
+                acc.mx(f"{key}|mmin", mu.min(), min)
+                for sc in FLIPS:
+                    ps = core.readout(v["hq"][nv] + sc * du).argmax(-1)
+                    acc.sc(f"{key}|flip{sc}", (ps != v["raw"][nv]).sum())
+                    acc.sc(f"{key}|flipb{sc}", (ps != v["pb"][nv]).sum())
+                sel = inm[qo]
+                acc.sc(f"{key}|own_write", dh[qi].norm(dim=-1).sum())
+                acc.sc(f"{key}|solo_write", sw[vk][sel].sum())
+                acc.sc(f"{key}|n_own_pos", int(qi.numel()) * NA)
+                acc.sc(f"{key}|ownw", w[qi, o[qi]].sum())
+                acc.sc(f"{key}|n_own", qi.numel())
+                offm = torch.ones_like(w, dtype=torch.bool)
+                offm[qi, o[qi]] = False
+                acc.sc(f"{key}|off", w.abs()[offm].sum())
+                acc.sc(f"{key}|n_q", Q)
+        if ((bi // mb) + 1) % 8 == 0 or bi + mb >= len(rows):
+            el = time.time() - t0
+            done = min(len(rows), bi + mb)
+            log(f"[read last, two-pass] {done}/{len(rows)} rows: {el:.0f}s spent, ~{el * (len(rows) - done) / done:.0f}s left")
+    nu = max(1.0, B.s["bare_n_pos"])
+    bare = {tg: dict(unowned=_mean_over(B, f"bare_raw|{tg}", cnt, never), owned=_mean_over(B, f"bare_raw|{tg}", cnt, owned),
+                     margin_unowned_mean=B.s[f"bare_margin_sum|{tg}"] / nu, margin_unowned_min=B.s[f"bare_margin_min|{tg}"])
+            for tg in tags.values()}
+    tg_G = _view_tag(("T", "true" if core.anchor is not None else "-"))
+    res = dict(form="two-pass", sources=srcs, rows=len(rows), questions=diag["questions"], questions_per_address_min=int(cnt.min()),
+               diag=_find_diag_out(diag, srcs), calibration=cal,
+               bare=dict(bare[tg_G], owned_per_owner=[float(B.v[f"bare_raw|{tg_G}"][a] / max(1.0, float(cnt[a]))) for a in owned]),
+               bare_by_view=bare, stacks={}, wall_s=time.time() - t0)
+    for name, acc in A.items():
+        r = dict(solo={}, a_scan={}, cells={})
+        for k in ["ONE"] + [f"{s}_U{int(U)}" for s in srcs for U in U_SET]:
+            r["solo"][k] = {str(m): _mean_over(acc, f"solo_{k}", cnt, owned[:m]) for m in M_SET}
+        r["solo_per_owner"] = [float(acc.v["solo_ONE"][a] / max(1.0, float(cnt[a]))) for a in owned]
+        for a in A_GRID:
+            r["a_scan"][repr(a)] = {str(m): _mean_over(acc, f"scan_{a}", cnt, owned[:m]) for m in M_SET}
+        for key, kind, U, Z, m in cells:
+            sk = "ONE" if kind in ("G0", "G2") else f"{kind}_U{int(U)}"
+            tg = tg_G if kind in ("G0", "G2") else _view_tag((FIND_SOURCES[kind][0], FIND_SOURCES[kind][1] if core.anchor is not None else "-"))
+            s = acc.s
+            n_own_pos = max(1.0, s[f"{key}|n_own_pos"])
+            sw_ = s[f"{key}|solo_write"] / n_own_pos
+            c = dict(m=m, view=tg, solo_key=sk, solo_mean=r["solo"][sk][str(m)], merged_mean=_mean_over(acc, f"{key}|hit_own", cnt, owned[:m]),
+                     unowned_raw_merged=_mean_over(acc, f"{key}|hit_raw", cnt, never), unowned_raw_bare=bare[tg]["unowned"],
+                     kl_unowned=s[f"{key}|kl"] / nu, leak_write_unowned=s[f"{key}|leak"] / nu, solo_write_owned=sw_,
+                     leak_over_own_write=(s[f"{key}|leak"] / nu) / max(1e-12, sw_),
+                     margin_unowned_mean=s[f"{key}|msum"] / nu, margin_unowned_min=s[f"{key}|mmin"],
+                     flip_rate_unowned={str(sc): s[f"{key}|flip{sc}"] / nu for sc in FLIPS},
+                     flip_vs_bare_unowned={str(sc): s[f"{key}|flipb{sc}"] / nu for sc in FLIPS},
+                     owned_write_over_solo_write=s[f"{key}|own_write"] / max(1e-12, s[f"{key}|solo_write"]),
+                     own_gate_weight_mean=s[f"{key}|ownw"] / max(1.0, s[f"{key}|n_own"]),
+                     offband_gate_mass_per_question=s[f"{key}|off"] / max(1.0, s[f"{key}|n_q"]))
+            c["PROTECTED"] = c["merged_mean"] >= c["solo_mean"] - 0.05
+            c["EXACT"] = abs(c["merged_mean"] - c["solo_mean"]) <= 0.01 and c["kl_unowned"] <= 0.001
+            c["QUIET"] = c["unowned_raw_merged"] >= c["unowned_raw_bare"] - 0.02 and c["kl_unowned"] <= 0.05
+            r["cells"][key] = c
+        res["stacks"][name] = r
+    res["nan_fields"] = _nan_census(res)
+    return res
+
+
+@torch.no_grad()
+def read_mid_find(core: Core, arms: StackedArms, rows: list, cal: dict, owned: list, never: list, seed: int, srcs=None,
+                  mb: int = ROWS_MID, log=print, quick: bool = False) -> dict:
+    """The mid-site read (m = M_MID) in the two-pass form: every source x U x Z cell and G2 / G0, each source in its own view (the merged
+    writes after block MID_SITE at every question's answer positions, blocks MID_SITE.. recomputed with the view's streams), and the
+    solo reads with each owned question's owner ALONE in its row in the same view. quick: U 5 only. -> the record."""
+    dev = core.dev
+    srcs = list(srcs or find_sources(core, "mid"))
+    L9 = level_code(dev)
+    m = arms.M
+    owned_m = owned[:m]
+    owned_t = torch.tensor(owned, device=dev)
+    mem = torch.stack([owned_t[:m] // gr.RADIX, owned_t[:m] % gr.RADIX], 1)
+    codes = code_tables(m).to(dev)
+    taus = {s: ((cal.get(s) or {}).get("tau") or {}).get(str(0.999)) for s in srcs if FIND_SOURCES[s][2].endswith("q999")}
+    us = U_SET[:1] if quick else U_SET
+    cells = [(f"{s}_U{int(U)}_{Z}_m{m}", s, U, Z) for s in srcs for U in us for Z in Z_SET]
+    cells += [(f"G2_m{m}", "G2", 0.0, "-"), (f"G0_m{m}", "G0", 0.0, "-")]
+    solo_keys = ["ONE"] + [f"{s}_U{int(U)}" for s in srcs for U in us]
+    swap_rng = np.random.default_rng([seed, gr.crc("SCALE|swap")])
+    cnt = torch.zeros(gr.N_ADDR, dtype=torch.float64, device=dev)
+    acc, B = _Acc(dev), _Acc(dev)
+    diag = _new_find_diag()
+    tags = {}
+    t0 = time.time()
+    for bi in range(0, len(rows), mb):
+        ctx = batch_views(core, rows[bi:bi + mb], owned, swap_rng, srcs, site=MID_SITE)
+        qt, views, vof = ctx["qt"], ctx["views"], ctx["view_of"]
+        Q = len(qt["row"])
+        addr = torch.from_numpy(qt["addr"]).to(dev)
+        o_all = torch.from_numpy(qt["own"]).to(dev)
+        o = torch.where(o_all < m, o_all, torch.full_like(o_all, -2))       # -2 = owned beyond the mid set (neither merged nor unowned)
+        nv = o_all < 0
+        qo = (o >= 0).nonzero().flatten()
+        cnt += torch.bincount(addr, minlength=gr.N_ADDR).double()
+        B.sc("n_pos", int(nv.sum()) * NA)
+        for vk, v in views.items():
+            tg = tags.setdefault(vk, _view_tag(vk))
+            v["lpb"], v["pb"] = F.log_softmax(v["lb"], -1), v["lb"].argmax(-1)
+            B.add(f"bare_raw|{tg}", addr, (v["pb"] == v["raw"]).all(-1))
+        fac = {s: _factors_find(ctx, s, mem, L9, taus) for s in srcs}
+        _find_diag(ctx, srcs, fac, diag, qo, o)
+        Wv = {vk: arms.write_all(v["h_site_q"].reshape(-1, core.d)).view(Q, NA, m, core.d) for vk, v in views.items()}
+
+        def suffix(v, h3w):
+            core.set_streams(ctx["metas"], v["req"])
+            h6 = core.trunk(v["x"][:, :-1], lo=MID_SITE, h=h3w)
+            core.clear()
+            return core.readout(h6[ctx["r_"], ctx["p_"]].view(Q, NA, core.d))
+        for key, kind, U, Z in cells:
+            vk = vof["G"] if kind in ("G0", "G2") else vof[kind]
+            v, W = views[vk], Wv[vk]
+            w = _gate(kind, U, Z, m, fac, qt, owned_t, dev)
+            dh = torch.einsum("qm,qpmd->qpd", w, W)
+            h3w = v["h_site"].index_put((ctx["r_"], ctx["p_"]), (v["h_site_q"] + dh).reshape(-1, core.d))
+            la = suffix(v, h3w)
+            pa = la.argmax(-1)
+            acc.add(f"{key}|hit_own", addr[qo], (pa[qo] == codes[o[qo][:, None], v["raw"][qo]]).all(-1))
+            acc.add(f"{key}|hit_raw", addr[nv], (pa[nv] == v["raw"][nv]).all(-1))
+            acc.sc(f"{key}|kl", (v["lpb"][nv].exp() * (v["lpb"][nv] - F.log_softmax(la[nv], -1))).sum())
+            acc.sc(f"{key}|leak", dh[nv].norm(dim=-1).sum())
+            acc.sc(f"{key}|ownw", w[qo, o[qo]].sum())
+            acc.sc(f"{key}|n_own", qo.numel())
+        prs = {s: (fac[s][0] * fac[s][1])[qo, o[qo]] for s in srcs}
+        for sk in solo_keys:                                               # the solo reads: the owner alone in its row, in the view
+            if sk == "ONE":
+                vk, ws = vof["G"], torch.ones(qo.numel(), device=dev)
+            else:
+                s, U = sk.rsplit("_U", 1)
+                vk, ws = vof[s], torch.tanh(float(U) * prs[s])
+            v, W = views[vk], Wv[vk]
+            hit = torch.zeros(qo.numel(), dtype=torch.bool, device=dev)
+            live = (ws != 0).nonzero().flatten()
+            for c0 in range(0, live.numel(), mb):
+                part = live[c0:c0 + mb]
+                qq = qo[part]
+                rws = torch.from_numpy(qt["row"]).to(dev)[qq]
+                hs = v["h_site"][rws].clone()
+                pos = torch.from_numpy(qt["pos"]).to(dev)[qq]
+                rr = torch.arange(len(qq), device=dev)[:, None].expand_as(pos)
+                hs[rr, pos] = v["h_site_q"][qq] + ws[part][:, None, None] * W[qq, :, o[qq]]
+                core.set_streams([ctx["metas"][int(j)] for j in rws], None if v["req"] is None else [v["req"][int(j)] for j in rws])
+                h6 = core.trunk(v["x"][rws, :-1], lo=MID_SITE, h=hs)
+                core.clear()
+                hit[part] = (core.readout(h6[rr, pos]).argmax(-1) == codes[o[qq][:, None], v["raw"][qq]]).all(-1)
+            acc.add(f"solo_{sk}", addr[qo], hit)
+        if ((bi // mb) + 1) % 8 == 0 or bi + mb >= len(rows):
+            el = time.time() - t0
+            done = min(len(rows), bi + mb)
+            log(f"[read mid, two-pass] {done}/{len(rows)} rows: {el:.0f}s spent, ~{el * (len(rows) - done) / done:.0f}s left")
+    nu = max(1.0, B.s["n_pos"])
+    bare = {tg: dict(unowned=_mean_over(B, f"bare_raw|{tg}", cnt, never), owned=_mean_over(B, f"bare_raw|{tg}", cnt, owned_m))
+            for tg in tags.values()}
+    tg_G = _view_tag(("T", "true" if core.anchor is not None else "-"))
+    res = dict(form="two-pass", sources=srcs, rows=len(rows), m=m, block=MID_SITE, diag=_find_diag_out(diag, srcs), bare=bare[tg_G],
+               bare_by_view=bare, solo={k: _mean_over(acc, f"solo_{k}", cnt, owned_m) for k in solo_keys},
+               solo_per_owner=[float(acc.v["solo_ONE"][a] / max(1.0, float(cnt[a]))) for a in owned_m], cells={}, wall_s=None)
+    for key, kind, U, Z in cells:
+        sk = "ONE" if kind in ("G0", "G2") else f"{kind}_U{int(U)}"
+        tg = tg_G if kind in ("G0", "G2") else _view_tag((FIND_SOURCES[kind][0], FIND_SOURCES[kind][1] if core.anchor is not None else "-"))
+        s = acc.s
+        c = dict(view=tg, solo_key=sk, solo_mean=res["solo"][sk], merged_mean=_mean_over(acc, f"{key}|hit_own", cnt, owned_m),
+                 unowned_raw_merged=_mean_over(acc, f"{key}|hit_raw", cnt, never), unowned_raw_bare=bare[tg]["unowned"],
+                 kl_unowned=s[f"{key}|kl"] / nu, leak_write_unowned=s[f"{key}|leak"] / nu,
+                 own_gate_weight_mean=s[f"{key}|ownw"] / max(1.0, s[f"{key}|n_own"]))
+        c["PROTECTED"] = c["merged_mean"] >= c["solo_mean"] - 0.05
+        c["EXACT"] = abs(c["merged_mean"] - c["solo_mean"]) <= 0.01 and c["kl_unowned"] <= 0.001
+        c["QUIET"] = c["unowned_raw_merged"] >= c["unowned_raw_bare"] - 0.02 and c["kl_unowned"] <= 0.05
+        res["cells"][key] = c
+    res["wall_s"] = time.time() - t0
+    res["nan_fields"] = _nan_census(res)
+    return res
+
+
 @torch.no_grad()
 def text_bits(core: Core, stacks: dict, docs: list, n_docs: int = 128, mb: int = 8) -> dict:
     """The held-out text bits a byte (the bed's eval rows: DOC + the first ctx bytes of the first n_docs held-out documents), fp32: the bare
@@ -1301,12 +1803,20 @@ def _save_stack(path: str, stk: nn.Module, meta: dict) -> None:
               metadata={"meta": json.dumps(meta)})
 
 
+def _rm(path: str) -> None:
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_path: str, last_steps: int = 16000,
              mid_steps: int = 32000, read_batches: int = 64, calib_batches: int = 32, dev: str = "cuda", log=print,
-             shipper: Shipper | None = None, hub_dir: str = "bed/scale_members", quick: bool = False) -> dict:
+             shipper: Shipper | None = None, hub_dir: str = "bed/scale_members", quick: bool = False, forms=("scale",)) -> dict:
     """One grid core's members, resume-first: the last site (48 real arms + 48 toy members, `last_steps`), its read and the text bits;
     the mid site (16 real arms, `mid_steps` batch steps), its read. Writes <out_dir>/<core tag>_members/ (the stacks as safetensors, the
-    records as JSON, a done mark) and ships it when a shipper is given. quick: the CPU dry run (the mid read at U 5, two text documents)."""
+    records as JSON, a done mark) and ships it when a shipper is given. quick: the CPU dry run (the mid read at U 5, two text documents).
+    forms (0.1.72): the reads to take - "scale" (the form above: last.json, mid.json) and / or "find" (the two-pass form: last_find.json,
+    mid_find.json, beside the same stacks); the members train once whatever the forms."""
+    assert forms and set(forms) <= {"scale", "find"}, forms
     core = Core(core_folder, dev)
     name = f"{core.tag}_members_l{last_steps}_m{mid_steps}"
     od = os.path.join(out_dir, name)
@@ -1326,43 +1836,157 @@ def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_pa
     meta = dict(core=core.tag, seed=seed, owned=owned, never=never, arm_spec=ARM_SPEC, amoe=AMOE_PIN, toy_hidden=TOY_HID,
                 codes="SCALE|code|<i>: a crc-seeded derangement of a-z", betas=list(BETAS), eps=EPS, lr=LR, warm=WARM)
     log(f"[members] {name}: core {core.tag} ({'anchored' if core.anchor is not None else 'house'} rotation, head "
-        f"{'on' if core.head is not None else 'off'}); last site {last_steps:,} steps, mid site {mid_steps:,} batch steps; read "
-        f"{len(read_rows)} rows, calibration {len(cal_rows)} rows")
-    rec_path = os.path.join(od, "last.json")
-    if not os.path.exists(rec_path):
-        arms = StackedArms.build(N_OWN, core.d, f"SCALE|arm|s{seed}").to(core.dev)
-        toys = StackedToys.build(N_OWN, core.d, f"SCALE|toy|s{seed}").to(core.dev)
-        tr = train_last(core, {"arms": arms, "toys": toys}, last_steps, seed, packed, owned, never, log=log,
-                        ckpt=os.path.join(od, "last_ckpt.pt"))
-        _save_stack(os.path.join(od, f"arms_last_m{N_OWN}_st{last_steps}.safetensors"), arms, dict(meta, site="last", steps=last_steps))
-        _save_stack(os.path.join(od, f"toys_last_m{N_OWN}_st{last_steps}.safetensors"), toys, dict(meta, site="last", steps=last_steps))
-        cal = calibrate(core, cal_rows, owned)
-        log(f"[members] calibration: tau 0.999 per level {cal.get('tau', {}).get('0.999')}")
-        rd = read_last(core, {"arms": arms, "toys": toys}, read_rows, cal, owned, never, seed, log=log)
-        tb = text_bits(core, {"arms": arms, "toys": toys}, held, n_docs=2 if quick else 128)
-        json.dump(dict(meta, train=tr, read=rd, text_bits=tb), open(rec_path, "w", encoding="utf-8"), indent=1)
-        if os.path.exists(os.path.join(od, "last_ckpt.pt")):
-            os.remove(os.path.join(od, "last_ckpt.pt"))
-        _log_last(rd, tb, log)
+        f"{'off' if core.head is None else 'at the questions and the index entries' if core.head_at == 'both' else 'at the questions'}); "
+        f"last site {last_steps:,} steps, mid site {mid_steps:,} batch steps; read {len(read_rows)} rows, calibration {len(cal_rows)} rows; "
+        f"read forms {list(forms)}")
+    paths_last = {"scale": os.path.join(od, "last.json"), "find": os.path.join(od, "last_find.json")}
+    f_arms, f_toys = (os.path.join(od, f"{k}_last_m{N_OWN}_st{last_steps}.safetensors") for k in ("arms", "toys"))
+    if any(not os.path.exists(paths_last[f]) for f in forms):
+        if os.path.exists(f_arms) and os.path.exists(f_toys) and not os.path.exists(os.path.join(od, "last_ckpt.pt")):
+            arms, toys = _load_stack(StackedArms(N_OWN, core.d), f_arms, core.dev), _load_stack(StackedToys(N_OWN, core.d), f_toys, core.dev)
+            tr = None                                                      # trained in an earlier session: its record holds the training
+            log(f"[members] the last site's stacks loaded from {os.path.basename(f_arms)}, {os.path.basename(f_toys)}")
+        else:
+            arms = StackedArms.build(N_OWN, core.d, f"SCALE|arm|s{seed}").to(core.dev)
+            toys = StackedToys.build(N_OWN, core.d, f"SCALE|toy|s{seed}").to(core.dev)
+            tr = train_last(core, {"arms": arms, "toys": toys}, last_steps, seed, packed, owned, never, log=log,
+                            ckpt=os.path.join(od, "last_ckpt.pt"))
+            _save_stack(f_arms, arms, dict(meta, site="last", steps=last_steps))
+            _save_stack(f_toys, toys, dict(meta, site="last", steps=last_steps))
+        tb = None
+        if "scale" in forms and not os.path.exists(paths_last["scale"]):
+            cal = calibrate(core, cal_rows, owned)
+            log(f"[members] calibration: tau 0.999 per level {cal.get('tau', {}).get('0.999')}")
+            rd = read_last(core, {"arms": arms, "toys": toys}, read_rows, cal, owned, never, seed, log=log)
+            tb = text_bits(core, {"arms": arms, "toys": toys}, held, n_docs=2 if quick else 128)
+            json.dump(dict(meta, train=tr, read=rd, text_bits=tb), open(paths_last["scale"], "w", encoding="utf-8"), indent=1)
+            _rm(os.path.join(od, "last_ckpt.pt"))                          # the training is on record: the checkpoint goes
+            _log_last(rd, tb, log)
+            tr = None                                                      # one record carries the training
+        if "find" in forms and not os.path.exists(paths_last["find"]):
+            srcs = find_sources(core, "last")
+            cal = calibrate_find(core, cal_rows, owned, srcs)
+            log(f"[members] the two-pass calibration: tau 0.999 per level " + str({s: c["tau"]["0.999"] for s, c in cal.items()}))
+            rd = read_last_find(core, {"arms": arms, "toys": toys}, read_rows, cal, owned, never, seed, srcs=srcs, log=log)
+            if tb is None:
+                tb = (json.load(open(paths_last["scale"], encoding="utf-8"))["text_bits"] if os.path.exists(paths_last["scale"]) else
+                      text_bits(core, {"arms": arms, "toys": toys}, held, n_docs=2 if quick else 128))
+            json.dump(dict(meta, train=tr, read=rd, text_bits=tb), open(paths_last["find"], "w", encoding="utf-8"), indent=1)
+            _rm(os.path.join(od, "last_ckpt.pt"))
+            _log_last_find(rd, tb, log)
         del arms, toys
-    last = json.load(open(rec_path, encoding="utf-8"))
-    rec_mid = os.path.join(od, "mid.json")
-    if not os.path.exists(rec_mid):
-        arms = StackedArms.build(M_MID, core.d, f"SCALE|midarm|s{seed}").to(core.dev)
-        tr = train_mid(core, arms, mid_steps, seed, packed, owned, log=log, ckpt=os.path.join(od, "mid_ckpt.pt"))
-        _save_stack(os.path.join(od, f"arms_mid_b{MID_SITE}_m{M_MID}_st{mid_steps}.safetensors"), arms,
-                    dict(meta, site=f"after block {MID_SITE}", batch_steps=mid_steps))
-        rd = read_mid(core, arms, read_rows, last["read"]["calibration"], owned, never, seed, log=log, quick=quick)
-        json.dump(dict(meta, train=tr, read=rd), open(rec_mid, "w", encoding="utf-8"), indent=1)
-        if os.path.exists(os.path.join(od, "mid_ckpt.pt")):
-            os.remove(os.path.join(od, "mid_ckpt.pt"))
-        _log_mid(rd, log)
+    paths_mid = {"scale": os.path.join(od, "mid.json"), "find": os.path.join(od, "mid_find.json")}
+    f_mid = os.path.join(od, f"arms_mid_b{MID_SITE}_m{M_MID}_st{mid_steps}.safetensors")
+    if any(not os.path.exists(paths_mid[f]) for f in forms):
+        if os.path.exists(f_mid) and not os.path.exists(os.path.join(od, "mid_ckpt.pt")):
+            arms, tr = _load_stack(StackedArms(M_MID, core.d), f_mid, core.dev), None
+            log(f"[members] the mid site's stack loaded from {os.path.basename(f_mid)}")
+        else:
+            arms = StackedArms.build(M_MID, core.d, f"SCALE|midarm|s{seed}").to(core.dev)
+            tr = train_mid(core, arms, mid_steps, seed, packed, owned, log=log, ckpt=os.path.join(od, "mid_ckpt.pt"))
+            _save_stack(f_mid, arms, dict(meta, site=f"after block {MID_SITE}", batch_steps=mid_steps))
+        if "scale" in forms and not os.path.exists(paths_mid["scale"]):
+            last = json.load(open(paths_last["scale"], encoding="utf-8"))
+            rd = read_mid(core, arms, read_rows, last["read"]["calibration"], owned, never, seed, log=log, quick=quick)
+            json.dump(dict(meta, train=tr, read=rd), open(paths_mid["scale"], "w", encoding="utf-8"), indent=1)
+            _rm(os.path.join(od, "mid_ckpt.pt"))
+            _log_mid(rd, log)
+            tr = None
+        if "find" in forms and not os.path.exists(paths_mid["find"]):
+            last = json.load(open(paths_last["find"], encoding="utf-8"))
+            rd = read_mid_find(core, arms, read_rows, last["read"]["calibration"], owned, never, seed, log=log, quick=quick)
+            json.dump(dict(meta, train=tr, read=rd), open(paths_mid["find"], "w", encoding="utf-8"), indent=1)
+            _rm(os.path.join(od, "mid_ckpt.pt"))
+            _log_mid(rd, log)
         del arms
     out = dict(name=name, core=core.tag, wall_s=time.time() - t0)
+    if forms != ("scale",):
+        out["forms"] = list(forms)
     json.dump(out, open(done, "w", encoding="utf-8"), indent=1)
     if shipper is not None:
         shipper.submit(od, f"{hub_dir}/{name}")
     return out
+
+
+def _load_stack(stk: nn.Module, path: str, dev) -> nn.Module:
+    """A stack saved by _save_stack, loaded into a fresh stack of the same shape."""
+    from safetensors.torch import load_file
+    stk.load_state_dict(load_file(path))
+    return stk.to(dev)
+
+
+# ------------------------------------------------------------------ 0.1.72: READ 0 - stored cores and their stored stacks, no training
+def fetch_stored(repo: str, core_tag: str, members_name: str, local_dir: str) -> tuple:
+    """A stored grid core (bed/weights/<core_tag>/) and its members' folder (bed/scale_members/<members_name>/) from the Hub repo, into
+    local_dir (tokenless for a public repo). -> (core folder, members folder)."""
+    from huggingface_hub import snapshot_download
+    snapshot_download(repo_id=repo, local_dir=local_dir,
+                      allow_patterns=[f"bed/weights/{core_tag}/*", f"bed/scale_members/{members_name}/*"])
+    cf, mf = os.path.join(local_dir, "bed", "weights", core_tag), os.path.join(local_dir, "bed", "scale_members", members_name)
+    for f in ("config.json", "model.safetensors", "scale.json"):
+        assert os.path.exists(os.path.join(cf, f)), f"the stored core lacks {f}: {cf}"
+    return cf, mf
+
+
+def _continuity(stored: dict, new: dict) -> dict:
+    """The stored read's registered cells (REST, G2, G0) against the same cells read again: the marks equal, the largest differences."""
+    keys = ("merged_mean", "solo_mean", "unowned_raw_merged", "kl_unowned", "leak_over_own_write")
+    n, same, worst = 0, 0, {k: 0.0 for k in keys}
+    for name, r in stored["stacks"].items():
+        for key, c in r["cells"].items():
+            if "_FULL_" in key or name not in new["stacks"] or key not in new["stacks"][name]["cells"]:
+                continue
+            d = new["stacks"][name]["cells"][key]
+            n += 1
+            same += all(c[mk] == d[mk] for mk in ("PROTECTED", "QUIET", "EXACT"))
+            for k in keys:
+                worst[k] = max(worst[k], abs(float(c[k]) - float(d[k])))
+    return dict(cells=n, marks_equal=same, largest_difference=worst)
+
+
+def read0(core_folder: str, members_folder: str, out_path: str, seed: int, heldout_path: str, last_steps: int = 16000,
+          read_batches: int = 64, calib_batches: int = 32, dev: str = "cuda", log=print, forms=("scale", "find")) -> dict:
+    """READ 0: a stored grid core and its stored last-site stacks (48 real arms, 48 toy members), read with no training. "scale": the
+    scale test's form again (its stored cells re-read: the continuity check against the members folder's last.json); "find": the
+    two-pass form (the free-running index, the head's sources). One record at out_path, resume-first (an existing record is returned)."""
+    if os.path.exists(out_path):
+        log(f"[read 0] {os.path.basename(out_path)}: done before")
+        return json.load(open(out_path, encoding="utf-8"))
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    t0 = time.time()
+    core = Core(core_folder, dev)
+    owned, never = owned_sets()
+    held = load_heldout(heldout_path)
+    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held)
+    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1])
+    stacks = {"arms": _load_stack(StackedArms(N_OWN, core.d), os.path.join(members_folder, f"arms_last_m{N_OWN}_st{last_steps}.safetensors"), core.dev),
+              "toys": _load_stack(StackedToys(N_OWN, core.d), os.path.join(members_folder, f"toys_last_m{N_OWN}_st{last_steps}.safetensors"), core.dev)}
+    rec = dict(core=core.tag, members=os.path.basename(os.path.normpath(members_folder)), seed=seed, head_at=core.head_at,
+               rotation="anchored" if core.anchor is not None else "house", head=core.head is not None, rows=len(read_rows),
+               calib_rows=len(cal_rows), forms=list(forms))
+    log(f"[read 0] {core.tag}: {rec['rotation']} rotation, head {'on' if rec['head'] else 'off'}; {len(read_rows)} read rows, "
+        f"{len(cal_rows)} calibration rows; forms {list(forms)}")
+    if "scale" in forms:
+        cal = calibrate(core, cal_rows, owned)
+        rd = read_last(core, stacks, read_rows, cal, owned, never, seed, log=log)
+        rec["scale"] = rd
+        sp = os.path.join(members_folder, "last.json")
+        if os.path.exists(sp):
+            rec["continuity"] = _continuity(json.load(open(sp, encoding="utf-8"))["read"], rd)
+            log(f"[read 0] the scale form against the stored read: {rec['continuity']}")
+        _log_last(rd, {}, log)
+    if "find" in forms:
+        srcs = find_sources(core, "last")
+        calf = calibrate_find(core, cal_rows, owned, srcs)
+        rdf = read_last_find(core, stacks, read_rows, calf, owned, never, seed, srcs=srcs, log=log)
+        rec["find"] = rdf
+        _log_last_find(rdf, None, log)
+    rec["wall_s"] = time.time() - t0
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
+    log(f"[read 0] wrote {out_path} ({rec['wall_s'] / 60:.1f} min)")
+    return rec
 
 
 def _log_last(rd: dict, tb: dict, log=print) -> None:
@@ -1385,6 +2009,34 @@ def _log_last(rd: dict, tb: dict, log=print) -> None:
                     f" (bare {c['unowned_raw_bare']:.4f}) KL {c['kl_unowned']:.2e} leak/own {c['leak_over_own_write']:.2e} "
                     f"P/Q/E {c['PROTECTED']}/{c['QUIET']}/{c['EXACT']}")
     log("[text bits] " + " ".join(f"{k} {v:.4f}" for k, v in tb.items() if isinstance(v, float)))
+
+
+def _log_last_find(rd: dict, tb: dict | None, log=print) -> None:
+    """The two-pass read's lines: the free-running index, each source's address right, the floors, the headline cells."""
+    d = rd["diag"]
+    log(f"[read last, two-pass] the index written: teacher-forced row {d['written_index_right']:.4f}"
+        + (f", free-running row {d['indexf_right']:.4f} (passes mean {d['passes']['mean']:.1f} max {d['passes']['max']}, converged "
+           f"{d['converged']:.4f}, fixed point {d['fixed_point_agree']:.4f})" if "indexf_right" in d else "")
+        + "; addresses right " + " ".join(f"{s} {r['request_right']:.4f}" for s, r in d["sources"].items())
+        + "".join(f"; {s} agrees with the free-running index {r['argmax_agrees_with_indexf']:.4f}" for s, r in d["sources"].items()
+                  if "argmax_agrees_with_indexf" in r))
+    for s, c in (rd.get("calibration") or {}).items():
+        if c.get("tau_999_saturated"):
+            log(f"[read last, two-pass] FLAG {s}'s tau saturated at 1: its cells' marks are vacuous")
+    if rd.get("nan_fields"):
+        log(f"[read last, two-pass] FLAG {len(rd['nan_fields'])} non-finite fields, first {rd['nan_fields'][:3]}")
+    for name, r in rd["stacks"].items():
+        so = r["solo_per_owner"]
+        log(f"[read last, two-pass] {name}: solo ONE mean {np.mean(so):.4f} (10th percentile {np.quantile(so, 0.1):.4f}, min {min(so):.4f})")
+        for s in rd["sources"] + ["G2", "G0"]:
+            key = f"{s}_U5_REST_m48" if s not in ("G2", "G0") else f"{s}_m48"
+            c = r["cells"].get(key)
+            if c:
+                log(f"[read last, two-pass] {name} {key} ({c['view']}): solo {c['solo_mean']:.4f} merged {c['merged_mean']:.4f} unowned "
+                    f"{c['unowned_raw_merged']:.4f} (bare {c['unowned_raw_bare']:.4f}) KL {c['kl_unowned']:.2e} leak/own "
+                    f"{c['leak_over_own_write']:.2e} P/Q/E {c['PROTECTED']}/{c['QUIET']}/{c['EXACT']}")
+    if tb:
+        log("[text bits] " + " ".join(f"{k} {v:.4f}" for k, v in tb.items() if isinstance(v, float)))
 
 
 def _log_mid(rd: dict, log=print) -> None:
