@@ -6,32 +6,68 @@ DATA a1 a2 CUE key SEP value END) and the block's head h with rotated query and 
 m_e is the head's causal softmax mass on the frame: the quantity the band read measures (find_band_read: the softmax over the positions
 up to the SEP, summed over the true record's frame). The trainer's term is -(1 / |E|) sum_e log m_e, a cross-entropy on the attention
 row itself. Nothing here is a parameter: the capture wraps the block's rotation as an instance attribute, so the block's output, the
-craft's state dict and every other forward are unchanged."""
+craft's state dict and every other forward are unchanged.
+0.1.79: the same mass at any query position (the trainer asks it at the entry's first address byte too, where the second address digit
+is written), and the capture's stopped form (HeadCapture(stop=True)): the term's q and k from the block's attention input detached, so
+its gradient stays in the supervised head's own query and key projections."""
 from __future__ import annotations
 
 import math
 
 import torch
+import torch.nn.functional as F
 
 
 class HeadCapture:
     """Keep the rotated q and k of one softmax block's latest forward (the block's _rotate wrapped as an instance attribute: no
     parameter, no state-dict key, the block's output unchanged). The tensors are the ones the block's kernel reads, so the term's
-    gradient flows back through the same q and k. on: capture while True; clear() drops the references after a step."""
+    gradient flows back through the same q and k. on: capture while True; clear() drops the references after a step.
+    0.1.79, stop=True: keep the block's attention input instead (its _split wrapped the same way); qk() then forms the supervised head's
+    query and key from that input detached, through the block's own rotation - the forward's values (within float rounding), and a
+    gradient that reaches only that head's query and key rows of the block's qkv projection."""
 
-    def __init__(self, attn: torch.nn.Module) -> None:
-        self.attn, self.q, self.k, self.on = attn, None, None, True
-        inner = attn._rotate
+    def __init__(self, attn: torch.nn.Module, stop: bool = False, head: int = 0) -> None:
+        self.attn, self.q, self.k, self.x, self.on = attn, None, None, None, True
+        self.stop, self.head = bool(stop), int(head)
+        if self.stop:
+            assert not getattr(attn, "qk_norm", ""), "the stopped form forms one head's q and k without the block's qk-norm guard"
+            inner_split = attn._split
 
-        def _rotate(q, k, offset: int = 0):
-            q, k = inner(q, k, offset)
-            if self.on:
-                self.q, self.k = q, k
-            return q, k
-        attn._rotate = _rotate
+            def _split(x, n):
+                if self.on:
+                    self.x = x
+                return inner_split(x, n)
+            attn._split = _split
+        else:
+            inner = attn._rotate
+
+            def _rotate(q, k, offset: int = 0):
+                q, k = inner(q, k, offset)
+                if self.on:
+                    self.q, self.k = q, k
+                return q, k
+            attn._rotate = _rotate
+
+    def ready(self) -> bool:
+        return (self.x if self.stop else self.q) is not None
+
+    def qk(self) -> tuple:
+        """(q, k, the supervised head's index in them) for the term: the forward's own rotated q and k (every head), or with stop=True
+        the head's query and key, (B, 1, n, hd), from the kept input detached through the block's rotation (fp32)."""
+        if not self.stop:
+            return self.q, self.k, self.head
+        a, h = self.attn, self.head
+        w = a.qkv.weight
+        x = self.x.detach().to(w.dtype)
+        B, n, d = x.shape
+        hd = d // a.h
+        q = F.linear(x, w[h * hd:(h + 1) * hd]).view(B, n, 1, hd).transpose(1, 2)
+        k = F.linear(x, w[d + h * hd:d + (h + 1) * hd]).view(B, n, 1, hd).transpose(1, 2)
+        q, k = a._rotate(q, k)
+        return q, k, 0
 
     def clear(self) -> None:
-        self.q = self.k = None
+        self.q = self.k = self.x = None
 
 
 def novelty(v_ce: torch.Tensor, v_term: torch.Tensor) -> tuple:

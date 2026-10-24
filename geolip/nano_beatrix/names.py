@@ -78,6 +78,7 @@ def run_tag(args: dict) -> str:
              + (f"_kh{int(round(float(args['grid_hard']) * 100))}" if float(args.get("grid_hard", "0")) > 0 else "")
              + ("_va1" if args.get("value_addr", "0") == "1" else "")
              + (f"_pt{int(round(float(args['ptr_lam']) * 100))}b{int(args.get('ptr_block', '4'))}h{int(args.get('ptr_head', '0'))}"
+                + ("p2" if args.get("ptr_pos", "sep") == "both" else "") + ("sg" if args.get("ptr_stop", "0") == "1" else "")
                 if float(args.get("ptr_lam", "0")) > 0 else "")
              + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
              + (f"i{float(args.get('head_lam_i', '1.0')):g}" if args.get("head") and args.get("head_at", "question") == "both" else "")

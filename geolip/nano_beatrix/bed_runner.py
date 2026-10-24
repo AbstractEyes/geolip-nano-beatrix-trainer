@@ -50,7 +50,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "grid_abytes",                                                     # 0.1.74: the grid rows' address form
              "grid_hard", "hard_read", "hard_batches",                          # 0.1.75: the key-hard rows and their read
              "value_addr",                                                      # 0.1.76: the value-path address
-             "ptr_lam", "ptr_block", "ptr_head")                                # 0.1.78: the pointer term
+             "ptr_lam", "ptr_block", "ptr_head",                                # 0.1.78: the pointer term
+             "ptr_pos", "ptr_stop")                                             # 0.1.79: its positions and its gradient's reach
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -131,7 +132,9 @@ def run_label(run: list) -> str:
     if kv.get("value_addr") == "1":                               # 0.1.76: the value-path address
         parts.append("value-path address")
     if kv.get("ptr_lam") is not None and float(kv["ptr_lam"]) > 0:   # 0.1.78: the pointer term
-        parts.append(f"pointer term {kv['ptr_lam']} at block {kv.get('ptr_block', '4')} head {kv.get('ptr_head', '0')}")
+        parts.append(f"pointer term {kv['ptr_lam']} at block {kv.get('ptr_block', '4')} head {kv.get('ptr_head', '0')}"
+                     + (" at both address positions" if kv.get("ptr_pos", "sep") == "both" else "")
+                     + (", its gradient kept in the head" if kv.get("ptr_stop", "0") == "1" else ""))
     if kv.get("head"):
         parts.append(f"head {kv['head']} {kv.get('head_lam', '1')}")
         if kv.get("head_at", "question") == "both":                  # 0.1.72: the term at the index entries too

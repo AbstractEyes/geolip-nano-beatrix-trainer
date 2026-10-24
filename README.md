@@ -239,6 +239,21 @@ the plan's rule picks on five more seeds, Alhena-V on two new seeds, and the mem
 is right, `colab/nano_pointer.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pointer.ipynb)
 
+The local two-position form (0.1.79). An index entry writes its address in two bytes: the first is predicted at the entry's SEP, the
+second at the first address byte. `--ptr_pos=both` asks the same mass at both positions (the term the mean over the 2|E| positions):
+
+    L_ptr = -(1/(2|E|)) sum_e [ log m_e(i_e) + log m_e(i_e + 1) ]
+
+`--ptr_stop=1` forms the term's query and key from the block's attention input detached, through the block's own rotation
+(`pointer.HeadCapture(stop=True)`): the forward's values, and a gradient that reaches the supervised head's query and key rows of the
+block's qkv projection and nothing else. With the gradient through the trunk the term can be met by an early look on the key's last two
+bytes, which the SEP's own byte-trigram input already carries; kept in the head, the term can only point the head with the features the
+cross-entropy builds. The defaults (`sep`, `0`) are 0.1.78 bit for bit; a run with either carries `p2` / `sg` after its `_pt` piece, its
+record's `ptr` block the form and the mass at the first address byte (`mass_read2`, the trace's `ptr_mass2`). Alhena-P2 (Alhena-P with
+both) on six seeds, Alhena-P again on two new seeds, and the members on the first two Alhena-P2 cores whose own written index is right,
+`colab/nano_pointer2.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pointer2.ipynb)
+
 Then:
 
 ```bash

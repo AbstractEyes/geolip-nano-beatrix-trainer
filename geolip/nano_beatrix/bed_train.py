@@ -206,6 +206,17 @@ PTR_LAM = float(ARGS.get("ptr_lam", "0"))
 PTR_BLOCK = int(ARGS.get("ptr_block", "4"))
 PTR_HEAD = int(ARGS.get("ptr_head", "0"))
 assert PTR_LAM >= 0.0, f"--ptr_lam={PTR_LAM}: >= 0"
+# 0.1.79: THE LOCAL TWO-POSITION FORM. --ptr_pos=both asks the same mass at each entry's first address byte too (where the second address
+# digit is written), the term the mean over both positions (-(1 / (2|E|)) sum_e [log m_e(SEP) + log m_e(SEP + 1)]); --ptr_stop=1 forms
+# the term's q and k from the block's attention input detached (pointer.HeadCapture(stop=True)), so its gradient reaches the supervised
+# head's query and key rows of the block's qkv projection and nothing else. The defaults (sep, 0) = 0.1.78 bit for bit; the name carries
+# p2 and sg.
+PTR_POS = ARGS.get("ptr_pos", "sep")
+PTR_STOP = ARGS.get("ptr_stop", "0") == "1"
+assert PTR_POS in ("sep", "both") and ARGS.get("ptr_stop", "0") in ("0", "1"), (PTR_POS, ARGS.get("ptr_stop"))
+assert PTR_LAM > 0 or (PTR_POS == "sep" and not PTR_STOP), "--ptr_pos and --ptr_stop are forms of the pointer term (--ptr_lam > 0)"
+assert PTR_POS == "sep" or GRID_ABYTES == 2, "--ptr_pos=both reads the two-byte address (the second digit's position)"
+PTR_FORM = {**(dict(pos=PTR_POS) if PTR_POS != "sep" else {}), **(dict(stop=True) if PTR_STOP else {})}   # record fields: non-defaults only
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -668,9 +679,11 @@ class Craft:
             _attn = self.model.blocks[PTR_BLOCK - 1].attn
             assert hasattr(_attn, "_rotate") and hasattr(_attn, "h"), f"block {PTR_BLOCK} is not a softmax block"
             assert 0 <= PTR_HEAD < _attn.h, f"--ptr_head={PTR_HEAD}: 0 .. {_attn.h - 1}"
-            self.ptr = pt.HeadCapture(_attn)
-            log(f"the pointer term: block {PTR_BLOCK} head {PTR_HEAD} told, at each index entry's SEP, its mass on the frame of the "
-                f"record whose key the entry carries; lambda {PTR_LAM:g}; no parameter")
+            self.ptr = pt.HeadCapture(_attn, stop=PTR_STOP, head=PTR_HEAD)
+            log(f"the pointer term: block {PTR_BLOCK} head {PTR_HEAD} told, at each index entry's SEP"
+                + (" and its first address byte" if PTR_POS == "both" else "") + ", its mass on the frame of the "
+                f"record whose key the entry carries; lambda {PTR_LAM:g}; no parameter"
+                + ("; its gradient kept in the head's own query and key rows (the block's input detached)" if PTR_STOP else ""))
         self.opt = bed_optim.build(self.model, self.params, LR, WD, WD_SET)     # wd 0: pure Adam, as every earlier run
         self.decay = bed_optim.census(self.model, WD_SET) if WD else None
         if WD:
@@ -760,17 +773,25 @@ def ptr_log_mass(c, aux):
     record whose key the entry carries (pointer.log_mass on the block's captured q and k) -> (E,) fp32. The entries' rows and SEPs are the
     batch's ihead_row / ihead_pos (grid_aux); their frames come from the same metas in the same order (grid_rows.index_frame_spans), so
     the batch itself stays 0.1.77's to the last byte."""
-    assert c.ptr is not None and c.ptr.q is not None, "the pointer term reads the last forward's captured q and k"
+    assert c.ptr is not None and c.ptr.ready(), "the pointer term reads the last forward's capture"
     spans = [s for m in aux["metas"] for s in gr.index_frame_spans(m)]
     assert len(spans) == int(aux["ihead_pos"].numel()), "one frame span per index entry"
     lo = torch.tensor([a for a, _ in spans], dtype=torch.long)
     hi = torch.tensor([b for _, b in spans], dtype=torch.long)
-    return pt.log_mass(c.ptr.q, c.ptr.k, PTR_HEAD, aux["ihead_row"], aux["ihead_pos"], lo, hi)
+    q, k, h = c.ptr.qk()
+    if PTR_POS == "both":                        # 0.1.79: each entry's SEP and first address byte, interleaved (the rows stay grouped)
+        a1 = torch.tensor([e["a_pos"] for m in aux["metas"] for e in m["index"]], dtype=torch.long)
+        sep = aux["ihead_pos"].long().cpu()
+        assert torch.equal(a1, sep + 1), "the second position is the entry's first address byte"
+        return pt.log_mass(q, k, h, aux["ihead_row"].repeat_interleave(2), torch.stack([sep, a1], 1).reshape(-1),
+                           lo.repeat_interleave(2), hi.repeat_interleave(2))
+    return pt.log_mass(q, k, h, aux["ihead_row"], aux["ihead_pos"], lo, hi)
 
 
-def ptr_mass_read(c, ag) -> float:
+def ptr_mass_read(c, ag):
     """0.1.78: the supervised head's mean mass on the true frame over the index entries of the grid rows `ag` (teacher-forced, the
-    training form's request; mb rows a forward, the craft in eval and no gradient)."""
+    training form's request; mb rows a forward, the craft in eval and no gradient). 0.1.79, --ptr_pos=both: [at the entries' SEPs, at
+    their first address bytes]."""
     was = c.model.training
     c.model.eval()
     ms = []
@@ -787,7 +808,10 @@ def ptr_mass_read(c, ag) -> float:
             c.ptr.clear()
     if was:
         c.model.train()
-    return float(torch.cat(ms).mean())
+    m = torch.cat(ms)
+    if PTR_POS == "both":                        # 0.1.79: interleaved (SEP, first address byte) per entry
+        return [float(v) for v in m.view(-1, 2).mean(0)]
+    return float(m.mean())
 
 
 def novelty(c) -> dict:
@@ -825,6 +849,8 @@ def novelty(c) -> dict:
         pnov, pcos = pt.novelty(v1, v4)
         out["ptr"] = dict(novelty=pnov, cos=pcos, grad_norm=float(v4.norm()), term=float(pterm.detach()),
                           mass=float(lm.detach().exp().mean()))
+        if PTR_POS == "both":                    # 0.1.79: the mass at each position (SEP, first address byte)
+            out["ptr"]["mass_pos"] = [float(v) for v in lm.detach().exp().view(-1, 2).mean(0)]
         c.ptr.clear()
     set_streams(c, None)
     return out
@@ -939,7 +965,10 @@ def ag_trace(c, step: int) -> dict:
         agh = ag_set("trace_hard")
         rec["hard_index_right"] = ag_scores(agh, ag_forward(c, agh)[0])[0]["index_right"]
     if c.ptr is not None:                        # 0.1.78: the supervised head's mean mass on the true frame (the trace rows)
-        rec["ptr_mass"] = ptr_mass_read(c, ag)
+        if PTR_POS == "both":                    # 0.1.79: and at the entries' first address bytes
+            rec["ptr_mass"], rec["ptr_mass2"] = ptr_mass_read(c, ag)
+        else:
+            rec["ptr_mass"] = ptr_mass_read(c, ag)
     if was:
         c.model.train()
     return rec
@@ -1057,8 +1086,9 @@ for _c in crafts:
         if _c.ptr is not None:                   # 0.1.78
             _p = _c.novelty["ptr"]
             log(f"the pointer term's novelty at step 0: {_p['novelty']:.4f} (cos {_p['cos']:+.4f}; the term {_p['term']:.3f} nats, the "
-                f"head's mass on the record's frame {_p['mass']:.4f}; its gradient {_p['grad_norm']:.3f} against the CE's "
-                f"{_c.novelty['grad_norm_ce']:.3f})")
+                f"head's mass on the record's frame {_p['mass']:.4f}"
+                + (f" (at the SEP {_p['mass_pos'][0]:.4f}, at the first address byte {_p['mass_pos'][1]:.4f})" if "mass_pos" in _p else "")
+                + f"; its gradient {_p['grad_norm']:.3f} against the CE's {_c.novelty['grad_norm_ce']:.3f})")
         _refuse = [nm for nm, lam_, nov in (("the head term", HEAD_LAM, _c.novelty), ("the index entries' term", HEAD_LAM_I,
                                                                                      _c.novelty.get("index")),
                                             ("the pointer term", PTR_LAM, _c.novelty.get("ptr")))
@@ -1069,7 +1099,7 @@ for _c in crafts:
             if HEAD_AT == "both":
                 _grid.update(head_at=HEAD_AT, lam_i=HEAD_LAM_I)
             if _c.ptr is not None:
-                _grid.update(ptr=dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD))
+                _grid.update(ptr=dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM))
             json.dump(dict(arm=_c.arm, seed=SEED, steps=0, refused=f"the collinearity gate: {' and '.join(_refuse)}'s novelty under .05",
                            grid=_grid), open(_path, "w", encoding="utf-8"), indent=1)
             log(f"REFUSED: {' and '.join(_refuse)}'s novelty < .05; no step taken; wrote {_path}")
@@ -1659,13 +1689,19 @@ def finish(c: Craft) -> tuple:
         if c.ptr is not None:                   # 0.1.78: the pointer term: its form, gate, descent and the head's mass on the read rows
             pc = c.ptr_curve
             p0, plast = (pc[0], float(np.mean(pc[-50:]))) if pc else (None, None)
+            _mr = ptr_mass_read(c, ag_set("read"))
             grid_block["ptr"] = dict(form="frame_mass", lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, novelty=(c.novelty or {}).get("ptr"),
                                      term_step1=p0, term_last50=plast, descended=(bool(plast < 0.1 * p0) if pc else None),
                                      curve=[[i + 1, pc[i]] for i in range(0, len(pc), LOG_EVERY)] + ([[len(pc), pc[-1]]] if pc else []),
-                                     mass_read=ptr_mass_read(c, ag_set("read")))
+                                     mass_read=(_mr[0] if PTR_POS == "both" else _mr))
+            if PTR_FORM:                         # 0.1.79: the form (non-defaults) and the mass at the first address byte
+                grid_block["ptr"].update(PTR_FORM)
+            if PTR_POS == "both":
+                grid_block["ptr"]["mass_read2"] = _mr[1]
             _p = grid_block["ptr"]
             log(f"the pointer term (block {PTR_BLOCK} head {PTR_HEAD}, lambda {PTR_LAM:g}): descended {_p['descended']} "
-                + (f"({p0:.3f} -> {plast:.4f}); " if pc else "; ") + f"the head's mass on the true frame over the read rows {_p['mass_read']:.4f}")
+                + (f"({p0:.3f} -> {plast:.4f}); " if pc else "; ") + f"the head's mass on the true frame over the read rows {_p['mass_read']:.4f}"
+                + (f" at the SEP, {_p['mass_read2']:.4f} at the first address byte" if "mass_read2" in _p else ""))
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
             + (f", through its own index {read['own_index']['whole']:.4f} (the index's request right {read['own_index']['request_right']:.4f}),"
@@ -1708,7 +1744,7 @@ def finish(c: Craft) -> tuple:
                 save_file({"table": c.value_addr.table.detach().cpu().contiguous()}, os.path.join(wdir, "value_addr.safetensors"))
                 _sj["value_addr"] = dict(levels=ar.LEVELS, digits=ar.NULL, d=c.cfg.d_model)
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
-                _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD)
+                _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
              config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),
