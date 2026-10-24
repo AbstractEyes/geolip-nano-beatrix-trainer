@@ -24,6 +24,7 @@ import math
 import types
 
 import torch
+import torch.nn.functional as F
 
 from geolip.alephllm.model.attention import CausalSDPA, rope_half
 
@@ -149,16 +150,20 @@ class ValueAddress(torch.nn.Module):
         self.streams = streams                            # the rotation's streams (a plain attribute: not a submodule, not in the state dict)
 
     def add(self, x: torch.Tensor) -> torch.Tensor:
-        """x: the embedding's output (B, n, d) for the positions 0 .. n - 1 of the streams' rows."""
+        """x: the embedding's output (B, n, d) for the positions 0 .. n - 1 of the streams' rows. 0.1.77: each level is an embedding
+        lookup into its 8 rows and a zero null row (padding_idx: the null row takes no gradient), the same values as 0.1.76's gather; the
+        gradient is the embedding backward, which spreads the ~24,000 null positions of a batch over the card instead of summing them into
+        one row in series (0.1.76's indexed gather cost a third of the step on the card)."""
         dk = self.streams.dk
         if dk is None:
             return x
         assert tuple(dk.shape[:2]) == tuple(x.shape[:2]), f"the streams are {tuple(dk.shape[:2])}, the embedding is {tuple(x.shape[:2])}"
         dk = dk.long()
+        null_row = self.table.new_zeros(1, self.table.shape[-1])
         for lev in range(LEVELS):
             d = dk[..., lev]
-            on = (d >= 0) & (d < NULL)
-            x = x + self.table[lev][d.clamp(0, NULL - 1)].to(x.dtype) * on[..., None].to(x.dtype)
+            d = torch.where((d >= 0) & (d < NULL), d, torch.full_like(d, NULL))        # any digit outside 0-7 reads the null row
+            x = x + F.embedding(d, torch.cat([self.table[lev], null_row]), padding_idx=NULL).to(x.dtype)
         return x
 
 

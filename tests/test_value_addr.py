@@ -98,6 +98,38 @@ def test_the_tables_add_their_written_formula():
     st.clear()
 
 
+def _add_0176(va, x):
+    """0.1.76's ValueAddress.add (the indexed gather), verbatim: 0.1.77's embedding form must give the same values."""
+    dk = va.streams.dk
+    if dk is None:
+        return x
+    dk = dk.long()
+    for lev in range(ar.LEVELS):
+        d = dk[..., lev]
+        on = (d >= 0) & (d < ar.NULL)
+        x = x + va.table[lev][d.clamp(0, ar.NULL - 1)].to(x.dtype) * on[..., None].to(x.dtype)
+    return x
+
+
+def test_the_embedding_form_gives_0176s_values():
+    st = ar.AnchorStreams(4)
+    va = ar.ValueAddress(32, st)
+    with torch.no_grad():
+        va.table.normal_()
+    for seed in range(5):
+        dk, dq = _streams(3, 200, seed=seed)
+        dk[0, :7, 0] = torch.tensor([-1, 9, 12, 8, 0, 7, 3])                             # out-of-range digits read the null row
+        st.set(dk, dq)
+        x = torch.randn(3, 200, 32, requires_grad=True)
+        new, old = va.add(x), _add_0176(va, x)
+        assert torch.equal(new, old)                                                     # the same values, to the last bit
+        g = torch.randn_like(new)
+        gn = torch.autograd.grad(new, (x, va.table), g)
+        go = torch.autograd.grad(old, (x, va.table), g)
+        assert torch.equal(gn[0], go[0]) and torch.allclose(gn[1], go[1], rtol=1e-5, atol=1e-5)   # the table's sums in another order
+        st.clear()
+
+
 def test_the_patch_keeps_the_state_dict():
     m, st = _craft()
     before = {k: v.clone() for k, v in m.state_dict().items()}

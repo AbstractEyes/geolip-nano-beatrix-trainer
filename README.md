@@ -213,8 +213,11 @@ the index entries, the questions and the plain rows it is the null anchor, which
 default is 0.1.75 bit for bit (a 3-step run's record, weights and side files on Alhena-W's grid recipe); born zero, the first step's
 forward is the plain craft's to the last bit. A run with the tables carries `_va1` in its name; the tables ship beside the weights as
 `value_addr.safetensors` (scale.json names them; the record carries their norms by level and by digit), and `rotary_scale.Core` applies
-them in every forward of the frozen core. Alhena-V (Alhena-W with the tables) on six seeds, Alhena-W on two new seeds, and the members on
-the first two Alhena-V cores whose own written index is right, `colab/nano_value.ipynb`:
+them in every forward of the frozen core. 0.1.77 makes the lookup cheap: each level is an embedding lookup into its 8 rows and a zero
+null row (`padding_idx`), the same values as 0.1.76's indexed gather to the last bit, whose backward summed the ~24,000 null positions of
+a batch into one row in series (+15% of a training step on an RTX 4090, about a third on an RTX PRO 6000; the embedding form +0.5%).
+Alhena-V (Alhena-W with the tables) on six seeds, Alhena-W on two new seeds, and the members on the first two Alhena-V cores whose own
+written index is right, `colab/nano_value.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_value.ipynb)
 
 Then:
