@@ -173,6 +173,15 @@ retrain rule), `colab/nano_find_cores.ipynb`:
 The members on them (the scale test's recipe verbatim; the two-pass read), `colab/nano_find_members.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_find_members.ipynb)
 
+The wide-band screen (0.1.73): the anchored split as a parameter. `--rotary_content=N` gives each head N content pairs (unturned) and
+R = 8 - N relative pairs, NTK-aware x4 over their 2R dims (w_j = (10000 * 4^(2R / (2R - 2)))^(-j / R), j = 0..R-1); the eight address
+pairs are unchanged. The default (N = 2) is 0.1.72 bit for bit (a 3-step run's record, weights and side files, with and without the head
+at the index entries); a run with another N carries `_cp<N>` in its name, its record and scale.json carry the split, and
+`rotary_scale.Core` builds the rotation from scale.json. Alhena-W (N = 4: relative wavelengths 6.3 / 100 / 1,583 / 25,100 positions) on
+four seeds, Alhena verbatim on two new seeds, Alhena-W with the head at the index entries on two, and the members on the Alhena-W cores
+whose own written index is right, `colab/nano_wide.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_wide.ipynb)
+
 Then:
 
 ```bash

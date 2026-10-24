@@ -171,6 +171,10 @@ GRID_P = float(ARGS.get("grid_p", "0.5"))
 ALHENA = ARM.split("-")[0] == "alhena"          # the third of the triplets: Castor's layout, the anchored rotation always on (bodies.py)
 ROTARY = ARGS.get("rotary", "") or ("anchored" if ALHENA else "")
 assert not ALHENA or ROTARY == "anchored", f"alhena turns by the anchored rotation, not {ROTARY!r}"
+# 0.1.73: THE WIDE-BAND SCREEN. --rotary_content=C moves the anchored split: C content pairs and 8 - C relative pairs before the two anchor
+# levels (anchored_rope.frequencies; 2 = ALHENA, the default, bit for bit; 4 = ALHENA-W); the run's name carries _cp<C> when C is not 2.
+ROT_CONTENT = int(ARGS.get("rotary_content", str(ar.CONTENT_PAIRS)))
+assert ROT_CONTENT == ar.CONTENT_PAIRS or ROTARY == "anchored", "--rotary_content moves the anchored rotation's split (--rotary=anchored)"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -592,9 +596,10 @@ class Craft:
         self.head_curve, self.trace, self.novelty = [], [], None
         self.ihead_curve = []                    # 0.1.72: the index entries' term (--head_at=both)
         if ROTARY == "anchored":                 # no parameter: the state dict stays the house body's
-            self.anchor = ar.AnchorStreams()
-            log(f"the anchored rotation on {ar.patch(self.model, self.anchor)} softmax blocks (pairs 0-5 relative, NTK x{ar.NTK_SCALE:g}; "
-                f"6-7 content; 8-15 two anchor levels at 2 pi k / 9)")
+            self.anchor = ar.AnchorStreams(ROT_CONTENT)
+            _rel = ar.SHARED - ROT_CONTENT
+            log(f"the anchored rotation on {ar.patch(self.model, self.anchor)} softmax blocks (pairs 0-{_rel - 1} relative, NTK x{ar.NTK_SCALE:g}; "
+                f"{_rel}-{ar.SHARED - 1} content; 8-15 two anchor levels at 2 pi k / 9)")
         if HEAD_FORM == "digit":                 # the per-digit address head: torch's default weight, the bias at the uniform prior 1/8
             torch.manual_seed(gr.crc(f"SCALE|head|s{SEED}"))
             self.addr_head = torch.nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(DEV)
@@ -1484,7 +1489,7 @@ def finish(c: Craft) -> tuple:
                 head.update(at="both", lam_i=HEAD_LAM_I, index=dict(
                     term_step1=i0_, term_last50=ilast, descended=(bool(ilast < 0.1 * i0_) if ic else None),
                     curve=[[i + 1, ic[i]] for i in range(0, len(ic), LOG_EVERY)] + ([[len(ic), ic[-1]]] if ic else [])))
-        grid_block = dict(layout="AG", p=GRID_P, n_ag=N_AG, rotary=(ar.spec() if ROTARY else "house"), head=head, trace=c.trace, read=read,
+        grid_block = dict(layout="AG", p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=head, trace=c.trace, read=read,
                           series=ARGS.get("series", ""))
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
@@ -1511,7 +1516,7 @@ def finish(c: Craft) -> tuple:
         if N_AG:                                # 0.1.70: the scale test's pieces beside the craft (the house body's state dict is unchanged)
             if c.addr_head is not None:
                 save_file({k: v.detach().cpu().contiguous() for k, v in c.addr_head.state_dict().items()}, os.path.join(wdir, "addr_head.safetensors"))
-            _sj = dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec() if ROTARY else "house"), head=HEAD_FORM or None, head_lam=HEAD_LAM,
+            _sj = dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=HEAD_FORM or None, head_lam=HEAD_LAM,
                        layout=dict(slot=gr.SLOT, comps=gr.N_COMP, radix=gr.RADIX, levels=gr.LEVELS))
             if HEAD_AT == "both":                # 0.1.72: the head's positions (the stored cores' files carry none: the questions)
                 _sj.update(head_at=HEAD_AT, head_lam_i=HEAD_LAM_I)

@@ -431,9 +431,8 @@ class Core:
         self.n_blocks = len(m.blocks)
         self.scale = json.load(open(os.path.join(folder, "scale.json"), encoding="utf-8"))
         self.anchor = None
-        if isinstance(self.scale.get("rotary"), dict):
-            assert self.scale["rotary"] == ar.spec(), "the core's rotation is not this module's anchored rotation"
-            self.anchor = ar.AnchorStreams()
+        if isinstance(self.scale.get("rotary"), dict):            # 0.1.73: at the split the core was trained with (ALHENA's 2 or ALHENA-W's 4)
+            self.anchor = ar.AnchorStreams(ar.content_of(self.scale["rotary"]))
             ar.patch(self.model, self.anchor)
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")

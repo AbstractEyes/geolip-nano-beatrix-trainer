@@ -12,7 +12,12 @@ pairs q_m . k_n depends on the digit differences only:
                 + sum_{l=1,2} sum_{k=1..4} Re[q_lk conj(k_lk) e^{i w_k (dq_l(m) - dk_l(n))}]
 Over the four anchor frequencies the nine digits (0-7 and the null anchor 8) form a simplex: sum_k cos(w_k d) is 4 at d = 0 and -1/2 at
 every other difference. The null anchor turns by angle 0, so a row without streams (every token at the null anchor) turns the relative
-band alone. Nothing here is a parameter: a patched craft's state dict is the house body's, key for key."""
+band alone. Nothing here is a parameter: a patched craft's state dict is the house body's, key for key.
+
+0.1.73: THE SPLIT AS A PARAMETER (the wide-band screen). The eight pairs before the anchor levels are shared between the relative band and
+the content pairs: with C content pairs (content_pairs, default 2 = the form above, bit for bit) the relative band has R = 8 - C pairs,
+w_j = (10000 * 4^(2R / (2R - 2)))^(-j / R), j = 0..R-1 (the same NTK-aware rule over the band's own 2R dims), and pairs R..7 are content.
+ALHENA-W, C = 4: pairs 0-3 relative (wavelengths 6.3 / 100 / 1,583 / 25,100 positions), pairs 4-7 content, pairs 8-15 the anchor levels."""
 from __future__ import annotations
 
 import math
@@ -23,17 +28,26 @@ import torch
 from geolip.alephllm.model.attention import CausalSDPA, rope_half
 
 REL_PAIRS, CONTENT_PAIRS, ANCHOR_FREQS, LEVELS = 6, 2, 4, 2
-PAIRS = REL_PAIRS + CONTENT_PAIRS + LEVELS * ANCHOR_FREQS
+SHARED = REL_PAIRS + CONTENT_PAIRS                      # the pairs the relative band and the content share (0.1.73: the split's room)
+PAIRS = SHARED + LEVELS * ANCHOR_FREQS
 NTK_SCALE, BASE = 4.0, 10000.0
 NULL = 8
 
 
-def frequencies() -> tuple:
+def _check(content_pairs: int) -> int:
+    c = int(content_pairs)
+    assert 1 <= c <= SHARED - 2, f"content_pairs {content_pairs!r}: 1 .. {SHARED - 2} (the relative band keeps at least two pairs)"
+    return c
+
+
+def frequencies(content_pairs: int = CONTENT_PAIRS) -> tuple:
     """-> (w (16,) float64, kind (16,) long): kind 0 = the sequence index, 1 = content (w 0), 2 + l = anchor level l."""
-    dim = 2 * REL_PAIRS
+    c = _check(content_pairs)
+    rel = SHARED - c
+    dim = 2 * rel
     base = BASE * NTK_SCALE ** (dim / (dim - 2))
-    w = [base ** (-j / REL_PAIRS) for j in range(REL_PAIRS)] + [0.0] * CONTENT_PAIRS
-    kind = [0] * REL_PAIRS + [1] * CONTENT_PAIRS
+    w = [base ** (-j / rel) for j in range(rel)] + [0.0] * c
+    kind = [0] * rel + [1] * c
     for lev in range(LEVELS):
         w += [2 * math.pi * k / 9 for k in range(1, ANCHOR_FREQS + 1)]
         kind += [2 + lev] * ANCHOR_FREQS
@@ -42,10 +56,12 @@ def frequencies() -> tuple:
 
 class AnchorStreams:
     """The address streams every patched block reads during one forward: set() before the forward, clear() after (None = every token at
-    the null anchor). The angles are formed in fp32 and cast once per block, as the house rotary forms its tables."""
+    the null anchor). The angles are formed in fp32 and cast once per block, as the house rotary forms its tables. content_pairs: the
+    split (0.1.73; default 2 = ALHENA)."""
 
-    def __init__(self) -> None:
-        w, kind = frequencies()
+    def __init__(self, content_pairs: int = CONTENT_PAIRS) -> None:
+        self.content_pairs = _check(content_pairs)
+        w, kind = frequencies(self.content_pairs)
         self.w, self.kind = w.float(), kind
         self.dk = self.dq = None
 
@@ -85,8 +101,8 @@ def _anchored_rotate(self, q, k, offset: int = 0):
 
 
 def patch(model: torch.nn.Module, streams: AnchorStreams) -> int:
-    """Turn every softmax block of the craft (each CausalSDPA with the rotary on, head dim 32) to the anchored rotation reading `streams`.
-    -> the number of blocks turned. The parameters are untouched."""
+    """Turn every softmax block of the craft (each CausalSDPA with the rotary on, head dim 32) to the anchored rotation reading `streams`
+    (its split is the streams'). -> the number of blocks turned. The parameters are untouched."""
     n = 0
     for b in model.blocks:
         a = b.attn
@@ -101,8 +117,18 @@ def patch(model: torch.nn.Module, streams: AnchorStreams) -> int:
     return n
 
 
-def spec() -> dict:
-    """The rotation as a record field (the weights folder's scale.json and the run's record)."""
-    w, kind = frequencies()
-    return dict(form="anchored", pairs=PAIRS, rel_pairs=REL_PAIRS, content_pairs=CONTENT_PAIRS, anchor_freqs=ANCHOR_FREQS, levels=LEVELS,
+def spec(content_pairs: int = CONTENT_PAIRS) -> dict:
+    """The rotation as a record field (the weights folder's scale.json and the run's record). The default split's field is 0.1.72's, key
+    for key."""
+    c = _check(content_pairs)
+    w, kind = frequencies(c)
+    return dict(form="anchored", pairs=PAIRS, rel_pairs=SHARED - c, content_pairs=c, anchor_freqs=ANCHOR_FREQS, levels=LEVELS,
                 ntk_scale=NTK_SCALE, base=BASE, null=NULL, w=[float(x) for x in w], kind=[int(x) for x in kind])
+
+
+def content_of(rotary_field) -> int:
+    """The content pair count a recorded rotation field carries (0.1.73; a field without one is ALHENA's 2), checked against spec()."""
+    assert isinstance(rotary_field, dict) and rotary_field.get("form") == "anchored", rotary_field
+    c = int(rotary_field.get("content_pairs", CONTENT_PAIRS))
+    assert rotary_field == spec(c), "the recorded rotation is not this module's anchored rotation at its split"
+    return c
