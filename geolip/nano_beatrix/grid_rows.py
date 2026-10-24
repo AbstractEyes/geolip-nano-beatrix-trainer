@@ -219,6 +219,12 @@ def index_head_targets(meta: dict) -> tuple:
     return pos, dig
 
 
+def index_frame_spans(meta: dict) -> list:
+    """0.1.78 (the pointer term): for each index entry (in order, as index_head_targets), the input positions [lo, frame_end) of the
+    frame DATA a1 a2 CUE key SEP value END of the record that holds the entry's key (the truth, whatever address the entry shows)."""
+    return [(meta["recs"][e["rec"]]["lo"], meta["recs"][e["rec"]]["frame_end"]) for e in meta["index"]]
+
+
 def written_request(pred_row: np.ndarray, meta: dict) -> list:
     """The address the craft wrote for each question: its greedy bytes at the index entry's address positions (pred_row: the argmax
     at every input position of the teacher-forced row), as digits (decode_written: a byte outside the form's range is the null anchor)."""

@@ -73,9 +73,11 @@ except ImportError:                                      # run as a file: the fo
 try:
     from . import grid_rows as gr  # noqa: E402  (the package; 0.1.70: the addressed grid rows)
     from . import anchored_rope as ar  # noqa: E402  (the package; 0.1.70: the anchored multi-position rotary)
+    from . import pointer as pt  # noqa: E402  (the package; 0.1.78: the pointer term)
 except ImportError:                                      # run as a file: the folder is on the path (above)
     import grid_rows as gr  # noqa: E402
     import anchored_rope as ar  # noqa: E402
+    import pointer as pt  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -194,6 +196,16 @@ HARD_READ = GRID_HARD > 0 or ARGS.get("hard_read", "0") == "1"
 VALUE_ADDR = ARGS.get("value_addr", "0") == "1"
 assert ARGS.get("value_addr", "0") in ("0", "1"), f"--value_addr={ARGS.get('value_addr')!r}: 0 or 1"
 assert not VALUE_ADDR or (ROTARY == "anchored" and GRID == "ag"), "--value_addr=1 reads the anchored rotation's streams (--grid=ag)"
+# 0.1.78: THE POINTER TERM. --ptr_lam=L (> 0) gives one head of one softmax block (--ptr_block, numbered from 1 as the reads print them,
+# default 4; --ptr_head, default 0) at each index entry's SEP the target "your mass on the frame of the record whose key this entry
+# carries" (pointer.py): the term -(1/|E|) sum_e log m_e over the batch's index entries, m_e the head's causal softmax mass on the frame
+# [lo, frame_end) from the block's own rotated q and k, L x the term added to the loss; its own novelty gate at step 0 and descent record;
+# the formation trace and the end read carry the head's mass. No parameter, the forward unchanged; 0 (the default) = 0.1.77 bit for bit;
+# the run's name carries _pt<100 L>b<block>h<head>.
+PTR_LAM = float(ARGS.get("ptr_lam", "0"))
+PTR_BLOCK = int(ARGS.get("ptr_block", "4"))
+PTR_HEAD = int(ARGS.get("ptr_head", "0"))
+assert PTR_LAM >= 0.0, f"--ptr_lam={PTR_LAM}: >= 0"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -212,6 +224,8 @@ assert GRID in ("", "ag") and ROTARY in ("", "anchored") and HEAD_FORM in ("", "
 assert GRID or not (ROTARY or HEAD_FORM), "--rotary=anchored and --head=digit read the grid rows (--grid=ag)"
 assert HEAD_AT in ("question", "both") and (HEAD_AT == "question" or HEAD_FORM == "digit"), \
     f"--head_at={HEAD_AT!r}: question, or both (the index entries too) with --head=digit"
+assert PTR_LAM == 0 or (GRID == "ag" and HEAD_FORM == "digit"), \
+    "--ptr_lam supervises a head at the grid rows' index entries (--grid=ag) beside the address head (--head=digit: one novelty gate pass)"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
 N_HARD = int(round(N_AG * GRID_HARD))                                        # 0.1.75: the batch's key-hard grid rows (its last ones)
 assert GRID_HARD == 0 or N_HARD > 0, f"--grid_hard={GRID_HARD} rounds to no key-hard row of the batch's {N_AG} grid rows"
@@ -648,6 +662,15 @@ class Craft:
             log(f"the address on the value path: {ar.LEVELS} level tables x {ar.NULL} digits x {self.cfg.d_model} added to the input of every "
                 f"token inside the grid rows' compartments (key stream; null digits add nothing), born zero, "
                 f"{self.value_addr.table.numel():,} parameters under the same Adam and clip")
+        self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
+        if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
+            assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
+            _attn = self.model.blocks[PTR_BLOCK - 1].attn
+            assert hasattr(_attn, "_rotate") and hasattr(_attn, "h"), f"block {PTR_BLOCK} is not a softmax block"
+            assert 0 <= PTR_HEAD < _attn.h, f"--ptr_head={PTR_HEAD}: 0 .. {_attn.h - 1}"
+            self.ptr = pt.HeadCapture(_attn)
+            log(f"the pointer term: block {PTR_BLOCK} head {PTR_HEAD} told, at each index entry's SEP, its mass on the frame of the "
+                f"record whose key the entry carries; lambda {PTR_LAM:g}; no parameter")
         self.opt = bed_optim.build(self.model, self.params, LR, WD, WD_SET)     # wd 0: pure Adam, as every earlier run
         self.decay = bed_optim.census(self.model, WD_SET) if WD else None
         if WD:
@@ -732,6 +755,41 @@ def head_term(c, aux, at="question"):
     return F.binary_cross_entropy_with_logits(z, tgt, reduction="sum") / max(1, z.shape[0])
 
 
+def ptr_log_mass(c, aux):
+    """0.1.78: log m_e at every index entry of the last forward's grid rows: the supervised head's causal softmax mass on the frame of the
+    record whose key the entry carries (pointer.log_mass on the block's captured q and k) -> (E,) fp32. The entries' rows and SEPs are the
+    batch's ihead_row / ihead_pos (grid_aux); their frames come from the same metas in the same order (grid_rows.index_frame_spans), so
+    the batch itself stays 0.1.77's to the last byte."""
+    assert c.ptr is not None and c.ptr.q is not None, "the pointer term reads the last forward's captured q and k"
+    spans = [s for m in aux["metas"] for s in gr.index_frame_spans(m)]
+    assert len(spans) == int(aux["ihead_pos"].numel()), "one frame span per index entry"
+    lo = torch.tensor([a for a, _ in spans], dtype=torch.long)
+    hi = torch.tensor([b for _, b in spans], dtype=torch.long)
+    return pt.log_mass(c.ptr.q, c.ptr.k, PTR_HEAD, aux["ihead_row"], aux["ihead_pos"], lo, hi)
+
+
+def ptr_mass_read(c, ag) -> float:
+    """0.1.78: the supervised head's mean mass on the true frame over the index entries of the grid rows `ag` (teacher-forced, the
+    training form's request; mb rows a forward, the craft in eval and no gradient)."""
+    was = c.model.training
+    c.model.eval()
+    ms = []
+    with torch.no_grad():
+        for i0 in range(0, len(ag), MB):
+            chunk = ag[i0:i0 + MB]
+            x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r, _ in chunk]).astype(np.int64), device=DEV)
+            aux = grid_aux([m for _, m in chunk], 0)
+            set_streams(c, aux)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                c.model(x[:, :-1])
+            ms.append(ptr_log_mass(c, aux).exp().cpu())
+            set_streams(c, None)
+            c.ptr.clear()
+    if was:
+        c.model.train()
+    return float(torch.cat(ms).mean())
+
+
 def novelty(c) -> dict:
     """The collinearity gate before the first step: 1 - |cos(grad of the head term, grad of the CE)| over the shared trunk (every craft
     parameter but the output layer's), on one batch of a dedicated generator (the training stream and the census untouched; no .grad
@@ -747,7 +805,7 @@ def novelty(c) -> dict:
     ce = F.cross_entropy(lg.float().reshape(-1, 256), y.reshape(-1))
     term = head_term(c, aux)
     g1 = torch.autograd.grad(ce, shared, retain_graph=True, allow_unused=True)
-    g2 = torch.autograd.grad(term, shared, retain_graph=HEAD_AT == "both", allow_unused=True)
+    g2 = torch.autograd.grad(term, shared, retain_graph=HEAD_AT == "both" or c.ptr is not None, allow_unused=True)
     v1 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g1, shared)]).double()
     v2 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g2, shared)]).double()
     cos = float((v1 @ v2) / (v1.norm() * v2.norm()).clamp(min=1e-300))
@@ -755,10 +813,19 @@ def novelty(c) -> dict:
                term=float(term.detach()))
     if HEAD_AT == "both":                        # 0.1.72: the index entries' term has its own gate (against the same CE gradient)
         iterm = head_term(c, aux, "index")
-        g3 = torch.autograd.grad(iterm, shared, allow_unused=True)
+        g3 = torch.autograd.grad(iterm, shared, retain_graph=c.ptr is not None, allow_unused=True)
         v3 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g3, shared)]).double()
         icos = float((v1 @ v3) / (v1.norm() * v3.norm()).clamp(min=1e-300))
         out["index"] = dict(novelty=1.0 - abs(icos), cos=icos, grad_norm_head=float(v3.norm()), term=float(iterm.detach()))
+    if c.ptr is not None:                        # 0.1.78: the pointer term has its own gate (against the same CE gradient)
+        lm = ptr_log_mass(c, aux)
+        pterm = -lm.mean()
+        g4 = torch.autograd.grad(pterm, shared, allow_unused=True)
+        v4 = torch.cat([(a if a is not None else torch.zeros_like(p)).flatten() for a, p in zip(g4, shared)]).double()
+        pnov, pcos = pt.novelty(v1, v4)
+        out["ptr"] = dict(novelty=pnov, cos=pcos, grad_norm=float(v4.norm()), term=float(pterm.detach()),
+                          mass=float(lm.detach().exp().mean()))
+        c.ptr.clear()
     set_streams(c, None)
     return out
 
@@ -871,6 +938,8 @@ def ag_trace(c, step: int) -> dict:
     if HARD_READ:                                # 0.1.75: the hard point (teacher-forced index on key-hard rows: only a whole-key match is right)
         agh = ag_set("trace_hard")
         rec["hard_index_right"] = ag_scores(agh, ag_forward(c, agh)[0])[0]["index_right"]
+    if c.ptr is not None:                        # 0.1.78: the supervised head's mean mass on the true frame (the trace rows)
+        rec["ptr_mass"] = ptr_mass_read(c, ag)
     if was:
         c.model.train()
     return rec
@@ -985,14 +1054,22 @@ for _c in crafts:
             f"{_c.novelty['term']:.3f} nats against the CE's {_c.novelty['ce']:.3f})"
             + (f"; at the index entries {_c.novelty['index']['novelty']:.4f} (cos {_c.novelty['index']['cos']:+.4f}; the term "
                f"{_c.novelty['index']['term']:.3f} nats)" if HEAD_AT == "both" else ""))
+        if _c.ptr is not None:                   # 0.1.78
+            _p = _c.novelty["ptr"]
+            log(f"the pointer term's novelty at step 0: {_p['novelty']:.4f} (cos {_p['cos']:+.4f}; the term {_p['term']:.3f} nats, the "
+                f"head's mass on the record's frame {_p['mass']:.4f}; its gradient {_p['grad_norm']:.3f} against the CE's "
+                f"{_c.novelty['grad_norm_ce']:.3f})")
         _refuse = [nm for nm, lam_, nov in (("the head term", HEAD_LAM, _c.novelty), ("the index entries' term", HEAD_LAM_I,
-                                                                                     _c.novelty.get("index")))
+                                                                                     _c.novelty.get("index")),
+                                            ("the pointer term", PTR_LAM, _c.novelty.get("ptr")))
                    if nov is not None and lam_ > 0 and nov["novelty"] < 0.05]
         if _refuse:
             _path = os.path.join(BED, f"bed_{_c.tag}.json")
             _grid = dict(p=GRID_P, n_ag=N_AG, rotary=ROTARY or "house", head=HEAD_FORM, lam=HEAD_LAM, novelty=_c.novelty)
             if HEAD_AT == "both":
                 _grid.update(head_at=HEAD_AT, lam_i=HEAD_LAM_I)
+            if _c.ptr is not None:
+                _grid.update(ptr=dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD))
             json.dump(dict(arm=_c.arm, seed=SEED, steps=0, refused=f"the collinearity gate: {' and '.join(_refuse)}'s novelty under .05",
                            grid=_grid), open(_path, "w", encoding="utf-8"), indent=1)
             log(f"REFUSED: {' and '.join(_refuse)}'s novelty < .05; no step taken; wrote {_path}")
@@ -1026,6 +1103,9 @@ for step in range(STEPS):
             if HEAD_AT == "both":                                # 0.1.72: the same head's term at the index entries
                 _c.iterm = head_term(_c, aux, "index")
                 _c.loss = _c.loss + HEAD_LAM_I * _c.iterm
+        if _c.ptr is not None:                                   # 0.1.78: the pointer term on the forward's captured q and k
+            _c.pterm = -ptr_log_mass(_c, aux).mean()
+            _c.loss = _c.loss + PTR_LAM * _c.pterm
     if PAIR and XC_W != 0 and step >= XC_FROM:                    # 0.1.24: the cross term (teacher, student) pairs of the step
         sel = (vm > 0).float() if XC_POS == "value" else None
         for t, s in [(crafts[0], crafts[1])] + ([(crafts[1], crafts[0])] if XC == "mutual" else []):
@@ -1052,6 +1132,10 @@ for step in range(STEPS):
             if HEAD_AT == "both":                                # 0.1.72: the index entries' term's curve
                 _c.ihead_curve.append(float(_c.iterm.detach()))
                 _c.iterm = None
+        if _c.ptr is not None:                                   # 0.1.78: the pointer term's curve (its descent record reads it)
+            _c.ptr_curve.append(float(_c.pterm.detach()))
+            _c.pterm = None
+            _c.ptr.clear()
         set_streams(_c, None)
         _c.logits = _c.nll = _c.loss = _c.ce = None
         if N_AG and (step + 1) % TRACE_EVERY == 0:              # 0.1.70: the formation trace (its own rows; the training stream untouched)
@@ -1088,6 +1172,9 @@ for step in range(STEPS):
             msg += f" | head term {float(np.mean(a.head_curve[-LOG_EVERY:])):.4f}"
         if a.ihead_curve:                                        # 0.1.72: the index entries' term
             msg += f", at the index {float(np.mean(a.ihead_curve[-LOG_EVERY:])):.4f}"
+        if a.ptr_curve:                                          # 0.1.78: the pointer term (and the mass it implies: exp of minus the mean)
+            _pm = float(np.mean(a.ptr_curve[-LOG_EVERY:]))
+            msg += f" | pointer term {_pm:.4f} (geometric mean mass {math.exp(-_pm):.3f})"
         for _c, b, _ in said[1:]:
             msg += f" || {_c.arm} loss {_c.li:.3f} ema {_c.ema:.3f} ({_c.ema / LN2:.3f} bpb) gn {float(_c.gn):.2f} | value bits since the last line {b}"
         xs = [f"{_c.arm} {xw:.3f}" for _c, _, xw in said if xw is not None]
@@ -1569,6 +1656,16 @@ def finish(c: Craft) -> tuple:
             _v = grid_block["value_addr"]
             log(f"the value-path tables: norm by level {' / '.join(f'{x:.4f}' for x in _v['norm'])}; by digit (level 1) "
                 + " ".join(f"{x:.3f}" for x in _v["row_norm"][0]) + "; (level 2) " + " ".join(f"{x:.3f}" for x in _v["row_norm"][1]))
+        if c.ptr is not None:                   # 0.1.78: the pointer term: its form, gate, descent and the head's mass on the read rows
+            pc = c.ptr_curve
+            p0, plast = (pc[0], float(np.mean(pc[-50:]))) if pc else (None, None)
+            grid_block["ptr"] = dict(form="frame_mass", lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, novelty=(c.novelty or {}).get("ptr"),
+                                     term_step1=p0, term_last50=plast, descended=(bool(plast < 0.1 * p0) if pc else None),
+                                     curve=[[i + 1, pc[i]] for i in range(0, len(pc), LOG_EVERY)] + ([[len(pc), pc[-1]]] if pc else []),
+                                     mass_read=ptr_mass_read(c, ag_set("read")))
+            _p = grid_block["ptr"]
+            log(f"the pointer term (block {PTR_BLOCK} head {PTR_HEAD}, lambda {PTR_LAM:g}): descended {_p['descended']} "
+                + (f"({p0:.3f} -> {plast:.4f}); " if pc else "; ") + f"the head's mass on the true frame over the read rows {_p['mass_read']:.4f}")
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
             + (f", through its own index {read['own_index']['whole']:.4f} (the index's request right {read['own_index']['request_right']:.4f}),"
@@ -1610,6 +1707,8 @@ def finish(c: Craft) -> tuple:
             if c.value_addr is not None:         # 0.1.76: the value-path tables beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.value_addr.table.detach().cpu().contiguous()}, os.path.join(wdir, "value_addr.safetensors"))
                 _sj["value_addr"] = dict(levels=ar.LEVELS, digits=ar.NULL, d=c.cfg.d_model)
+            if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
+                _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
              config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),

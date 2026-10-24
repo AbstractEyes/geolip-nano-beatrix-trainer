@@ -220,6 +220,25 @@ Alhena-V (Alhena-W with the tables) on six seeds, Alhena-W on two new seeds, and
 written index is right, `colab/nano_value.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_value.ipynb)
 
+The pointer screen (0.1.78): one attention head told where the record is. The only signal that trains the lookup arrives through the
+two address bytes each index entry writes; on the runs that stall, the lookup head splits its attention between the right record and one
+whose key ends the same way, or no head looks back at the records at all. `--ptr_lam=L` gives one head of one softmax block (`--ptr_block`,
+numbered from 1, default 4; `--ptr_head`, default 0) a target at each index entry's SEP: the negative log of its causal softmax mass on the
+frame of the record whose key the entry carries,
+
+    L_ptr = -(1/|E|) sum_e log sum_{n in frame(e)} softmax_{n' <= i_e}( q(i_e) . k(n') / sqrt(d_head) )_n
+
+computed from the block's own rotated q and k (`pointer.HeadCapture` wraps the block's rotation as an instance attribute: no parameter, the
+forward unchanged) and added to the loss as L x L_ptr (the attention-sum form of Kadlec et al. 2016, arXiv 1603.01547, as an auxiliary;
+one supervised head in a chosen layer as in Garg et al. 2019, arXiv 1909.02074). The term has its own collinearity gate at step 0 (refused
+under .05, as the address head's) and its own descent record; the formation trace and the end read carry the head's mass on the true frame
+(`pointer.log_mass`: the same quantity the band read measures). The default (L = 0) is 0.1.77 bit for bit (the batch on fixed steps; a
+3-step run's record, weights and side files on the value-path recipe); a run with the term carries `_pt<100 L>b<block>h<head>` in its name,
+its record a `ptr` block, its scale.json the form. Alhena-P (Alhena-V with the term on block 4's head 0) at two doses on seed 1, the dose
+the plan's rule picks on five more seeds, Alhena-V on two new seeds, and the members on the first two Alhena-P cores whose own written index
+is right, `colab/nano_pointer.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pointer.ipynb)
+
 Then:
 
 ```bash
