@@ -400,11 +400,15 @@ class StackedAdam:
 
 
 # ------------------------------------------------------------------ the core
-def _digest(model: nn.Module) -> str:
+def _digest(model: nn.Module, extra: torch.Tensor | None = None) -> str:
+    """The core's state as one hash; extra (0.1.76: the value-path tables) joins it when the core carries them."""
     h = hashlib.sha256()
     for k, v in sorted(model.state_dict().items()):
         h.update(k.encode())
         h.update(v.detach().cpu().contiguous().numpy().tobytes())
+    if extra is not None:
+        h.update(b"value_addr")
+        h.update(extra.detach().cpu().contiguous().numpy().tobytes())
     return h.hexdigest()
 
 
@@ -435,6 +439,15 @@ class Core:
         if isinstance(self.scale.get("rotary"), dict):            # 0.1.73: at the split the core was trained with (ALHENA's 2 or ALHENA-W's 4)
             self.anchor = ar.AnchorStreams(ar.content_of(self.scale["rotary"]))
             ar.patch(self.model, self.anchor)
+        self.value_addr = None
+        vp = os.path.join(folder, "value_addr.safetensors")
+        assert os.path.exists(vp) == ("value_addr" in self.scale), "scale.json names the value-path tables exactly when their file is there"
+        if os.path.exists(vp):                                    # 0.1.76: the value-path tables on the same streams, in every embedding
+            assert self.anchor is not None, "the value-path tables read the anchored rotation's streams"
+            self.value_addr = ar.ValueAddress(self.cfg.d_model, self.anchor).to(self.dev)
+            self.value_addr.table.data.copy_(load_file(vp)["table"].to(self.dev))
+            self.value_addr.table.requires_grad_(False)
+            ar.patch_value(self.model, self.value_addr)
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")
         if os.path.exists(hp):
@@ -443,10 +456,14 @@ class Core:
             self.head.eval()
             for p in self.head.parameters():
                 p.requires_grad_(False)
-        self.digest = _digest(self.model)
+        self.digest = self.state_digest()
         self.d = self.cfg.d_model
         self.head_at = self.scale.get("head_at", "question")      # 0.1.72: where the head was trained (the stored cores: the questions)
         self.free = {}                                             # 0.1.72: the free-running rows read so far (free_rows)
+
+    def state_digest(self) -> str:
+        """The frozen core's state (the model's state dict, and the value-path tables when it carries them) as one hash."""
+        return _digest(self.model, None if self.value_addr is None else self.value_addr.table)
 
     def set_streams(self, metas: list, request=None) -> None:
         """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a
@@ -665,7 +682,7 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
         if ckpt and ((step + 1) % ckpt_every == 0) and step + 1 < steps:
             _ckpt_save(ckpt, step + 1, stacks, opts, rec)
     rec["wall_s"] = time.time() - t0
-    assert _digest(core.model) == core.digest, "the core moved while the members trained"
+    assert core.state_digest() == core.digest, "the core moved while the members trained"
     return rec
 
 
@@ -762,7 +779,7 @@ def train_mid(core: Core, arms: StackedArms, steps: int, seed: int, packed: np.n
         if ckpt and ((step + 1) % ckpt_every == 0) and step + 1 < steps:
             _ckpt_save(ckpt, step + 1, {"arms": arms}, {"arms": opt}, rec)
     rec["wall_s"] = time.time() - t0
-    assert _digest(core.model) == core.digest, "the core moved while the members trained"
+    assert core.state_digest() == core.digest, "the core moved while the members trained"
     return rec
 
 

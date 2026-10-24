@@ -132,3 +132,42 @@ def content_of(rotary_field) -> int:
     c = int(rotary_field.get("content_pairs", CONTENT_PAIRS))
     assert rotary_field == spec(c), "the recorded rotation is not this module's anchored rotation at its split"
     return c
+
+
+class ValueAddress(torch.nn.Module):
+    """0.1.76: THE ADDRESS ON THE VALUE PATH. Two level tables (LEVELS x 8 rows x d, born zero) add each token's address digits, read from
+    the key stream of the same AnchorStreams the rotation reads, to its input vector:
+        x_n = embed(t_n) + E_1[dk_1(n)] + E_2[dk_2(n)],     a digit outside 0-7 (the null anchor) adds nothing
+    The anchor pairs put a record's address in the attention scores only; with the tables a head whose look lands on any token of the
+    record's compartment returns the address in its value too. On the grid rows the key stream carries an address only inside the
+    compartments (the index entries, the questions' answer spans and the plain rows are null there), so the tables never see an answer.
+    Born zero, the patched forward equals the unpatched one until the first step moves them."""
+
+    def __init__(self, d_model: int, streams: AnchorStreams) -> None:
+        super().__init__()
+        self.table = torch.nn.Parameter(torch.zeros(LEVELS, NULL, d_model))
+        self.streams = streams                            # the rotation's streams (a plain attribute: not a submodule, not in the state dict)
+
+    def add(self, x: torch.Tensor) -> torch.Tensor:
+        """x: the embedding's output (B, n, d) for the positions 0 .. n - 1 of the streams' rows."""
+        dk = self.streams.dk
+        if dk is None:
+            return x
+        assert tuple(dk.shape[:2]) == tuple(x.shape[:2]), f"the streams are {tuple(dk.shape[:2])}, the embedding is {tuple(x.shape[:2])}"
+        dk = dk.long()
+        for lev in range(LEVELS):
+            d = dk[..., lev]
+            on = (d >= 0) & (d < NULL)
+            x = x + self.table[lev][d.clamp(0, NULL - 1)].to(x.dtype) * on[..., None].to(x.dtype)
+        return x
+
+
+def patch_value(model: torch.nn.Module, va: ValueAddress) -> None:
+    """Route the craft's embedding through `va` (0.1.76): every forward that embeds tokens (AlephLM.forward, rotary_scale.Core.trunk) adds
+    the tables. The model's parameters and state dict are untouched; the tables live in `va` and their own side file."""
+    emb = model.embed
+    inner = emb.forward
+
+    def forward(idx, *args, **kwargs):
+        return va.add(inner(idx, *args, **kwargs))
+    emb.forward = forward                                 # an instance attribute: no submodule registered, the state dict unchanged

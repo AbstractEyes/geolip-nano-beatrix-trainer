@@ -204,6 +204,19 @@ the training is unchanged bit for bit). Alhena-K (Alhena-W with half the grid ro
 the key-hard read, and the members on the first two Alhena-K cores whose own written index is right, `colab/nano_keys.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keys.ipynb)
 
+The value-path screen (0.1.76): the record's address on its every token. The anchored rotary puts a record's address into the attention
+scores only; a look that finds a record by its key returns the record's tokens, and the address is just two of them, stored before the key.
+`--value_addr=1` adds two level tables of 8 vectors (`anchored_rope.ValueAddress`: one table per address digit, born zero, 2 x 8 x d
+parameters, trained with the craft under the same Adam and clip) to the input of every token: x_n = embed(t_n) + E_1[d_1(n)] + E_2[d_2(n)],
+the digits read from the key stream the rotation reads. Inside a grid row's compartments that stream carries the compartment's address; at
+the index entries, the questions and the plain rows it is the null anchor, which adds nothing, so the tables never see an answer. The
+default is 0.1.75 bit for bit (a 3-step run's record, weights and side files on Alhena-W's grid recipe); born zero, the first step's
+forward is the plain craft's to the last bit. A run with the tables carries `_va1` in its name; the tables ship beside the weights as
+`value_addr.safetensors` (scale.json names them; the record carries their norms by level and by digit), and `rotary_scale.Core` applies
+them in every forward of the frozen core. Alhena-V (Alhena-W with the tables) on six seeds, Alhena-W on two new seeds, and the members on
+the first two Alhena-V cores whose own written index is right, `colab/nano_value.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_value.ipynb)
+
 Then:
 
 ```bash

@@ -187,6 +187,13 @@ assert GRID_ABYTES in (1, 2) and (GRID_ABYTES == 2 or GRID == "ag"), "--grid_aby
 GRID_HARD = float(ARGS.get("grid_hard", "0"))
 assert 0.0 <= GRID_HARD <= 1.0 and (GRID_HARD == 0 or GRID == "ag"), "--grid_hard is a share of the addressed grid rows (--grid=ag)"
 HARD_READ = GRID_HARD > 0 or ARGS.get("hard_read", "0") == "1"
+# 0.1.76: THE VALUE-PATH ADDRESS. --value_addr=1 adds the address to the input of every token inside a grid row's compartments: two level
+# tables of 8 rows (anchored_rope.ValueAddress, born zero, trained with the core under the bed's pure Adam) read the key stream the
+# rotation reads, x_n = embed(t_n) + E_1[dk_1(n)] + E_2[dk_2(n)] (a null digit adds nothing: the index entries, the questions, the plain
+# rows); 0 (the default) = 0.1.75 bit for bit; the run's name carries _va1. The tables ship beside the weights (value_addr.safetensors).
+VALUE_ADDR = ARGS.get("value_addr", "0") == "1"
+assert ARGS.get("value_addr", "0") in ("0", "1"), f"--value_addr={ARGS.get('value_addr')!r}: 0 or 1"
+assert not VALUE_ADDR or (ROTARY == "anchored" and GRID == "ag"), "--value_addr=1 reads the anchored rotation's streams (--grid=ag)"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -212,6 +219,7 @@ if GRID:
     assert CTX == gr.CTX and 0 < N_AG <= MB, f"the grid rows need --ctx={gr.CTX} and 0 < grid_p x mb <= mb: ctx {CTX}, {N_AG} of {MB}"
     assert not PAIR and not GAUGE_ONLY and not INIT, "the grid cores train from birth, alone"
     assert not WD or not HEAD_FORM, "the address head trains under the bed's pure Adam (its parameters are outside the decay sets' model)"
+    assert not WD or not VALUE_ADDR, "the value-path tables train under the bed's pure Adam (they are outside the decay sets' model)"
 T0 = time.time()
 LN2 = math.log(2.0)
 BANDS = [(0, 128), (128, 256), (256, 512), (512, 100000)]
@@ -632,6 +640,14 @@ class Craft:
             log(f"the address head: {gr.LEVELS} levels x {gr.RADIX} digits on the final norm's state at each question's SEP, "
                 f"{sum(p.numel() for p in self.addr_head.parameters()):,} parameters, lambda {HEAD_LAM:g}"
                 + (f"; the same head at each index entry's SEP, lambda {HEAD_LAM_I:g}" if HEAD_AT == "both" else ""))
+        self.value_addr = None                   # 0.1.76: the value-path address (--value_addr=1)
+        if VALUE_ADDR:                           # born zero (no draw from the generators): step 0's forward is the plain craft's
+            self.value_addr = ar.ValueAddress(self.cfg.d_model, self.anchor).to(DEV)
+            ar.patch_value(self.model, self.value_addr)
+            self.params = self.params + [self.value_addr.table]
+            log(f"the address on the value path: {ar.LEVELS} level tables x {ar.NULL} digits x {self.cfg.d_model} added to the input of every "
+                f"token inside the grid rows' compartments (key stream; null digits add nothing), born zero, "
+                f"{self.value_addr.table.numel():,} parameters under the same Adam and clip")
         self.opt = bed_optim.build(self.model, self.params, LR, WD, WD_SET)     # wd 0: pure Adam, as every earlier run
         self.decay = bed_optim.census(self.model, WD_SET) if WD else None
         if WD:
@@ -689,6 +705,15 @@ def set_streams(c, aux) -> None:
             c.anchor.clear()
         else:
             c.anchor.set(aux["dk"].to(DEV, non_blocking=True), aux["dq"].to(DEV, non_blocking=True))
+
+
+def value_addr_record(c) -> dict:
+    """0.1.76: the value-path tables as a record field: the form, and how far they grew (the Frobenius norm by level, the norm of each
+    digit's row by level)."""
+    t = c.value_addr.table.detach().float().cpu()
+    return dict(form="levels", levels=ar.LEVELS, digits=ar.NULL, d=int(t.shape[-1]), params=int(t.numel()),
+                norm=[float(t[lev].norm()) for lev in range(ar.LEVELS)],
+                row_norm=[[float(x) for x in t[lev].norm(dim=-1)] for lev in range(ar.LEVELS)])
 
 
 def head_logits(c, aux, at="question"):
@@ -1539,6 +1564,11 @@ def finish(c: Craft) -> tuple:
             grid_block["abytes"] = GRID_ABYTES
         if GRID_HARD > 0:                       # 0.1.75: the key-hard share of the training grid rows (the default record is 0.1.74's)
             grid_block.update(hard=GRID_HARD, n_hard=N_HARD)
+        if c.value_addr is not None:            # 0.1.76: the value-path tables and how far they grew (the default record is 0.1.75's)
+            grid_block["value_addr"] = value_addr_record(c)
+            _v = grid_block["value_addr"]
+            log(f"the value-path tables: norm by level {' / '.join(f'{x:.4f}' for x in _v['norm'])}; by digit (level 1) "
+                + " ".join(f"{x:.3f}" for x in _v["row_norm"][0]) + "; (level 2) " + " ".join(f"{x:.3f}" for x in _v["row_norm"][1]))
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
             + (f", through its own index {read['own_index']['whole']:.4f} (the index's request right {read['own_index']['request_right']:.4f}),"
@@ -1577,6 +1607,9 @@ def finish(c: Craft) -> tuple:
                 _sj["abytes"] = GRID_ABYTES
             if GRID_HARD > 0:                    # 0.1.75: the key-hard share it trained on (provenance; the members' rows stay standard)
                 _sj["grid_hard"] = GRID_HARD
+            if c.value_addr is not None:         # 0.1.76: the value-path tables beside the craft (rotary_scale.Core applies them)
+                save_file({"table": c.value_addr.table.detach().cpu().contiguous()}, os.path.join(wdir, "value_addr.safetensors"))
+                _sj["value_addr"] = dict(levels=ar.LEVELS, digits=ar.NULL, d=c.cfg.d_model)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
              config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),
