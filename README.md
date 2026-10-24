@@ -192,6 +192,18 @@ Alhena-W's split on four seeds, on Alhena's split on two, Alhena-W's seed 2 agai
 own written index is right, `colab/nano_posing.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_posing.ipynb)
 
+The key-hard screen (0.1.75): training rows where only the whole key finds the record. A grid key is a word and a three-digit number;
+`grid_rows.hard_keys` draws a row's 24 keys as all the combinations of 2 words x 2 hundreds digits x 2 tens digits x 3 units digits, so
+every key has a neighbour in its row that differs from it in exactly one part, for each part (a match on the last two digits is right on
+a quarter of such a row's entries, on the number alone on half; only the whole key on all). `--grid_hard=KH` makes the batch's last
+round(N x KH) of its N grid rows key-hard rows; the rest of each row (addresses, values, questions, index order, streams) is the standard
+draw. The default (KH = 0) is 0.1.74 bit for bit (the batch on fixed steps; a 3-step run's record, weights and side files on Alhena-W's
+grid recipe); a run with KH > 0 carries `_kh<100 KH>` in its name and its record and scale.json carry the share. The end read adds the
+index on 64 key-hard rows, teacher-forced and free-running, and the trace a key-hard point, when KH > 0 or `--hard_read=1` (a read only:
+the training is unchanged bit for bit). Alhena-K (Alhena-W with half the grid rows key-hard) on six seeds, Alhena-W on two new seeds with
+the key-hard read, and the members on the first two Alhena-K cores whose own written index is right, `colab/nano_keys.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keys.ipynb)
+
 Then:
 
 ```bash

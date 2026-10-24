@@ -507,12 +507,17 @@ def load_heldout(path: str, ctx: int = gr.CTX) -> list:
     return out
 
 
-def gauge_rows(seed: int, name: str, n: int, docs: list, abytes: int = 2) -> list:
+def gauge_rows(seed: int, name: str, n: int, docs: list, abytes: int = 2, hard: bool = False) -> list:
     """bed_train's gauge rows (ag_set): n grid rows from the generator [seed, crc("SCALE|<name>")], the filler the documents `docs` in
     turn behind a DOC byte. The members' read uses the cores' own read rows ("read", the held-out documents) and calibration rows
-    ("calib", the held-out documents reversed). abytes (0.1.74): the core's address form."""
+    ("calib", the held-out documents reversed). abytes (0.1.74): the core's address form. hard (0.1.75): key-hard rows (grid_rows.hard_keys
+    drawn from the generator before each row, as bed_train's ag_rows; "hard" with the held-out documents = the trainer's hard-row read)."""
     rng = np.random.default_rng([seed, gr.crc(f"SCALE|{name}")])
-    return [gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes) for j in range(n)]
+    out = []
+    for j in range(n):
+        keys = gr.hard_keys(rng) if hard else None
+        out.append(gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes, keys=keys))
+    return out
 
 
 def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int = ROWS_LAST, abytes: int = 2) -> list:

@@ -87,13 +87,30 @@ def owned_order(n_owned: int = 48) -> tuple:
     return tuple(int(a) for a in perm[:n_owned]), tuple(sorted(int(a) for a in perm[n_owned:]))
 
 
-def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False, abytes: int = 2) -> tuple:
+def hard_keys(rng) -> list:
+    """0.1.75: THE KEY-HARD ROW's keys: the factorial of their parts - 2 words x 2 hundreds digits x 2 tens digits x
+    3 units digits = 24 distinct keys, so every key has a neighbour that differs from it in exactly one part, for each of the four parts (a
+    match on any part of the key is right on at most half of such a row's entries; only the whole key on all), in a drawn order.
+    -> [key bytes] (N_COMP)."""
+    nw = len(bf.WORDS)
+    w = rng.choice(nw, size=2, replace=False)
+    h = rng.choice(10, size=2, replace=False)
+    t = rng.choice(10, size=2, replace=False)
+    u = rng.choice(10, size=3, replace=False)
+    idx = [int(a) + nw * (100 * int(b) + 10 * int(c) + int(d)) for a in w for b in h for c in t for d in u]   # key_name's index
+    assert len(idx) == N_COMP and len(set(idx)) == N_COMP
+    return [bf.key_name(idx[int(i)]) for i in rng.permutation(N_COMP)]
+
+
+def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False, abytes: int = 2, keys=None) -> tuple:
     """One addressed grid row. rng: the row's numpy Generator; src: corpus text (at least ctx + 1 bytes; specials become newlines).
     addrs: the row's 24 addresses (None = 24 distinct draws of the 64); they are sorted onto slots 1-24. asked: the records the questions
     ask, as indices into the sorted compartments, in question order (None = all 24 in a drawn order). swap_index: one pair of index
     entries carries the other's address (a corrupted index; the gauge's control that must fail), the questions unchanged. abytes (0.1.74):
     the address as two digit bytes (2, the default: the rows of 0.1.73 byte for byte) or as one byte 0x80 + a (1), in the frame and in
-    the index entry alike; the draws and the streams are the same either way.
+    the index entry alike; the draws and the streams are the same either way. keys (0.1.75): the compartments' 24 keys in slot order
+    (hard_keys: the key-hard row); None = the standard draw. The standard draw is made either way, so every other draw of the row is the
+    same; a row with given keys says so in its meta ("hard").
     -> (row bytes of ctx + 1, meta)."""
     assert abytes in (1, 2), abytes
     assert ctx == CTX, f"the addressed grid is laid out for a {CTX}-byte window, got {ctx}"
@@ -101,7 +118,10 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
         addrs = rng.choice(N_ADDR, size=N_COMP, replace=False)
     addrs = sorted(int(a) for a in addrs)
     assert len(addrs) == N_COMP and len(set(addrs)) == N_COMP and all(0 <= a < N_ADDR for a in addrs), addrs
-    keys = [bf.key_name(int(i)) for i in rng.permutation(16000)[:N_COMP]]
+    std = [bf.key_name(int(i)) for i in rng.permutation(16000)[:N_COMP]]
+    hard = keys is not None
+    keys = std if not hard else [bytes(k) for k in keys]
+    assert len(keys) == N_COMP and len(set(keys)) == N_COMP, "a row's 24 keys are distinct"
     vals = [bf.value(rng, "letters", VLEN) for _ in range(N_COMP)]
     order = [int(i) for i in (rng.permutation(N_COMP) if asked is None else asked)]
     assert order and len(set(order)) == len(order) and all(0 <= i < N_COMP for i in order), order
@@ -144,6 +164,8 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
                 quest_end=QUEST_LO + len(qb), swap_index=swap_index)
     if abytes != 2:                                     # 0.1.74: the one-byte form names itself; the default meta is 0.1.73's
         meta["abytes"] = abytes
+    if hard:                                            # 0.1.75: a row with given keys (the key-hard row) names itself
+        meta["hard"] = True
     return row, meta
 
 
@@ -323,8 +345,30 @@ def selftest(n: int = 200) -> None:
         assert all((np.array_equal(u, v) if isinstance(u, np.ndarray) else u == v) for u, v in zip(a2, a1)), "the two forms share every draw"
     own, never = owned_order()
     assert len(own) == 48 and len(never) == 16 and not set(own) & set(never)
+    for t in range(n // 4):                             # 0.1.75: the key-hard rows, both address forms
+        kh = hard_keys(np.random.default_rng([11, t]))
+        parts = [(k[:-3], k[-3], k[-2], k[-1]) for k in kh]
+        assert len(set(kh)) == N_COMP and len({p[0] for p in parts}) == 2 and len({p[1] for p in parts}) == 2
+        assert len({p[2] for p in parts}) == 2 and len({p[3] for p in parts}) == 3
+        for p in parts:                                 # a neighbour that differs in exactly one part, for each of the four parts
+            for i in range(4):
+                assert any(q[i] != p[i] and all(q[j] == p[j] for j in range(4) if j != i) for q in parts), (p, i)
+        for ab in (2, 1):
+            row0, m0 = compose_ag(np.random.default_rng([7, t]), src, abytes=ab)
+            row1, m1 = compose_ag(np.random.default_rng([7, t]), src, abytes=ab, keys=kh)
+            assert m1["hard"] and "hard" not in m0 and [r["key"].encode() for r in m1["recs"]] == kh
+            same = lambda m: ([(r["addr"], r["slot"], r["value"]) for r in m["recs"]], [q["rec"] for q in m["questions"]],
+                              [e["shown"] for e in m["index"]])
+            assert same(m0) == same(m1), "a hard row differs from the standard row on its draw only in the keys"
+            dk0, dq0 = streams(m0)
+            dk1, dq1 = streams(m1)
+            assert (dk0[:INDEX_HI] == dk1[:INDEX_HI]).all(), "the compartments' streams do not depend on the keys"
+            for q in m1["questions"]:
+                sp = slice(q["sep"], q["sep"] + VLEN + 1)
+                assert (dq1[sp] == digits(m1["recs"][q["rec"]]["addr"])).all()
     print(f"grid_rows self-test: {n} rows x 2 address forms OK (frames, index, questions, streams, segments; the forms share every draw "
-          f"and stream; 1 in 5 with a swapped index; 1 in 3 asking 18)")
+          f"and stream; 1 in 5 with a swapped index; 1 in 3 asking 18); {n // 4} key-hard rows x 2 forms OK (24 distinct keys, a one-part "
+          f"neighbour for every part; the row's other draws the standard row's)")
 
 
 if __name__ == "__main__" and "--selftest" in sys.argv:

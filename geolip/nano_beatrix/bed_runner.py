@@ -47,7 +47,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "grid", "grid_p", "rotary", "head", "head_lam", "series",          # 0.1.70: the scale test's cores
              "head_at", "head_lam_i",                                           # 0.1.72: the head's term at the index entries
              "rotary_content",                                                  # 0.1.73: the anchored split's content pairs
-             "grid_abytes")                                                     # 0.1.74: the grid rows' address form
+             "grid_abytes",                                                     # 0.1.74: the grid rows' address form
+             "grid_hard", "hard_read", "hard_batches")                          # 0.1.75: the key-hard rows and their read
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -123,6 +124,8 @@ def run_label(run: list) -> str:
         parts.append(f"content pairs {kv['rotary_content']}")
     if kv.get("grid_abytes") not in (None, "2"):                  # 0.1.74: the one-byte address form
         parts.append("one-byte address")
+    if kv.get("grid_hard") is not None and float(kv["grid_hard"]) > 0:   # 0.1.75: the key-hard rows
+        parts.append(f"key-hard rows {kv['grid_hard']}")
     if kv.get("head"):
         parts.append(f"head {kv['head']} {kv.get('head_lam', '1')}")
         if kv.get("head_at", "question") == "both":                  # 0.1.72: the term at the index entries too

@@ -180,6 +180,13 @@ assert ROT_CONTENT == ar.CONTENT_PAIRS or ROTARY == "anchored", "--rotary_conten
 # of 0.1.73, bit for bit; the run's name carries _ab1.
 GRID_ABYTES = int(ARGS.get("grid_abytes", "2"))
 assert GRID_ABYTES in (1, 2) and (GRID_ABYTES == 2 or GRID == "ag"), "--grid_abytes=1 is a form of the addressed grid rows (--grid=ag)"
+# 0.1.75: THE KEY-HARD SCREEN. --grid_hard=KH makes the batch's last round(N_AG x KH) grid rows key-hard rows (grid_rows.hard_keys: 24 keys
+# that are the factorial of their parts, so a match on any part of the key fails on them); 0 (the default) = 0.1.74
+# bit for bit; the run's name carries _kh<100 KH>. The end read adds the hard-row read (HARD_BATCHES x mb key-hard rows from the held-out
+# documents) and the trace a hard point when KH > 0 or --hard_read=1.
+GRID_HARD = float(ARGS.get("grid_hard", "0"))
+assert 0.0 <= GRID_HARD <= 1.0 and (GRID_HARD == 0 or GRID == "ag"), "--grid_hard is a share of the addressed grid rows (--grid=ag)"
+HARD_READ = GRID_HARD > 0 or ARGS.get("hard_read", "0") == "1"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -193,11 +200,14 @@ HEAD_LAM_I = float(ARGS.get("head_lam_i", "1.0"))
 TRACE_EVERY = int(ARGS.get("trace_every", "2000"))
 READ_BATCHES = int(ARGS.get("read_batches", "4" if SMOKE else "64"))       # the end read's batches of mb grid rows (held-out filler)
 CALIB_BATCHES = int(ARGS.get("calib_batches", "2" if SMOKE else "32"))     # the head's calibration batches (never the read's rows)
+HARD_BATCHES = int(ARGS.get("hard_batches", "1" if SMOKE else "8"))         # 0.1.75: the hard-row read's batches of mb key-hard rows
 assert GRID in ("", "ag") and ROTARY in ("", "anchored") and HEAD_FORM in ("", "digit"), (GRID, ROTARY, HEAD_FORM)
 assert GRID or not (ROTARY or HEAD_FORM), "--rotary=anchored and --head=digit read the grid rows (--grid=ag)"
 assert HEAD_AT in ("question", "both") and (HEAD_AT == "question" or HEAD_FORM == "digit"), \
     f"--head_at={HEAD_AT!r}: question, or both (the index entries too) with --head=digit"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
+N_HARD = int(round(N_AG * GRID_HARD))                                        # 0.1.75: the batch's key-hard grid rows (its last ones)
+assert GRID_HARD == 0 or N_HARD > 0, f"--grid_hard={GRID_HARD} rounds to no key-hard row of the batch's {N_AG} grid rows"
 if GRID:
     assert CTX == gr.CTX and 0 < N_AG <= MB, f"the grid rows need --ctx={gr.CTX} and 0 < grid_p x mb <= mb: ctx {CTX}, {N_AG} of {MB}"
     assert not PAIR and not GAUGE_ONLY and not INIT, "the grid cores train from birth, alone"
@@ -481,9 +491,10 @@ PLANTED = [0, 0]   # records planted, rows drawn (the census of what the compose
 AG_SALT = gr.crc("AG")
 
 
-def ag_rows(rng, n, docs=None):
+def ag_rows(rng, n, docs=None, n_hard=0):
     """n addressed grid rows (grid_rows.compose_ag) from `rng`: the filler is the training stream at a drawn place, or the held-out
-    documents `docs` in turn (the gauges' rows). -> [(row bytes, meta)]."""
+    documents `docs` in turn (the gauges' rows); 0.1.75: the last n_hard of them key-hard rows (grid_rows.hard_keys, drawn from `rng`
+    before the row). -> [(row bytes, meta)]."""
     out = []
     for j in range(n):
         if docs is None:
@@ -491,7 +502,8 @@ def ag_rows(rng, n, docs=None):
             src = packed[p:p + CTX + 1].tobytes()
         else:
             src = bytes([DOC]) + docs[j % len(docs)]
-        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES))
+        keys = gr.hard_keys(rng) if j >= n - n_hard else None
+        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES, keys=keys))
     return out
 
 
@@ -552,7 +564,7 @@ def batch(step, salt=None):
         rows.append(np.frombuffer(w, dtype=np.uint8))
     aux = None
     if N_AG:                                   # 0.1.70: the grid rows, from their own generator (the plain rows above are the plain run's)
-        ag = ag_rows(np.random.default_rng([SEED, step, AG_SALT] if salt is None else [SEED, salt, step, AG_SALT]), N_AG)
+        ag = ag_rows(np.random.default_rng([SEED, step, AG_SALT] if salt is None else [SEED, salt, step, AG_SALT]), N_AG, n_hard=N_HARD)
         rows += [np.frombuffer(r, dtype=np.uint8) for r, _ in ag]
         aux = grid_aux([m for _, m in ag], MB - N_AG)
     x = torch.from_numpy(np.stack(rows).astype(np.int64))
@@ -607,6 +619,9 @@ class Craft:
                 f"{_rel}-{ar.SHARED - 1} content; 8-15 two anchor levels at 2 pi k / 9)")
         if GRID_ABYTES == 1:                     # 0.1.74
             log("the grid rows' addresses as one byte 0x80 + a (unique in the row), in the frames and the index; the streams keep the digits")
+        if GRID_HARD > 0:                        # 0.1.75
+            log(f"key-hard rows: the last {N_HARD} of the batch's {N_AG} grid rows (24 keys the factorial of their parts: a partial key "
+                f"match fails on them); the hard-row read beside the end read")
         if HEAD_FORM == "digit":                 # the per-digit address head: torch's default weight, the bias at the uniform prior 1/8
             torch.manual_seed(gr.crc(f"SCALE|head|s{SEED}"))
             self.addr_head = torch.nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(DEV)
@@ -729,11 +744,13 @@ _AG_ROWS = {}
 def ag_set(name: str) -> list:
     """The gauges' grid rows (held-out documents as the filler), each from its own generator: trace (2 x mb rows, the formation trace),
     read (READ_BATCHES x mb rows, the end read; the same rows for every core of a seed), calib (CALIB_BATCHES x mb rows, the head's
-    calibration; never read)."""
+    calibration; never read); 0.1.75: hard (HARD_BATCHES x mb key-hard rows, the hard-row read), trace_hard (2 x mb key-hard rows, the
+    trace's hard point)."""
     if name not in _AG_ROWS:
-        n = {"trace": 2, "read": READ_BATCHES, "calib": CALIB_BATCHES}[name] * MB
+        n = {"trace": 2, "read": READ_BATCHES, "calib": CALIB_BATCHES, "hard": HARD_BATCHES, "trace_hard": 2}[name] * MB
         docs = heldout if name != "calib" else heldout[::-1]
-        _AG_ROWS[name] = ag_rows(np.random.default_rng([SEED, gr.crc(f"SCALE|{name}")]), n, docs=docs)
+        _AG_ROWS[name] = ag_rows(np.random.default_rng([SEED, gr.crc(f"SCALE|{name}")]), n, docs=docs,
+                                 n_hard=n if name in ("hard", "trace_hard") else 0)
     return _AG_ROWS[name]
 
 
@@ -826,6 +843,9 @@ def ag_trace(c, step: int) -> dict:
         rec.update(ihead_right=ih["right"], ihead_right_argmax=ih["right_argmax"])
     if c.anchor is not None:
         rec["whole_null_request"] = ag_scores(ag, ag_forward(c, ag, "null")[0])[0]["whole"]
+    if HARD_READ:                                # 0.1.75: the hard point (teacher-forced index on key-hard rows: only a whole-key match is right)
+        agh = ag_set("trace_hard")
+        rec["hard_index_right"] = ag_scores(agh, ag_forward(c, agh)[0])[0]["index_right"]
     if was:
         c.model.train()
     return rec
@@ -865,6 +885,8 @@ def ag_gauges(c) -> dict:
         out["calib"] = dict(rows=len(cal), questions=int(lw.shape[0]),
                             tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(gr.LEVELS)] for q in ("0.9", "0.99", "0.999")})
     out["free_running"] = fr_gauges(c)          # 0.1.72: the craft's own index bytes in the row
+    if HARD_READ:                               # 0.1.75: the key-hard rows, where only a whole-key match is right
+        out["hard"] = hard_gauges(c)
     return out
 
 
@@ -878,6 +900,21 @@ def ag_free(c, ag) -> tuple:
         passes.append(k)
         conv += cv
     return rows, passes, conv
+
+
+def hard_gauges(c) -> dict:
+    """0.1.75: THE HARD-ROW READ on HARD_BATCHES x mb key-hard rows (grid_rows.hard_keys; held-out filler): the index the craft writes,
+    teacher-forced (right a entry) and free-running (INDEXF: right a entry; the passes), and the answers whole with the true address. On
+    these rows a match on any part of the key is right on at most half of the entries (the two-digit ending 1 / 4): only the whole key."""
+    ag = ag_set("hard")
+    pred, _, heads = ag_forward(c, ag)
+    sc = ag_scores(ag, pred, heads)[0]
+    fr, passes, conv = ag_free(c, ag)
+    truth = [[gr.digits(m["recs"][e["rec"]]["addr"]) for e in m["index"]] for _, m in ag]
+    req_f = [gr.row_request(r, m) for r, m in fr]
+    ok = [tuple(a) == tuple(b) for r, t in zip(req_f, truth) for a, b in zip(r, t)]
+    return dict(rows=len(ag), index_right=sc["index_right"], whole=sc["whole"], indexf_right=float(np.mean(ok)), n_entries=len(ok),
+                passes=dict(mean=float(np.mean(passes)), max=int(max(passes))), converged=float(np.mean(conv)))
 
 
 def fr_gauges(c) -> dict:
@@ -1500,6 +1537,8 @@ def finish(c: Craft) -> tuple:
                           series=ARGS.get("series", ""))
         if GRID_ABYTES != 2:                    # 0.1.74: the one-byte address form (the default record is 0.1.73's)
             grid_block["abytes"] = GRID_ABYTES
+        if GRID_HARD > 0:                       # 0.1.75: the key-hard share of the training grid rows (the default record is 0.1.74's)
+            grid_block.update(hard=GRID_HARD, n_hard=N_HARD)
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
             + (f", through its own index {read['own_index']['whole']:.4f} (the index's request right {read['own_index']['request_right']:.4f}),"
@@ -1515,6 +1554,11 @@ def finish(c: Craft) -> tuple:
                f"answers through it {f_['headif']['whole']:.4f}; calibration Q999 {f_['calib']['tau']['0.999']}; the index term descended "
                f"{head['index']['descended']} ({head['index']['term_step1']:.3f} -> {head['index']['term_last50']:.4f})"
                if HEAD_AT == "both" else ""))
+        if "hard" in read:                      # 0.1.75: the hard-row read
+            h_ = read["hard"]
+            log(f"hard-row read ({h_['rows']} key-hard rows; a partial key match is right on at most half of their entries): the index "
+                f"right {h_['index_right']:.4f} teacher-forced, {h_['indexf_right']:.4f} free-running (passes mean {h_['passes']['mean']:.1f}); "
+                f"answers whole {h_['whole']:.4f}")
     # the weights + the record (a gauge read writes no weights: they are the init's, unchanged)
     wdir = os.path.join(BED, c.init if GAUGE_ONLY else c.tag)
     if not GAUGE_ONLY:
@@ -1531,6 +1575,8 @@ def finish(c: Craft) -> tuple:
                 _sj.update(head_at=HEAD_AT, head_lam_i=HEAD_LAM_I)
             if GRID_ABYTES != 2:                 # 0.1.74: the address form the core was trained on (rotary_scale composes its rows so)
                 _sj["abytes"] = GRID_ABYTES
+            if GRID_HARD > 0:                    # 0.1.75: the key-hard share it trained on (provenance; the members' rows stay standard)
+                _sj["grid_hard"] = GRID_HARD
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
              config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),

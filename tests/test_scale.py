@@ -170,9 +170,10 @@ def test_the_grid_share_is_a_count_of_rows(p, mb, n):
 
 
 # ------------------------------------------------------------------ the batch: the plain rows are the plain run's rows
-def _bed_batch(n_ag: int):
+def _bed_batch(n_ag: int, n_hard: int = 0):
     """bed_train's own batch / ag_rows / grid_aux and the framed composer, lifted out of the file (its module reads a command line and a
-    corpus at import), bound to the scale test's framed settings at 4,096 x 8 with n_ag grid rows."""
+    corpus at import), bound to the scale test's framed settings at 4,096 x 8 with n_ag grid rows (0.1.75: the last n_hard of them
+    key-hard rows)."""
     import ast
     import os
     from geolip.nano_beatrix import bed_frames as bf
@@ -187,7 +188,8 @@ def _bed_batch(n_ag: int):
               SIZES=[32, 128, 256, 512], N_REC_FRAME=4, NEST_P=0.3, OVERLAP_P=0.0, REGISTER="caption", TAGS="mode", SIZED=False, SLICED=0,
               ASK="any", FACTS=None, GAUGE_FLOOR={}, N_LOOKUP=2, N_BULK=0, REC_BYTES=bf.capacity(4096, "A", "caption")["record_bytes"],
               BANDS=[(0, 128), (128, 256), (256, 512), (512, 100000)], PLANTED=[0, 0], AG_SALT=gr.crc("AG"), packed=packed,
-              GRID_ABYTES=2)                                             # 0.1.74: the grid rows' address form (the default)
+              GRID_ABYTES=2,                                             # 0.1.74: the grid rows' address form (the default)
+              N_HARD=n_hard)                                             # 0.1.75: the batch's key-hard grid rows
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bed_train.py", "exec"), ns)
     return ns["batch"]
 
