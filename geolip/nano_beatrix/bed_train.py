@@ -175,6 +175,11 @@ assert not ALHENA or ROTARY == "anchored", f"alhena turns by the anchored rotati
 # levels (anchored_rope.frequencies; 2 = ALHENA, the default, bit for bit; 4 = ALHENA-W); the run's name carries _cp<C> when C is not 2.
 ROT_CONTENT = int(ARGS.get("rotary_content", str(ar.CONTENT_PAIRS)))
 assert ROT_CONTENT == ar.CONTENT_PAIRS or ROTARY == "anchored", "--rotary_content moves the anchored rotation's split (--rotary=anchored)"
+# 0.1.74: THE POSING SCREEN. --grid_abytes=1 writes the grid rows' addresses as ONE byte 0x80 + a (grid_rows.compose_ag), unique in the row,
+# in the compartments' frames and in the index alike; the streams and the head keep the two digits. 2 (the default) = the two digit bytes
+# of 0.1.73, bit for bit; the run's name carries _ab1.
+GRID_ABYTES = int(ARGS.get("grid_abytes", "2"))
+assert GRID_ABYTES in (1, 2) and (GRID_ABYTES == 2 or GRID == "ag"), "--grid_abytes=1 is a form of the addressed grid rows (--grid=ag)"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -486,7 +491,7 @@ def ag_rows(rng, n, docs=None):
             src = packed[p:p + CTX + 1].tobytes()
         else:
             src = bytes([DOC]) + docs[j % len(docs)]
-        out.append(gr.compose_ag(rng, src, CTX))
+        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES))
     return out
 
 
@@ -600,6 +605,8 @@ class Craft:
             _rel = ar.SHARED - ROT_CONTENT
             log(f"the anchored rotation on {ar.patch(self.model, self.anchor)} softmax blocks (pairs 0-{_rel - 1} relative, NTK x{ar.NTK_SCALE:g}; "
                 f"{_rel}-{ar.SHARED - 1} content; 8-15 two anchor levels at 2 pi k / 9)")
+        if GRID_ABYTES == 1:                     # 0.1.74
+            log("the grid rows' addresses as one byte 0x80 + a (unique in the row), in the frames and the index; the streams keep the digits")
         if HEAD_FORM == "digit":                 # the per-digit address head: torch's default weight, the bias at the uniform prior 1/8
             torch.manual_seed(gr.crc(f"SCALE|head|s{SEED}"))
             self.addr_head = torch.nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(DEV)
@@ -765,8 +772,8 @@ def ag_scores(ag, pred, heads=None) -> tuple:
     idx_ok, whole, by_addr = [], [], {}
     for i, (row, m) in enumerate(ag):
         y = np.frombuffer(row, dtype=np.uint8)[1:]
-        for p1, p2 in gr.index_positions(m):
-            idx_ok.append(bool(pred[i, p1] == y[p1] and pred[i, p2] == y[p2]))
+        for ps in gr.index_positions(m):                                    # an entry is right when all its address bytes are
+            idx_ok.append(bool(all(pred[i, p] == y[p] for p in ps)))
         for qi, ps in enumerate(gr.answer_positions(m)):
             ok = bool((pred[i, ps] == y[ps]).all())
             whole.append(ok)
@@ -1491,6 +1498,8 @@ def finish(c: Craft) -> tuple:
                     curve=[[i + 1, ic[i]] for i in range(0, len(ic), LOG_EVERY)] + ([[len(ic), ic[-1]]] if ic else [])))
         grid_block = dict(layout="AG", p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=head, trace=c.trace, read=read,
                           series=ARGS.get("series", ""))
+        if GRID_ABYTES != 2:                    # 0.1.74: the one-byte address form (the default record is 0.1.73's)
+            grid_block["abytes"] = GRID_ABYTES
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
             + (f", through its own index {read['own_index']['whole']:.4f} (the index's request right {read['own_index']['request_right']:.4f}),"
@@ -1520,6 +1529,8 @@ def finish(c: Craft) -> tuple:
                        layout=dict(slot=gr.SLOT, comps=gr.N_COMP, radix=gr.RADIX, levels=gr.LEVELS))
             if HEAD_AT == "both":                # 0.1.72: the head's positions (the stored cores' files carry none: the questions)
                 _sj.update(head_at=HEAD_AT, head_lam_i=HEAD_LAM_I)
+            if GRID_ABYTES != 2:                 # 0.1.74: the address form the core was trained on (rotary_scale composes its rows so)
+                _sj["abytes"] = GRID_ABYTES
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
     R = dict(arm=c.arm, seed=SEED, smoke=SMOKE, steps=STEPS, micro_batch=MB, ctx=CTX, lr=LR, warmup=WARM, p_plant=P_PLANT, records=N_REC, params=c.n_params, init=c.init,
              config=c.cfg.to_dict(), tokens=STEPS * MB * CTX, train_minutes=train_s / 60, tok_per_s=(STEPS * MB * CTX / train_s if STEPS else None),

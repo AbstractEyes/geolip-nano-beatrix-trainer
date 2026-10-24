@@ -186,7 +186,8 @@ def _bed_batch(n_ag: int):
     ns = dict(bf=bf, gr=gr, np=np, torch=torch, DOC=DOC, CTX=4096, MB=8, N_AG=n_ag, SEED=1, P_PLANT=1.0, FRAMES="dyn", N_REC=1,
               SIZES=[32, 128, 256, 512], N_REC_FRAME=4, NEST_P=0.3, OVERLAP_P=0.0, REGISTER="caption", TAGS="mode", SIZED=False, SLICED=0,
               ASK="any", FACTS=None, GAUGE_FLOOR={}, N_LOOKUP=2, N_BULK=0, REC_BYTES=bf.capacity(4096, "A", "caption")["record_bytes"],
-              BANDS=[(0, 128), (128, 256), (256, 512), (512, 100000)], PLANTED=[0, 0], AG_SALT=gr.crc("AG"), packed=packed)
+              BANDS=[(0, 128), (128, 256), (256, 512), (512, 100000)], PLANTED=[0, 0], AG_SALT=gr.crc("AG"), packed=packed,
+              GRID_ABYTES=2)                                             # 0.1.74: the grid rows' address form (the default)
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bed_train.py", "exec"), ns)
     return ns["batch"]
 

@@ -430,6 +430,7 @@ class Core:
             "the members' sites are written for the byte trunk without fusion, lookup arms, the last fix or a dial head"
         self.n_blocks = len(m.blocks)
         self.scale = json.load(open(os.path.join(folder, "scale.json"), encoding="utf-8"))
+        self.abytes = int(self.scale.get("abytes", 2))            # 0.1.74: the address form the core was trained on (its rows are built so)
         self.anchor = None
         if isinstance(self.scale.get("rotary"), dict):            # 0.1.73: at the split the core was trained with (ALHENA's 2 or ALHENA-W's 4)
             self.anchor = ar.AnchorStreams(ar.content_of(self.scale["rotary"]))
@@ -506,15 +507,15 @@ def load_heldout(path: str, ctx: int = gr.CTX) -> list:
     return out
 
 
-def gauge_rows(seed: int, name: str, n: int, docs: list) -> list:
+def gauge_rows(seed: int, name: str, n: int, docs: list, abytes: int = 2) -> list:
     """bed_train's gauge rows (ag_set): n grid rows from the generator [seed, crc("SCALE|<name>")], the filler the documents `docs` in
     turn behind a DOC byte. The members' read uses the cores' own read rows ("read", the held-out documents) and calibration rows
-    ("calib", the held-out documents reversed)."""
+    ("calib", the held-out documents reversed). abytes (0.1.74): the core's address form."""
     rng = np.random.default_rng([seed, gr.crc(f"SCALE|{name}")])
-    return [gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX) for j in range(n)]
+    return [gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes) for j in range(n)]
 
 
-def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int = ROWS_LAST) -> list:
+def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int = ROWS_LAST, abytes: int = 2) -> list:
     """A last-site batch: each row 18 owned compartments (a per-batch permutation of the owned cycled over the rows) and 6 never-owned,
     its questions asking the owned records in a drawn order. -> [(row, meta)]."""
     perm = rng.permutation(len(owned))
@@ -527,15 +528,15 @@ def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int =
         asked = [addrs.index(a) for a in own]
         asked = [asked[int(i)] for i in rng.permutation(len(asked))]
         p = int(rng.integers(0, len(packed) - gr.CTX - 2))
-        out.append(gr.compose_ag(rng, packed[p:p + gr.CTX + 1].tobytes(), gr.CTX, addrs=addrs, asked=asked))
+        out.append(gr.compose_ag(rng, packed[p:p + gr.CTX + 1].tobytes(), gr.CTX, addrs=addrs, asked=asked, abytes=abytes))
     return out
 
 
-def owned_row(rng, src: bytes, addr: int) -> tuple:
+def owned_row(rng, src: bytes, addr: int, abytes: int = 2) -> tuple:
     """A mid-site row: an ordinary grid row that shows `addr`'s compartment, its 24 questions in a drawn order (one asks addr's record).
     -> (row, meta, the question index asking addr's record)."""
     others = rng.choice([a for a in range(gr.N_ADDR) if a != addr], size=gr.N_COMP - 1, replace=False)
-    row, meta = gr.compose_ag(rng, src, gr.CTX, addrs=[addr] + [int(a) for a in others])
+    row, meta = gr.compose_ag(rng, src, gr.CTX, addrs=[addr] + [int(a) for a in others], abytes=abytes)
     qi = next(i for i, q in enumerate(meta["questions"]) if meta["recs"][q["rec"]]["addr"] == addr)
     return row, meta, qi
 
@@ -546,7 +547,7 @@ def to_x(rows: list, dev) -> torch.Tensor:
 
 def question_table(metas: list, owned: list) -> dict:
     """Per question of the rows (row order, then question order): its row, its answer positions (Q, 7), its address, its owner's index
-    (-1 = never owned), its true digits, its index entry's two address positions."""
+    (-1 = never owned), its true digits, its index entry's address positions (Q, the row's address form: 2 digit bytes or 1 byte)."""
     rank = {a: i for i, a in enumerate(owned)}
     row, pos, addr, own, ipos = [], [], [], [], []
     for j, m in enumerate(metas):
@@ -609,7 +610,7 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
     salt = gr.crc("SCALE|memb|last")
 
     def make(step):
-        rows = member_rows(np.random.default_rng([seed, salt, step]), packed, owned, never)
+        rows = member_rows(np.random.default_rng([seed, salt, step]), packed, owned, never, abytes=core.abytes)
         return rows, question_table([m for _, m in rows], owned)
     pf = _Prefetch(make, start, steps)
     present = torch.ones(N_OWN, dtype=torch.bool, device=dev)
@@ -667,7 +668,7 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
 def _solo_batch(core: Core, stk, owned: list, never: list, packed: np.ndarray, seed: int, codes: torch.Tensor) -> float:
     """The trace's solo read: one member-mode batch from its own generator, each owner alone at weight 1 (whole coded answers)."""
     dev = core.dev
-    rows = member_rows(np.random.default_rng([seed, gr.crc("SCALE|memb|trace")]), packed, owned, never)
+    rows = member_rows(np.random.default_rng([seed, gr.crc("SCALE|memb|trace")]), packed, owned, never, abytes=core.abytes)
     qt = question_table([m for _, m in rows], owned)
     x = to_x(rows, dev)
     core.set_streams([m for _, m in rows])
@@ -710,7 +711,7 @@ def train_mid(core: Core, arms: StackedArms, steps: int, seed: int, packed: np.n
         rows, qis = [], []
         for j in mem:
             p = int(rng.integers(0, len(packed) - gr.CTX - 2))
-            row, meta, qi = owned_row(rng, packed[p:p + gr.CTX + 1].tobytes(), owned[int(j)])
+            row, meta, qi = owned_row(rng, packed[p:p + gr.CTX + 1].tobytes(), owned[int(j)], abytes=core.abytes)
             rows.append((row, meta))
             qis.append(qi)
         return rows, np.array(mem), qis
@@ -784,9 +785,8 @@ def batch_context(core: Core, rows: list, owned: list, swap_rng, site: int | Non
     rq = torch.from_numpy(qt["row"]).to(dev)
     core.set_streams(metas, "null" if core.anchor is not None else None)  # the index precedes the questions: its writing reads no request
     h = core.trunk(xin)
-    pred = torch.stack([core.readout(h[rq, ip[:, 0]]).argmax(-1), core.readout(h[rq, ip[:, 1]]).argmax(-1)], 1)
-    written = (pred - 48).cpu().numpy()
-    written = np.where((written >= 0) & (written < gr.RADIX), written, gr.NULL)
+    pred = torch.stack([core.readout(h[rq, ip[:, i]]).argmax(-1) for i in range(ip.shape[1])], 1)  # the entry's address bytes (its form)
+    written = gr.decode_written(pred.cpu().numpy(), ip.shape[1])
     if core.anchor is not None:                                            # the questions carry the written index
         req = []
         for j in range(len(rows)):
@@ -803,7 +803,7 @@ def batch_context(core: Core, rows: list, owned: list, swap_rng, site: int | Non
     Q = len(qt["row"])
     out = dict(qt=qt, x=x, metas=metas, written=written, rq=rq, r_=r_, p_=p_,
                hq=h[r_, p_].view(Q, NA, core.d), raw=x[:, 1:][r_, p_].view(Q, NA),
-               index_right=float(((pred[:, 0] == x[:, 1:][rq, ip[:, 0]]) & (pred[:, 1] == x[:, 1:][rq, ip[:, 1]])).double().mean()),
+               index_right=float((pred == x[:, 1:][rq[:, None], ip]).all(-1).double().mean()),
                swapped=_swap_requests(qt["dig"], qt["row"], swap_rng))
     if site is not None:
         out["h_site"], out["h_site_q"] = h_site, h_site[r_, p_].view(Q, NA, core.d)
@@ -1258,10 +1258,9 @@ def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int |
         core.set_streams(metas, "null")
         h = core.trunk(x[:, :-1])
         core.clear()
-        pred = torch.stack([core.readout(h[rq, ip[:, 0]]).argmax(-1), core.readout(h[rq, ip[:, 1]]).argmax(-1)], 1)
-        w = (pred - 48).cpu().numpy()
-        out["p1"][rk] = dict(written=np.where((w >= 0) & (w < gr.RADIX), w, gr.NULL),
-                             s_e=core.head_scores(h[rq, ip[:, 0]]) if core.head is not None else None)
+        pred = torch.stack([core.readout(h[rq, ip[:, i]]).argmax(-1) for i in range(ip.shape[1])], 1)  # the entry's address bytes
+        out["p1"][rk] = dict(written=gr.decode_written(pred.cpu().numpy(), ip.shape[1]),
+                             s_e=core.head_scores(h[rq, ip[:, 0]]) if core.head is not None else None)  # the head at the SEP
     st = out["stream"]
     st["true"], st["written"], st["swapped"] = qt["dig"], out["p1"]["T"]["written"], out["swapped"]
     if "F" in xs:
@@ -1705,7 +1704,7 @@ def compile_check(core: Core, packed: np.ndarray, owned: list, never: list, seed
     the largest value. The members are moved off their born zero first so every gradient is live."""
     global COMPILE
     dev = core.dev
-    rows = member_rows(np.random.default_rng([seed, crc("SCALE|compile")]), packed, owned, never)
+    rows = member_rows(np.random.default_rng([seed, crc("SCALE|compile")]), packed, owned, never, abytes=core.abytes)
     qt = question_table([m for _, m in rows], owned)
     x = to_x(rows, dev)
     with torch.no_grad():
@@ -1829,8 +1828,8 @@ def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_pa
     owned, never = owned_sets()
     packed = load_packed(bed_dir)
     held = load_heldout(heldout_path)
-    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held)
-    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1])
+    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)
+    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1], abytes=core.abytes)
     t0 = time.time()
     meta = dict(core=core.tag, seed=seed, owned=owned, never=never, arm_spec=ARM_SPEC, amoe=AMOE_PIN, toy_hidden=TOY_HID,
                 codes="SCALE|code|<i>: a crc-seeded derangement of a-z", betas=list(BETAS), eps=EPS, lr=LR, warm=WARM)
@@ -1957,8 +1956,8 @@ def read0(core_folder: str, members_folder: str, out_path: str, seed: int, heldo
     core = Core(core_folder, dev)
     owned, never = owned_sets()
     held = load_heldout(heldout_path)
-    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held)
-    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1])
+    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)
+    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1], abytes=core.abytes)
     stacks = {"arms": _load_stack(StackedArms(N_OWN, core.d), os.path.join(members_folder, f"arms_last_m{N_OWN}_st{last_steps}.safetensors"), core.dev),
               "toys": _load_stack(StackedToys(N_OWN, core.d), os.path.join(members_folder, f"toys_last_m{N_OWN}_st{last_steps}.safetensors"), core.dev)}
     rec = dict(core=core.tag, members=os.path.basename(os.path.normpath(members_folder)), seed=seed, head_at=core.head_at,

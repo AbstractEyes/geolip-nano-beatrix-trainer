@@ -182,6 +182,16 @@ four seeds, Alhena verbatim on two new seeds, Alhena-W with the head at the inde
 whose own written index is right, `colab/nano_wide.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_wide.ipynb)
 
+The posing screen (0.1.74): the grid rows' address as one byte. `--grid_abytes=1` writes each record's address as ONE byte 0x80 + a
+(a = 0..63) in the record's frame (`DATA A CUE key SEP value END`) and in the index entry (`CUE key SEP A`), unique in its row; the
+rotary's address streams and the address head keep the two digits, and the request read from the model's own index is the digits of
+A' - 0x80 when 0x80 <= A' < 0xC0, else the null anchor at both levels. The default (two digit bytes) is 0.1.73 bit for bit (the rows on
+fixed draws; a 3-step run's record, weights and side files on Alhena's and Alhena-W's grid recipes); a run in the one-byte form carries
+`_ab1` in its name, its record and scale.json carry the form, and `rotary_scale.Core` composes the members' rows in it. Alhena-U on
+Alhena-W's split on four seeds, on Alhena's split on two, Alhena-W's seed 2 again, and the members on the first two Alhena-U cores whose
+own written index is right, `colab/nano_posing.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_posing.ipynb)
+
 Then:
 
 ```bash

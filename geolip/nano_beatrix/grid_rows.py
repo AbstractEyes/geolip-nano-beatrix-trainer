@@ -56,9 +56,28 @@ def digits(a: int) -> tuple:
     return (a // RADIX, a % RADIX)
 
 
-def addr_bytes(a: int) -> bytes:
+ONE_BYTE0 = 0x80                                  # 0.1.74: the one-byte address form writes address a as the byte 0x80 + a (0x80-0xBF)
+
+
+def addr_bytes(a: int, abytes: int = 2) -> bytes:
+    """An address as the row writes it: two digit bytes '0'-'7' (the default), or (abytes=1, 0.1.74) ONE byte 0x80 + a, unique in its
+    row and carried by the grid rows otherwise only inside the filler's multi-byte UTF-8 characters."""
+    if abytes == 1:
+        return bytes([ONE_BYTE0 + a])
     d1, d2 = digits(a)
     return bytes([48 + d1, 48 + d2])
+
+
+def decode_written(b, abytes: int = 2) -> np.ndarray:
+    """0.1.74: written address bytes (..., abytes) -> digits (..., 2): a digit byte outside '0'-'7' is the null anchor at its level (the
+    two-byte form); a byte outside 0x80-0xBF is the null anchor at both levels (the one-byte form)."""
+    b = np.asarray(b, dtype=np.int64)
+    if abytes == 1:
+        a = b[..., 0] - ONE_BYTE0
+        ok = (a >= 0) & (a < N_ADDR)
+        return np.stack([np.where(ok, a // RADIX, NULL), np.where(ok, a % RADIX, NULL)], -1)
+    w = b - 48
+    return np.where((w >= 0) & (w < RADIX), w, NULL)
 
 
 def owned_order(n_owned: int = 48) -> tuple:
@@ -68,12 +87,15 @@ def owned_order(n_owned: int = 48) -> tuple:
     return tuple(int(a) for a in perm[:n_owned]), tuple(sorted(int(a) for a in perm[n_owned:]))
 
 
-def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False) -> tuple:
+def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False, abytes: int = 2) -> tuple:
     """One addressed grid row. rng: the row's numpy Generator; src: corpus text (at least ctx + 1 bytes; specials become newlines).
     addrs: the row's 24 addresses (None = 24 distinct draws of the 64); they are sorted onto slots 1-24. asked: the records the questions
     ask, as indices into the sorted compartments, in question order (None = all 24 in a drawn order). swap_index: one pair of index
-    entries carries the other's address (a corrupted index; the gauge's control that must fail), the questions unchanged.
+    entries carries the other's address (a corrupted index; the gauge's control that must fail), the questions unchanged. abytes (0.1.74):
+    the address as two digit bytes (2, the default: the rows of 0.1.73 byte for byte) or as one byte 0x80 + a (1), in the frame and in
+    the index entry alike; the draws and the streams are the same either way.
     -> (row bytes of ctx + 1, meta)."""
+    assert abytes in (1, 2), abytes
     assert ctx == CTX, f"the addressed grid is laid out for a {CTX}-byte window, got {ctx}"
     if addrs is None:
         addrs = rng.choice(N_ADDR, size=N_COMP, replace=False)
@@ -87,12 +109,12 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     row[0:len(HEAD)] = HEAD
     recs = []
     for j, (a, s) in enumerate(zip(addrs, COMP_SLOTS)):
-        frame = bytes([DATA]) + addr_bytes(a) + bytes([CUE]) + keys[j] + bytes([SEP]) + vals[j] + bytes([END])
+        frame = bytes([DATA]) + addr_bytes(a, abytes) + bytes([CUE]) + keys[j] + bytes([SEP]) + vals[j] + bytes([END])
         lo = s * SLOT
         assert len(frame) <= SLOT
         row[lo:lo + len(frame)] = frame
         recs.append(dict(addr=a, slot=s, lo=lo, hi=lo + SLOT, key=keys[j].decode(), value=vals[j].decode(),
-                         frame_end=lo + len(frame), v0=lo + 4 + len(keys[j]) + 1))
+                         frame_end=lo + len(frame), v0=lo + 2 + abytes + len(keys[j]) + 1))
     shown = list(order)
     if swap_index:                                      # a corrupted index: two entries trade their addresses
         assert len(order) >= 2
@@ -101,8 +123,8 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     entries, p = [], INDEX_LO + 1
     ix = bytearray([DATA])
     for qi, o in enumerate(order):
-        e = bytes([CUE]) + keys[o] + bytes([SEP]) + addr_bytes(recs[shown[qi]]["addr"])
-        entries.append(dict(rec=o, lo=p, a_pos=p + len(e) - 2, shown=shown[qi]))
+        e = bytes([CUE]) + keys[o] + bytes([SEP]) + addr_bytes(recs[shown[qi]]["addr"], abytes)
+        entries.append(dict(rec=o, lo=p, a_pos=p + len(e) - abytes, shown=shown[qi]))
         ix += e
         p += len(e)
     ix += bytes([END])
@@ -120,6 +142,8 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     row = bytes(row[:ctx + 1])
     meta = dict(layout="AG", addrs=addrs, recs=recs, index=entries, index_end=INDEX_LO + len(ix), questions=quest,
                 quest_end=QUEST_LO + len(qb), swap_index=swap_index)
+    if abytes != 2:                                     # 0.1.74: the one-byte form names itself; the default meta is 0.1.73's
+        meta["abytes"] = abytes
     return row, meta
 
 
@@ -144,9 +168,16 @@ def answer_positions(meta: dict) -> list:
     return [list(range(q["sep"], q["sep"] + VLEN + 1)) for q in meta["questions"]]
 
 
+def abytes_of(meta: dict) -> int:
+    """0.1.74: the row's address form (2 = two digit bytes, the default; 1 = one byte)."""
+    return meta.get("abytes", 2)
+
+
 def index_positions(meta: dict) -> list:
-    """For each index entry (in order): the two input positions whose targets are its address digits."""
-    return [(e["a_pos"] - 1, e["a_pos"]) for e in meta["index"]]
+    """For each index entry (in order): the input positions whose targets are its address bytes (two digits; one byte in the one-byte
+    form). The first is always the entry's SEP."""
+    ab = abytes_of(meta)
+    return [tuple(e["a_pos"] - 1 + i for i in range(ab)) for e in meta["index"]]
 
 
 def head_targets(meta: dict) -> tuple:
@@ -167,30 +198,26 @@ def index_head_targets(meta: dict) -> tuple:
 
 
 def written_request(pred_row: np.ndarray, meta: dict) -> list:
-    """The address the craft wrote for each question: its greedy bytes at the index entry's two address positions (pred_row: the argmax
-    at every input position of the teacher-forced row), as digits (a byte outside '0'-'7' is the null anchor)."""
-    out = []
-    for p1, p2 in index_positions(meta):
-        b1, b2 = int(pred_row[p1]), int(pred_row[p2])
-        out.append(tuple((b - 48) if 48 <= b < 48 + RADIX else NULL for b in (b1, b2)))
-    return out
+    """The address the craft wrote for each question: its greedy bytes at the index entry's address positions (pred_row: the argmax
+    at every input position of the teacher-forced row), as digits (decode_written: a byte outside the form's range is the null anchor)."""
+    ab = abytes_of(meta)
+    return [tuple(int(d) for d in decode_written([int(pred_row[p]) for p in ps], ab)) for ps in index_positions(meta)]
 
 
 def row_request(row: bytes, meta: dict) -> list:
-    """0.1.72: the address each index entry of `row` names, as digits (a byte outside '0'-'7' is the null anchor): on a free-running row
-    (free_running) the craft's own index, in question order."""
-    out = []
-    for p1, p2 in index_positions(meta):
-        out.append(tuple((b - 48) if 48 <= b < 48 + RADIX else NULL for b in (row[p1 + 1], row[p2 + 1])))
-    return out
+    """0.1.72: the address each index entry of `row` names, as digits (decode_written): on a free-running row (free_running) the craft's
+    own index, in question order."""
+    ab = abytes_of(meta)
+    return [tuple(int(d) for d in decode_written([row[p + 1] for p in ps], ab)) for ps in index_positions(meta)]
 
 
 def put_index_bytes(row: bytes, meta: dict, pred_row: np.ndarray) -> bytes:
-    """0.1.72: the row with each index entry's two address bytes replaced by the craft's greedy bytes there (pred_row: the argmax at every
+    """0.1.72: the row with each index entry's address bytes replaced by the craft's greedy bytes there (pred_row: the argmax at every
     input position of this row; the byte at row position t + 1 is predicted at input position t). Everything else stays as composed."""
     b = bytearray(row)
-    for p1, p2 in index_positions(meta):
-        b[p1 + 1], b[p2 + 1] = int(pred_row[p1]), int(pred_row[p2])
+    for ps in index_positions(meta):
+        for p in ps:
+            b[p + 1] = int(pred_row[p])
     return bytes(b)
 
 
@@ -203,7 +230,7 @@ def free_running(ag: list, greedy, max_passes: int | None = None) -> tuple:
     questions and values stay as composed. greedy(ag_now) -> np.ndarray (len(ag_now), >= the index's end) the argmax at every input
     position; every pass sends ALL the rows (a fixed batch: a row's bytes never depend on which rows are still moving).
     -> (the rows at the fixed point [(row, meta)], passes taken, converged: per row, b(k + 1) = b(k) seen or the byte count reached)."""
-    n_bytes = max(2 * len(m["index"]) for _, m in ag)
+    n_bytes = max(abytes_of(m) * len(m["index"]) for _, m in ag)
     limit = n_bytes if max_passes is None else int(max_passes)
     cur = [r for r, _ in ag]
     metas = [m for _, m in ag]
@@ -216,7 +243,7 @@ def free_running(ag: list, greedy, max_passes: int | None = None) -> tuple:
             nxt = put_index_bytes(cur[i], metas[i], pred[i])
             done[i] = done[i] or nxt == cur[i]
             cur[i] = nxt
-    conv = [d or passes >= 2 * len(m["index"]) for d, m in zip(done, metas)]
+    conv = [d or passes >= abytes_of(m) * len(m["index"]) for d, m in zip(done, metas)]
     return list(zip(cur, metas)), passes, conv
 
 
@@ -251,42 +278,53 @@ def selftest(n: int = 200) -> None:
     rng = np.random.default_rng(1)
     src = bytes(rng.integers(32, 127, size=CTX + 1, dtype=np.uint8))
     for t in range(n):
-        r = np.random.default_rng([7, t])
-        swap = t % 5 == 4
-        asked = None if t % 3 else list(r.permutation(N_COMP)[:18])
-        row, m = compose_ag(r, src, addrs=None, asked=asked, swap_index=swap)
-        assert len(row) == CTX + 1 and row[:len(HEAD)] == HEAD
-        for rec in m["recs"]:
-            assert row[rec["lo"]] == DATA and row[rec["lo"] + 1:rec["lo"] + 3] == addr_bytes(rec["addr"])
-            assert row[rec["v0"]:rec["v0"] + VLEN].decode() == rec["value"] and row[rec["v0"] + VLEN] == END
-            assert row[rec["v0"] - 1] == SEP and row[rec["lo"] + 3] == CUE
-        assert [rec["slot"] for rec in m["recs"]] == list(COMP_SLOTS) and m["addrs"] == sorted(m["addrs"])
-        x, y = row[:-1], row[1:]
-        for qi, (q, e) in enumerate(zip(m["questions"], m["index"])):
-            rec = m["recs"][q["rec"]]
-            assert row[q["lo"]] == CUE and row[q["sep"]] == SEP and row[q["v0"]:q["v0"] + VLEN].decode() == rec["value"]
-            assert row[q["end"]] == END and row[q["lo"] + 1:q["sep"]].decode() == rec["key"]
-            shown = m["recs"][e["shown"]]
-            assert row[e["a_pos"]:e["a_pos"] + 2] == addr_bytes(shown["addr"]) and row[e["a_pos"] - 1] == SEP
-            assert (e["shown"] == e["rec"]) or swap
-            tg = [y[p] for p in answer_positions(m)[qi]]
-            assert bytes(tg) == rec["value"].encode() + bytes([END]), "the answer positions' targets are the value and the END"
-            p1, p2 = index_positions(m)[qi]
-            assert bytes([y[p1], y[p2]]) == addr_bytes(shown["addr"])
-        dk, dq = streams(m)
-        for rec in m["recs"]:
-            assert (dk[rec["lo"]:rec["hi"]] == digits(rec["addr"])).all()
-        for q in m["questions"]:
-            sp = slice(q["sep"], q["sep"] + VLEN + 1)
-            assert (dk[sp] == NULL).all() and (dq[sp] == digits(m["recs"][q["rec"]]["addr"])).all()
-        assert (dk[:SLOT] == NULL).all() and (dk[INDEX_LO:INDEX_HI] == NULL).all()
-        assert (dq[INDEX_LO:INDEX_HI] == NULL).all()
-        seg = segments(m)
-        assert seg.shape == (CTX,)
-        assert len(m["questions"]) == (N_COMP if asked is None else 18)
+        drawn = {}
+        for ab in (2, 1):                               # 0.1.74: both address forms from the same draws
+            r = np.random.default_rng([7, t])
+            swap = t % 5 == 4
+            asked = None if t % 3 else list(r.permutation(N_COMP)[:18])
+            row, m = compose_ag(r, src, addrs=None, asked=asked, swap_index=swap, abytes=ab)
+            assert len(row) == CTX + 1 and row[:len(HEAD)] == HEAD and abytes_of(m) == ab
+            for rec in m["recs"]:
+                assert row[rec["lo"]] == DATA and row[rec["lo"] + 1:rec["lo"] + 1 + ab] == addr_bytes(rec["addr"], ab)
+                assert row[rec["v0"]:rec["v0"] + VLEN].decode() == rec["value"] and row[rec["v0"] + VLEN] == END
+                assert row[rec["v0"] - 1] == SEP and row[rec["lo"] + 1 + ab] == CUE
+            assert [rec["slot"] for rec in m["recs"]] == list(COMP_SLOTS) and m["addrs"] == sorted(m["addrs"])
+            x, y = row[:-1], row[1:]
+            for qi, (q, e) in enumerate(zip(m["questions"], m["index"])):
+                rec = m["recs"][q["rec"]]
+                assert row[q["lo"]] == CUE and row[q["sep"]] == SEP and row[q["v0"]:q["v0"] + VLEN].decode() == rec["value"]
+                assert row[q["end"]] == END and row[q["lo"] + 1:q["sep"]].decode() == rec["key"]
+                shown = m["recs"][e["shown"]]
+                assert row[e["a_pos"]:e["a_pos"] + ab] == addr_bytes(shown["addr"], ab) and row[e["a_pos"] - 1] == SEP
+                assert (e["shown"] == e["rec"]) or swap
+                tg = [y[p] for p in answer_positions(m)[qi]]
+                assert bytes(tg) == rec["value"].encode() + bytes([END]), "the answer positions' targets are the value and the END"
+                ps = index_positions(m)[qi]
+                assert len(ps) == ab and bytes(y[p] for p in ps) == addr_bytes(shown["addr"], ab)
+                assert tuple(int(d) for d in decode_written([y[p] for p in ps], ab)) == digits(shown["addr"])
+            if ab == 1:                                 # the address bytes are unique in the row, one byte each, in 0x80-0xBF
+                ab_bytes = [row[rec["lo"] + 1] for rec in m["recs"]]
+                assert len(set(ab_bytes)) == N_COMP and all(ONE_BYTE0 <= b < ONE_BYTE0 + N_ADDR for b in ab_bytes)
+            dk, dq = streams(m)
+            for rec in m["recs"]:
+                assert (dk[rec["lo"]:rec["hi"]] == digits(rec["addr"])).all()
+            for q in m["questions"]:
+                sp = slice(q["sep"], q["sep"] + VLEN + 1)
+                assert (dk[sp] == NULL).all() and (dq[sp] == digits(m["recs"][q["rec"]]["addr"])).all()
+            assert (dk[:SLOT] == NULL).all() and (dk[INDEX_LO:INDEX_HI] == NULL).all()
+            assert (dq[INDEX_LO:INDEX_HI] == NULL).all()
+            seg = segments(m)
+            assert seg.shape == (CTX,)
+            assert len(m["questions"]) == (N_COMP if asked is None else 18)
+            drawn[ab] = (m["addrs"], [rec["key"] for rec in m["recs"]], [rec["value"] for rec in m["recs"]],
+                         [q["rec"] for q in m["questions"]], [e["shown"] for e in m["index"]], dk, dq)
+        a2, a1 = drawn[2], drawn[1]
+        assert all((np.array_equal(u, v) if isinstance(u, np.ndarray) else u == v) for u, v in zip(a2, a1)), "the two forms share every draw"
     own, never = owned_order()
     assert len(own) == 48 and len(never) == 16 and not set(own) & set(never)
-    print(f"grid_rows self-test: {n} rows OK (frames, index, questions, streams, segments; 1 in 5 with a swapped index; 1 in 3 asking 18)")
+    print(f"grid_rows self-test: {n} rows x 2 address forms OK (frames, index, questions, streams, segments; the forms share every draw "
+          f"and stream; 1 in 5 with a swapped index; 1 in 3 asking 18)")
 
 
 if __name__ == "__main__" and "--selftest" in sys.argv:

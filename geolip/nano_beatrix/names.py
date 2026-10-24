@@ -67,9 +67,11 @@ def run_tag(args: dict) -> str:
     # the address head and its weight ("_ahdigit1"), and a series name that keeps a re-run of a stored recipe from overwriting it;
     # 0.1.72: the head's term at the index entries too (--head_at=both) and its weight ("_ahdigit1i1")
     # 0.1.73: the anchored split's content pairs when not ALHENA's 2 ("_cp4": ALHENA-W)
+    # 0.1.74: the grid rows' address as one byte ("_ab1"; the two digit bytes name nothing)
     scale = ((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
              + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
              + (f"_cp{int(args['rotary_content'])}" if int(args.get("rotary_content", "2")) != 2 else "")
+             + (f"_ab{int(args['grid_abytes'])}" if int(args.get("grid_abytes", "2")) != 2 else "")
              + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
              + (f"i{float(args.get('head_lam_i', '1.0')):g}" if args.get("head") and args.get("head_at", "question") == "both" else "")
              + (f"_{args['series']}" if args.get("series") else ""))
