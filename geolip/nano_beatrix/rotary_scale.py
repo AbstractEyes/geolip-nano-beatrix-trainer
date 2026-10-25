@@ -40,7 +40,14 @@ the free-running row (grid_rows.free_running: the core's own index bytes at thei
 address in the streams. The sources: LAYOUT, INDEX, INDEXC as above; INDEXF (the index written on the free-running row); HEADPF (the head
 at the question's SEP on the free-running row, INDEXF in the stream); HEADI / HEADIF (the head at the asked key's index entry on either row,
 its .5 decode in the stream, its scores in the gate); the _Q999 forms through the floor calibrated in the same form. run_core(forms=...)
-takes either read or both beside the same stacks; read0 reads a stored core with its stored stacks (no training)."""
+takes either read or both beside the same stacks; read0 reads a stored core with its stored stacks (no training).
+0.1.80, THE LOOK (the readout tie): the request read off where one attention head looks. In pass 1 the designated head's own causal
+attention (its block's rotated q and k from the forward, captured by pointer.HeadCapture: the forward unchanged) is summed over each
+record's frame; the request is the address of the record holding more than half of that mass (at most one can; judged by its own mass,
+never ranked: the house's .5 decode), both digits from that one record, else the null anchor (every member abstains). The sources: LOOK
+(at the asked key's index entry's SEP, the row as composed), LOOKF (the same on the free-running row), LOOKQF (at the question's own SEP,
+the free-running row); each exact in the gate. The head: the core's own (scale.json's ptr: the pointer term's block and head) or a given
+(block, head); look_read reads them without members."""
 from __future__ import annotations
 
 import hashlib
@@ -60,11 +67,15 @@ import torch.nn.functional as F
 try:
     from . import grid_rows as gr
     from . import anchored_rope as ar
+    from . import pointer as pt
+    from . import __version__ as _PKG_VERSION
 except ImportError:                                      # run as a file: the folder on the path
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import grid_rows as gr  # noqa: E402
     import anchored_rope as ar  # noqa: E402
+    import pointer as pt  # noqa: E402
+    _PKG_VERSION = "file"
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
 
 N_OWN = 48
@@ -414,9 +425,11 @@ def _digest(model: nn.Module, extra: torch.Tensor | None = None) -> str:
 
 class Core:
     """A trained grid core from its weights folder (config.json, model.safetensors, scale.json, addr_head.safetensors), frozen: the
-    anchored rotation patched in when scale.json names it, the address head beside it."""
+    anchored rotation patched in when scale.json names it, the address head beside it. look (0.1.80): the head the look sources read -
+    "ptr" = the block and head the core's pointer term trained (scale.json's ptr; none on a core without the term), a (block, head) pair
+    with the block numbered from 1 as the reads print it (the control on a core without the term), or None (no look sources)."""
 
-    def __init__(self, folder: str, dev) -> None:
+    def __init__(self, folder: str, dev, look="ptr") -> None:
         from safetensors.torch import load_file
         from geolip.alephllm.model.alephlm import AlephLM
         from geolip.alephllm.presets import AlephLMConfig
@@ -460,6 +473,18 @@ class Core:
         self.d = self.cfg.d_model
         self.head_at = self.scale.get("head_at", "question")      # 0.1.72: where the head was trained (the stored cores: the questions)
         self.free = {}                                             # 0.1.72: the free-running rows read so far (free_rows)
+        self.look, self.look_cap = None, None                     # 0.1.80: the look's head and its capture (after the anchored patch)
+        if look == "ptr":
+            p = self.scale.get("ptr")
+            look = (int(p["block"]), int(p["head"])) if isinstance(p, dict) else None
+        if look is not None:
+            b, hh = int(look[0]), int(look[1])
+            assert 1 <= b <= self.n_blocks, f"the look's block {b}: 1 .. {self.n_blocks} (numbered from 1)"
+            attn = m.blocks[b - 1].attn
+            assert hasattr(attn, "_rotate") and 0 <= hh < attn.h, f"block {b} head {hh} is not a softmax block's head"
+            self.look = (b, hh)
+            self.look_cap = pt.HeadCapture(attn, stop=False, head=hh)   # keeps the forward's own rotated q and k; the output unchanged
+            self.look_cap.on = False                                       # on in pass 1 only (batch_views)
 
     def state_digest(self) -> str:
         """The frozen core's state (the model's state dict, and the value-path tables when it carries them) as one hash."""
@@ -1206,10 +1231,14 @@ def read_mid(core: Core, arms: StackedArms, rows: list, cal: dict, owned: list, 
 # own view), ihead (the head's scores at the asked key's index entry, pass 1), the _q999 forms through the absolute floor with tau
 # calibrated in the same form. G2 and G0 read the T row with the true address. A house-rotary core reads no streams: its sources differ
 # only by row and gate.
+# 0.1.80, the look's streams (look_of, PASS 1 with the core's look head): look_i / look_if the record holding more than half of the head's
+# attention at the asked key's index entry's SEP on the T / F row, look_qf the same at the question's own SEP on the F row; its address,
+# both digits from that one record, else the null anchor.
 FIND_SOURCES = {
     "LAYOUT": ("T", "true", "exact"), "INDEX": ("T", "written", "exact"), "INDEXC": ("T", "swapped", "exact"),
     "INDEXF": ("F", "indexf", "exact"), "HEADPF": ("F", "indexf", "qhead"), "HEADPFQ999": ("F", "indexf", "qhead_q999"),
     "HEADI": ("T", "dec_i", "ihead"), "HEADIF": ("F", "dec_if", "ihead"), "HEADIFQ999": ("F", "dec_if", "ihead_q999"),
+    "LOOK": ("T", "look_i", "exact"), "LOOKF": ("F", "look_if", "exact"), "LOOKQF": ("F", "look_qf", "exact"),
 }
 SRC_FIND = ("LAYOUT", "INDEX", "INDEXC", "HEADPF", "INDEXF", "HEADI", "HEADIF", "HEADIFQ999")   # a core with the head at the index entries
 SRC_QHEAD = ("LAYOUT", "INDEX", "INDEXC", "INDEXF", "HEADPF", "HEADPFQ999", "HEADI", "HEADIF")  # a head at the questions only
@@ -1217,15 +1246,74 @@ SRC_NOHEAD = ("LAYOUT", "INDEX", "INDEXC", "INDEXF")
 SRC_FIND_MID = ("LAYOUT", "INDEXC", "INDEXF", "HEADIF", "HEADIFQ999")
 SRC_QHEAD_MID = ("LAYOUT", "INDEXC", "INDEXF", "HEADPF")
 SRC_NOHEAD_MID = ("LAYOUT", "INDEXC", "INDEXF")
+SRC_LOOK = ("LOOK", "LOOKF", "LOOKQF")                   # 0.1.80: on a core with a look head, after the sets above
+SRC_LOOK_MID = ("LOOKF",)
+LOOK_STREAMS = {"look_i": ("T", "index"), "look_if": ("F", "index"), "look_qf": ("F", "question")}   # stream -> (row, query position)
+LOOK_THR = 0.5                                           # more than half of the head's mass: at most one record can hold it
+FIND_SOURCES_BY_STREAM = {v[1]: s for s, v in FIND_SOURCES.items() if v[1] in LOOK_STREAMS}   # look_i -> LOOK, ...
 
 
 def find_sources(core: Core, site: str = "last") -> tuple:
-    """The two-pass form's sources for this core: the head at the index entries (SRC_FIND), at the questions only (SRC_QHEAD), none."""
+    """The two-pass form's sources for this core: the head at the index entries (SRC_FIND), at the questions only (SRC_QHEAD), none;
+    0.1.80: and the look's (SRC_LOOK; the mid site SRC_LOOK_MID) on a core with a look head."""
     if core.head is None:
-        return SRC_NOHEAD if site == "last" else SRC_NOHEAD_MID
-    if core.head_at == "both":
-        return SRC_FIND if site == "last" else SRC_FIND_MID
-    return SRC_QHEAD if site == "last" else SRC_QHEAD_MID
+        base = SRC_NOHEAD if site == "last" else SRC_NOHEAD_MID
+    elif core.head_at == "both":
+        base = SRC_FIND if site == "last" else SRC_FIND_MID
+    else:
+        base = SRC_QHEAD if site == "last" else SRC_QHEAD_MID
+    if getattr(core, "look", None) is not None:
+        base = base + (SRC_LOOK if site == "last" else SRC_LOOK_MID)
+    return base
+
+
+def look_name(core_tag: str, look) -> str:
+    """0.1.80: the look read's record name - the core's tag and the head it reads (block numbered from 1)."""
+    return f"{core_tag}_look_b{int(look[0])}h{int(look[1])}"
+
+
+@torch.no_grad()
+def look_of(cap, metas: list, rows_idx, pos, asked, thr: float = LOOK_THR) -> dict:
+    """0.1.80, THE LOOK: at input position pos[j] of batch row rows_idx[j], the captured head's causal softmax (its block's own rotated q
+    and k from the latest forward; the eval kernel's scale 1 / sqrt(head dim)) summed over each record's frame [lo, frame_end) of that
+    row. The decode: the record holding more than `thr` of the mass (thr >= .5: at most one), judged by its own mass and never ranked
+    against the others; its address's digits, else the null anchor at both levels. Beside it (a read, never a request) the largest-mass
+    record. asked[j]: the record the question asks (its index in the row's recs).
+    -> dict(dig (Q, 2) int64, rec (Q,) the decoded record or -1, mass (Q,) its mass (0 when none), top (Q,) the largest-mass record,
+    top_mass, second (Q,) the second frame's mass, true_mass (Q,) the asked record's mass), numpy."""
+    assert thr >= 0.5, "below one half two records could both pass: the decode would have to rank them"
+    q, k, h = cap.q, cap.k, cap.head
+    assert q is not None and k is not None, "the look reads the latest forward's capture (pass 1 with the capture on)"
+    rows_idx, pos, asked = (np.asarray(x, dtype=np.int64) for x in (rows_idx, pos, asked))
+    Q = len(rows_idx)
+    hd = q.shape[-1]
+    o = dict(dig=np.full((Q, gr.LEVELS), gr.NULL, dtype=np.int64), rec=np.full(Q, -1, dtype=np.int64), mass=np.zeros(Q),
+             top=np.zeros(Q, dtype=np.int64), top_mass=np.zeros(Q), second=np.zeros(Q), true_mass=np.zeros(Q))
+    for r in np.unique(rows_idx):
+        js = np.nonzero(rows_idx == r)[0]
+        recs = metas[int(r)]["recs"]
+        p_ = torch.as_tensor(pos[js], device=q.device)
+        assert int(p_.max()) < k.shape[2], "a query position past the forward's length"
+        s = (q[int(r), h, p_].float() @ k[int(r), h].float().transpose(0, 1)) / math.sqrt(hd)        # (c, n)
+        t = torch.arange(s.shape[-1], device=q.device)
+        a = torch.softmax(s.masked_fill(t[None, :] > p_[:, None], float("-inf")), -1).double()      # the causal row
+        cs = F.pad(a.cumsum(-1), (1, 0))                                                            # cs[:, j] = mass on [0, j)
+        lo = torch.tensor([x["lo"] for x in recs], device=q.device)
+        hi = torch.tensor([x["frame_end"] for x in recs], device=q.device)
+        fm = (cs[:, hi] - cs[:, lo]).cpu().numpy()                                                  # (c, records) frame masses
+        ix = np.arange(len(js))
+        above = fm > thr                                                       # each record against one fixed number (grid_rows.decode_scores)
+        one = above.sum(-1) == 1
+        rec = np.where(one, above.argmax(-1), -1)                              # the one record above it, else none
+        o["rec"][js] = rec
+        o["mass"][js] = np.where(one, fm[ix, np.maximum(rec, 0)], 0.0)
+        o["true_mass"][js] = fm[ix, asked[js]]
+        order = np.argsort(-fm, axis=-1, kind="stable")                        # the largest-mass form: a read beside, never the request
+        o["top"][js], o["top_mass"][js], o["second"][js] = order[:, 0], fm[ix, order[:, 0]], fm[ix, order[:, 1]]
+        for jj, j in enumerate(js):
+            if rec[jj] >= 0:
+                o["dig"][j] = gr.digits(int(recs[int(rec[jj])]["addr"]))
+    return o
 
 
 @torch.no_grad()
@@ -1257,11 +1345,12 @@ def _req_lists(qt: dict, n_rows: int, dig: np.ndarray) -> list:
 
 
 @torch.no_grad()
-def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int | None = None, gates: bool = True) -> dict:
+def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int | None = None, gates: bool = True, looks=()) -> dict:
     """One read batch in the two-pass form (fp32). Pass 1 on each row the sources read (every question at the null anchor): the index
     the core writes, and the head's scores at each index entry's SEP. Then one forward per (row, stream) the sources need, the source's
     own address in its questions' streams: the states at the answer positions (and after block `site`), the bare logits there, the head
-    at the questions' SEPs. gates: the T row with the true address too (G2, G0, the solo and scan reads). -> the context."""
+    at the questions' SEPs. gates: the T row with the true address too (G2, G0, the solo and scan reads). looks (0.1.80): look streams to
+    read in pass 1 beside the sources' own (no view of their own). -> the context."""
     dev = core.dev
     metas = [m for _, m in rows]
     qt = question_table(metas, owned)
@@ -1276,10 +1365,22 @@ def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int |
         fr, passes, conv = free_rows(core, rows)
         xs["F"] = to_x(fr, dev)
         out.update(free=fr, passes=passes, converged=conv)
+    need = sorted(({FIND_SOURCES[s][1] for s in srcs} | set(looks)) & set(LOOK_STREAMS)) if core.look is not None else []   # 0.1.80
+    asked = np.array([q["rec"] for m in metas for q in m["questions"]], dtype=np.int64)                         # the asked records
+    out["look"] = {}
     for rk, x in xs.items():                                               # PASS 1: every question at the null anchor
         core.set_streams(metas, "null")
+        mine = [sn for sn in need if LOOK_STREAMS[sn][0] == rk]
+        if mine:
+            core.look_cap.on = True                                        # the look head's q and k of this forward (nothing else)
         h = core.trunk(x[:, :-1])
         core.clear()
+        if mine:
+            core.look_cap.on = False
+            for sn in mine:                                                # at the asked key's index entry's SEP, or the question's own
+                at = qt["ipos"][:, 0] if LOOK_STREAMS[sn][1] == "index" else qt["pos"][:, 0]
+                out["look"][sn] = look_of(core.look_cap, metas, qt["row"], at, asked)
+            core.look_cap.clear()
         pred = torch.stack([core.readout(h[rq, ip[:, i]]).argmax(-1) for i in range(ip.shape[1])], 1)  # the entry's address bytes
         out["p1"][rk] = dict(written=gr.decode_written(pred.cpu().numpy(), ip.shape[1]),
                              s_e=core.head_scores(h[rq, ip[:, 0]]) if core.head is not None else None)  # the head at the SEP
@@ -1290,6 +1391,9 @@ def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int |
     if core.head is not None:
         for rk in xs:
             st["dec_i" if rk == "T" else "dec_if"] = np.array(gr.decode_scores(out["p1"][rk]["s_e"].cpu().numpy()), dtype=np.int64)
+    for sn, lk in out["look"].items():
+        st[sn] = lk["dig"]
+    out["asked"] = asked
     anchored = core.anchor is not None
     view_of = {s: (FIND_SOURCES[s][0], FIND_SOURCES[s][1] if anchored else "-") for s in srcs}
     if gates:
@@ -1409,6 +1513,50 @@ def _find_diag(ctx: dict, srcs, fac: dict, diag: dict, qo, o) -> None:
         if g.endswith("q999"):
             d["floor_owner_zero"] += int((pr[qo, o[qo]] == 0).sum())
             d["floor_wrong_pass"] += int((off > 0).any(-1).sum())
+        if sn in LOOK_STREAMS:                                             # 0.1.80: the look's own counts
+            _look_add(d.setdefault("look", _look_new()), ctx, sn)
+
+
+LOOK_COUNTS = ("questions", "no_request", "wrong_record", "right", "decoded_mass", "true_mass", "top_right", "split", "duplicate",
+               "wrong_same_ending")
+
+
+def _look_new() -> dict:
+    return {k: 0.0 for k in LOOK_COUNTS}
+
+
+def _look_add(acc: dict, ctx: dict, sn: str) -> None:
+    """0.1.80: one batch's look counts for stream sn: no request (no record above one half), a request naming a wrong record, right; the
+    decoded frame's mass (summed over the decoded), the asked record's mass; the largest-mass form right; the split looks (the second
+    frame holding at least half the first's); the duplicate looks (a record decoded for two questions of one row); the wrong requests
+    whose record's key shares the asked key's last two characters (the key's two-digit ending)."""
+    lk, asked, metas, row = ctx["look"][sn], ctx["asked"], ctx["metas"], ctx["qt"]["row"]
+    rec = lk["rec"]
+    wrong = (rec >= 0) & (rec != asked)
+    acc["questions"] += len(rec)
+    acc["no_request"] += int((rec < 0).sum())
+    acc["wrong_record"] += int(wrong.sum())
+    acc["right"] += int((rec == asked).sum())
+    acc["decoded_mass"] += float(lk["mass"].sum())
+    acc["true_mass"] += float(lk["true_mass"].sum())
+    acc["top_right"] += int((lk["top"] == asked).sum())
+    acc["split"] += int((lk["second"] >= 0.5 * lk["top_mass"]).sum())
+    for j in np.unique(row):
+        rj = rec[(row == j) & (rec >= 0)]
+        _, cnt = np.unique(rj, return_counts=True)
+        acc["duplicate"] += int(cnt[cnt > 1].sum())
+    for j in np.nonzero(wrong)[0]:
+        rs_ = metas[int(row[j])]["recs"]
+        acc["wrong_same_ending"] += int(rs_[int(rec[j])]["key"][-2:] == rs_[int(asked[j])]["key"][-2:])
+
+
+def _look_out(acc: dict) -> dict:
+    n = max(1.0, acc["questions"])
+    dec = max(1.0, acc["questions"] - acc["no_request"])
+    return dict(questions=int(acc["questions"]), right=acc["right"] / n, no_request=acc["no_request"] / n, wrong_record=acc["wrong_record"] / n,
+                decoded_mass_mean=acc["decoded_mass"] / dec, true_mass_mean=acc["true_mass"] / n, largest_mass_form_right=acc["top_right"] / n,
+                split=acc["split"] / n, duplicate=acc["duplicate"] / n,
+                wrong_same_ending=acc["wrong_same_ending"] / max(1.0, acc["wrong_record"]), wrong_records=int(acc["wrong_record"]))
 
 
 def _find_diag_out(diag: dict, srcs) -> dict:
@@ -1431,6 +1579,8 @@ def _find_diag_out(diag: dict, srcs) -> dict:
             r["mean_truth_score"], r["mean_largest_wrong_score"] = d["truth"] / nq, d["wrong_max"] / nq
         if g.endswith("q999"):
             r["floor"] = dict(owners_floored_to_0=d["floor_owner_zero"] / no, questions_passing_a_wrong_member=d["floor_wrong_pass"] / nq)
+        if "look" in d:
+            r["look"] = _look_out(d["look"])
         out["sources"][s] = r
     return out
 
@@ -1830,14 +1980,16 @@ def _rm(path: str) -> None:
 
 def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_path: str, last_steps: int = 16000,
              mid_steps: int = 32000, read_batches: int = 64, calib_batches: int = 32, dev: str = "cuda", log=print,
-             shipper: Shipper | None = None, hub_dir: str = "bed/scale_members", quick: bool = False, forms=("scale",)) -> dict:
+             shipper: Shipper | None = None, hub_dir: str = "bed/scale_members", quick: bool = False, forms=("scale",),
+             look="ptr") -> dict:
     """One grid core's members, resume-first: the last site (48 real arms + 48 toy members, `last_steps`), its read and the text bits;
     the mid site (16 real arms, `mid_steps` batch steps), its read. Writes <out_dir>/<core tag>_members/ (the stacks as safetensors, the
     records as JSON, a done mark) and ships it when a shipper is given. quick: the CPU dry run (the mid read at U 5, two text documents).
     forms (0.1.72): the reads to take - "scale" (the form above: last.json, mid.json) and / or "find" (the two-pass form: last_find.json,
-    mid_find.json, beside the same stacks); the members train once whatever the forms."""
+    mid_find.json, beside the same stacks); the members train once whatever the forms. look (0.1.80): Core's look head (the find form's
+    look sources on a core with one; None = 0.1.79's sources)."""
     assert forms and set(forms) <= {"scale", "find"}, forms
-    core = Core(core_folder, dev)
+    core = Core(core_folder, dev, look=look)
     name = f"{core.tag}_members_l{last_steps}_m{mid_steps}"
     od = os.path.join(out_dir, name)
     os.makedirs(od, exist_ok=True)
@@ -1855,6 +2007,8 @@ def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_pa
     t0 = time.time()
     meta = dict(core=core.tag, seed=seed, owned=owned, never=never, arm_spec=ARM_SPEC, amoe=AMOE_PIN, toy_hidden=TOY_HID,
                 codes="SCALE|code|<i>: a crc-seeded derangement of a-z", betas=list(BETAS), eps=EPS, lr=LR, warm=WARM)
+    if core.look is not None:
+        meta["look"] = dict(block=core.look[0], head=core.look[1], thr=LOOK_THR)                 # 0.1.80: the look sources' head
     log(f"[members] {name}: core {core.tag} ({'anchored' if core.anchor is not None else 'house'} rotation, head "
         f"{'off' if core.head is None else 'at the questions and the index entries' if core.head_at == 'both' else 'at the questions'}); "
         f"last site {last_steps:,} steps, mid site {mid_steps:,} batch steps; read {len(read_rows)} rows, calibration {len(cal_rows)} rows; "
@@ -1965,17 +2119,18 @@ def _continuity(stored: dict, new: dict) -> dict:
 
 
 def read0(core_folder: str, members_folder: str, out_path: str, seed: int, heldout_path: str, last_steps: int = 16000,
-          read_batches: int = 64, calib_batches: int = 32, dev: str = "cuda", log=print, forms=("scale", "find")) -> dict:
+          read_batches: int = 64, calib_batches: int = 32, dev: str = "cuda", log=print, forms=("scale", "find"), look="ptr") -> dict:
     """READ 0: a stored grid core and its stored last-site stacks (48 real arms, 48 toy members), read with no training. "scale": the
     scale test's form again (its stored cells re-read: the continuity check against the members folder's last.json); "find": the
-    two-pass form (the free-running index, the head's sources). One record at out_path, resume-first (an existing record is returned)."""
+    two-pass form (the free-running index, the head's sources; 0.1.80: the look's on a core with a look head, and the continuity check
+    against the folder's last_find.json). One record at out_path, resume-first (an existing record is returned)."""
     if os.path.exists(out_path):
         log(f"[read 0] {os.path.basename(out_path)}: done before")
         return json.load(open(out_path, encoding="utf-8"))
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     t0 = time.time()
-    core = Core(core_folder, dev)
+    core = Core(core_folder, dev, look=look)
     owned, never = owned_sets()
     held = load_heldout(heldout_path)
     read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)
@@ -1985,8 +2140,11 @@ def read0(core_folder: str, members_folder: str, out_path: str, seed: int, heldo
     rec = dict(core=core.tag, members=os.path.basename(os.path.normpath(members_folder)), seed=seed, head_at=core.head_at,
                rotation="anchored" if core.anchor is not None else "house", head=core.head is not None, rows=len(read_rows),
                calib_rows=len(cal_rows), forms=list(forms))
+    if core.look is not None:
+        rec["look"] = dict(block=core.look[0], head=core.look[1], thr=LOOK_THR)                  # 0.1.80
     log(f"[read 0] {core.tag}: {rec['rotation']} rotation, head {'on' if rec['head'] else 'off'}; {len(read_rows)} read rows, "
-        f"{len(cal_rows)} calibration rows; forms {list(forms)}")
+        f"{len(cal_rows)} calibration rows; forms {list(forms)}"
+        + (f"; the look at block {core.look[0]} head {core.look[1]}" if core.look is not None else ""))
     if "scale" in forms:
         cal = calibrate(core, cal_rows, owned)
         rd = read_last(core, stacks, read_rows, cal, owned, never, seed, log=log)
@@ -2001,12 +2159,95 @@ def read0(core_folder: str, members_folder: str, out_path: str, seed: int, heldo
         calf = calibrate_find(core, cal_rows, owned, srcs)
         rdf = read_last_find(core, stacks, read_rows, calf, owned, never, seed, srcs=srcs, log=log)
         rec["find"] = rdf
+        fp = os.path.join(members_folder, "last_find.json")
+        if os.path.exists(fp):                                              # 0.1.80: the stored two-pass read's cells re-read
+            rec["continuity_find"] = _continuity(json.load(open(fp, encoding="utf-8"))["read"], rdf)
+            log(f"[read 0] the find form against the stored read: {rec['continuity_find']}")
         _log_last_find(rdf, None, log)
     rec["wall_s"] = time.time() - t0
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
     log(f"[read 0] wrote {out_path} ({rec['wall_s'] / 60:.1f} min)")
     return rec
+
+
+LOOK_VIEWS = ("LAYOUT", "INDEXF", "LOOKF", "LOOKQF")      # 0.1.80: the look read's views (the answers through each source's address)
+LOOK_REQS = ("INDEX", "INDEXF", "LOOK", "LOOKF", "LOOKQF")  # its requests (pass 1 alone for INDEX and LOOK)
+
+
+@torch.no_grad()
+def look_read(core_folder: str, out_path: str, seed: int, heldout_path: str, look="ptr", read_batches: int = 64, hard_batches: int = 16,
+              dev: str = "cuda", log=print) -> dict:
+    """0.1.80, THE LOOK READ (no members): the core's read rows (the members' own: gauge_rows "read" on the held-out documents) and its
+    key-hard rows (gauge_rows "hard", hard=True), every question at the null anchor in pass 1: per request source its address right
+    (the asked record's), the share with no request and the share naming a wrong record; the answers whole through the views of
+    LAYOUT, INDEXF, LOOKF and LOOKQF (the bare core with that source's address in the questions' streams); each look stream's counts
+    (_look_out); the free-running fixed point. look: Core's look head ("ptr" or a (block, head) pair). One record at out_path,
+    resume-first (an existing record is returned)."""
+    if os.path.exists(out_path):
+        log(f"[look] {os.path.basename(out_path)}: done before")
+        return json.load(open(out_path, encoding="utf-8"))
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    t0 = time.time()
+    core = Core(core_folder, dev, look=look)
+    assert core.look is not None, "the look read needs a look head: the core's pointer term (scale.json's ptr) or a given (block, head)"
+    assert core.anchor is not None, "the look sources put their address in the anchored core's streams"
+    owned, _ = owned_sets()
+    held = load_heldout(heldout_path)
+    sets = {"read": gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)}
+    if hard_batches:
+        sets["hard"] = gauge_rows(seed, "hard", hard_batches * ROWS_LAST, held, abytes=core.abytes, hard=True)
+    rec = dict(core=core.tag, seed=seed, version=_PKG_VERSION, look=dict(block=core.look[0], head=core.look[1], thr=LOOK_THR,
+               from_ptr=look == "ptr"), sets={k: len(v) for k, v in sets.items()}, views=list(LOOK_VIEWS), requests=list(LOOK_REQS))
+    n_all = sum(len(v) for v in sets.values())
+    done_rows = 0
+    log(f"[look] {core.tag}: block {core.look[0]} head {core.look[1]} ({'its pointer term' if look == 'ptr' else 'given'}); "
+        + ", ".join(f"{k} {len(v)} rows" for k, v in sets.items()))
+    for name, rows in sets.items():
+        req = {s: dict(right=0, null=0) for s in LOOK_REQS}
+        ans = {s: 0 for s in LOOK_VIEWS}
+        lk = {sn: _look_new() for sn in LOOK_STREAMS}
+        nq, passes, conv = 0, [], []
+        swap_rng = np.random.default_rng([seed, gr.crc("SCALE|swap")])
+        for bi in range(0, len(rows), ROWS_LAST):
+            ctx = batch_views(core, rows[bi:bi + ROWS_LAST], owned, swap_rng, LOOK_VIEWS, gates=False, looks=("look_i",))
+            dig, st = ctx["qt"]["dig"], ctx["stream"]
+            nq += len(dig)
+            for s in LOOK_REQS:
+                sd = st[FIND_SOURCES[s][1]]
+                req[s]["right"] += int((sd == dig).all(-1).sum())
+                req[s]["null"] += int((sd == gr.NULL).any(-1).sum())
+            for s in LOOK_VIEWS:
+                v = ctx["views"][ctx["view_of"][s]]
+                ans[s] += int((v["lb"].argmax(-1) == v["raw"]).all(-1).sum())
+            for sn in LOOK_STREAMS:
+                _look_add(lk[sn], ctx, sn)
+            passes += list(ctx["passes"])
+            conv += [bool(c) for c in ctx["converged"]]
+            done_rows += len(ctx["metas"])
+            if (bi // ROWS_LAST + 1) % 16 == 0 or bi + ROWS_LAST >= len(rows):
+                el = time.time() - t0
+                log(f"[look] {name}: {min(len(rows), bi + ROWS_LAST)}/{len(rows)} rows ({done_rows}/{n_all} in all): {el:.0f}s spent, "
+                    f"~{el * (n_all - done_rows) / max(1, done_rows):.0f}s left")
+        n = max(1, nq)
+        rec[name] = dict(rows=len(rows), questions=nq,
+                         request={s: dict(right=r["right"] / n, no_request=r["null"] / n, wrong=1.0 - (r["right"] + r["null"]) / n)
+                                  for s, r in req.items()},
+                         answers={s: a / n for s, a in ans.items()},
+                         look={FIND_SOURCES_BY_STREAM[sn]: _look_out(a) for sn, a in lk.items()},
+                         free_running=dict(passes_mean=float(np.mean(passes)), passes_max=int(max(passes)), converged=float(np.mean(conv))))
+        r = rec[name]
+        log(f"[look] {name} ({nq} questions): requests right " + " ".join(f"{s} {x['right']:.4f}" for s, x in r["request"].items())
+            + "; no request " + " ".join(f"{s} {r['look'][s]['no_request']:.4f}" for s in SRC_LOOK)
+            + "; a wrong record " + " ".join(f"{s} {r['look'][s]['wrong_record']:.4f}" for s in SRC_LOOK)
+            + "; answers " + " ".join(f"{s} {x:.4f}" for s, x in r["answers"].items()))
+    rec["wall_s"] = time.time() - t0
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
+    log(f"[look] wrote {out_path} ({rec['wall_s'] / 60:.1f} min)")
+    return rec
+
 
 
 def _log_last(rd: dict, tb: dict, log=print) -> None:

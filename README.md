@@ -254,6 +254,25 @@ both) on six seeds, Alhena-P again on two new seeds, and the members on the firs
 `colab/nano_pointer2.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pointer2.ipynb)
 
+The readout tie (0.1.80). On the Alhena-P models the supervised head looks at the right record while the index the model writes is often
+wrong: other paths write it, and its second digit is often copied from a neighbouring record. `rotary_scale` reads the request off the
+look itself. In the read's first pass the designated head's own causal attention (its block's rotated q and k from the forward, captured by
+`pointer.HeadCapture`; the forward unchanged) is summed over each record's frame:
+
+    M(r) = sum_{n in frame(r)} softmax_{n' <= i}( q(i) . k(n') / sqrt(d_head) )_n,     request(i) = address(r) if M(r) > 1/2, else none
+
+Each record is judged by its own mass against one fixed number (at most one record can hold more than half), both digits come from that
+one record, and with no such record there is no request and every member abstains (the answer form of pointer networks, Vinyals et al.
+2015, arXiv 1506.03134, and of the attention-sum reader, read through an absolute threshold). Three request sources: `LOOK` (at the asked
+key's index entry, the row as composed), `LOOKF` (the same on the model's own free-running row), `LOOKQF` (at the question's own SEP).
+`rotary_scale.Core(look=...)` takes the head from the model's own pointer term (`"ptr"`: its scale.json), a given `(block, head)`, or none;
+with none every read is 0.1.79's bit for bit, and with the look on every 0.1.79 source's cells are unchanged. `look_read` reads the sources
+without members (each one's right, the share with no request and with a wrong record, the answers through each source's address, the
+split and duplicate looks) on the read rows and on key-hard rows; `read0` and `run_core` carry the look sources in the two-pass form. The
+look read on the stored Alhena-P, Alhena-P2 and (at the same head, as a control) Alhena-V models, Alhena-P seed 2's stored members read
+through it, and the members on up to five models whose look passes the rule, `colab/nano_readout.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_readout.ipynb)
+
 Then:
 
 ```bash

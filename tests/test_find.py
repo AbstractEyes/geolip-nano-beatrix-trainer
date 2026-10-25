@@ -113,7 +113,8 @@ def test_the_two_pass_sources_and_their_cells():
     assert len(rest) == 78                                               # 8 sources x U 5 / 8 / 10 x m 16 / 32 / 48, and G2 / G0 at three m
     for s, (row, stream, gate) in rs.FIND_SOURCES.items():
         assert row in ("T", "F") and gate in ("exact", "qhead", "qhead_q999", "ihead", "ihead_q999")
-        assert (row == "F") == (stream in ("indexf", "dec_if"))           # the free-running row's own index and the head read on it
+        assert (row == "F") == (stream in ("indexf", "dec_if", "look_if", "look_qf"))   # the free-running row's own index and the
+                                                                         # heads read on it (0.1.80: the look's two streams there)
 
     class _C:                                                            # a stand-in core: only what find_sources reads
         def __init__(self, head, at):
