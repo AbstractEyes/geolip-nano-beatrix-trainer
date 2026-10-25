@@ -69,6 +69,7 @@ try:
     from . import anchored_rope as ar
     from . import pointer as pt
     from . import key_code as kcm
+    from . import key_rotary as krm
     from . import __version__ as _PKG_VERSION
 except ImportError:                                      # run as a file: the folder on the path
     import sys
@@ -77,6 +78,7 @@ except ImportError:                                      # run as a file: the fo
     import anchored_rope as ar  # noqa: E402
     import pointer as pt  # noqa: E402
     import key_code as kcm  # noqa: E402
+    import key_rotary as krm  # noqa: E402
     _PKG_VERSION = "file"
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
 
@@ -413,9 +415,10 @@ class StackedAdam:
 
 
 # ------------------------------------------------------------------ the core
-def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch.Tensor | None = None) -> str:
-    """The core's state as one hash; extra (0.1.76: the value-path tables) and key_code (0.1.81: the key code's tables) join it when the
-    core carries them (a core without either hashes as before)."""
+def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch.Tensor | None = None,
+            key_rot: torch.Tensor | None = None) -> str:
+    """The core's state as one hash; extra (0.1.76: the value-path tables), key_code (0.1.81: the key code's tables) and key_rot (0.1.82:
+    the key rotation's phases) join it when the core carries them (a core without any hashes as before)."""
     h = hashlib.sha256()
     for k, v in sorted(model.state_dict().items()):
         h.update(k.encode())
@@ -426,13 +429,16 @@ def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch
     if key_code is not None:
         h.update(b"key_code")
         h.update(key_code.detach().cpu().contiguous().numpy().tobytes())
+    if key_rot is not None:
+        h.update(b"key_rot")
+        h.update(key_rot.detach().cpu().contiguous().numpy().tobytes())
     return h.hexdigest()
 
 
 class Core:
     """A trained grid core from its weights folder (config.json, model.safetensors, scale.json, addr_head.safetensors), frozen: the
-    anchored rotation patched in when scale.json names it, the value-path tables (0.1.76) and the key code (0.1.81) in the embedding when
-    the folder carries their files, the address head beside it. look (0.1.80): the head the look sources read -
+    anchored rotation patched in when scale.json names it, the value-path tables (0.1.76) and the key code (0.1.81) in the embedding and
+    the key rotation (0.1.82) in the told block when the folder carries their files, the address head beside it. look (0.1.80): the head the look sources read -
     "ptr" = the block and head the core's pointer term trained (scale.json's ptr; none on a core without the term), a (block, head) pair
     with the block numbered from 1 as the reads print it (the control on a core without the term), or None (no look sources)."""
 
@@ -481,6 +487,19 @@ class Core:
                 self.key_code.table.copy_(t.to(self.dev))         # the stored rows (the fixed form's: its seeded draw, as trained)
             self.key_code.table.requires_grad_(False)
             kcm.patch_key(self.model, self.key_code)
+        self.key_rot = None
+        rp = os.path.join(folder, "key_rot.safetensors")
+        assert os.path.exists(rp) == ("key_rot" in self.scale), "scale.json names the key rotation's phases exactly when their file is there"
+        if os.path.exists(rp):                                    # 0.1.82: the key in the told head's rotation, before the look's capture
+            kf = self.scale["key_rot"]
+            assert kf.get("pairs") == krm.J and kf.get("k") == kcm.K and kf.get("vocab") == kcm.VOCAB, kf
+            assert self.anchor is not None, "the key rotation turns pairs of the anchored rotation"
+            self.key_rot = krm.KeyRotary(int(kf["block"]), int(kf["head"])).to(self.dev)
+            t = load_file(rp)["table"]
+            assert tuple(t.shape) == tuple(self.key_rot.table.shape), (tuple(t.shape), tuple(self.key_rot.table.shape))
+            with torch.no_grad():
+                self.key_rot.table.copy_(t.to(self.dev))          # the stored phases (the seeded draw, as trained)
+            krm.patch(self.model, self.key_rot)
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")
         if os.path.exists(hp):
@@ -510,7 +529,8 @@ class Core:
         """The frozen core's state (the model's state dict, and the value-path tables and the key code's tables when it carries them) as
         one hash."""
         return _digest(self.model, None if self.value_addr is None else self.value_addr.table,
-                       None if self.key_code is None else self.key_code.table)
+                       None if self.key_code is None else self.key_code.table,
+                       None if self.key_rot is None else self.key_rot.table)
 
     def set_streams(self, metas: list, request=None) -> None:
         """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a
@@ -535,7 +555,9 @@ class Core:
         m = self.model
         if h is None:
             assert lo == 0
-            h = m.embed(x)
+            h = m.embed(x)                                # 0.1.82: the patched embedding sets the key rotation's phases from x
+        elif self.key_rot is not None:
+            self.key_rot.set(x)                           # 0.1.82: a forward from a given state reads the phases of the same rows
         cls = m._byte_cls_table[x] if getattr(m, "byte_table", False) else None
         for b in m.blocks[lo:hi]:
             h = b(h, byte_cls=cls)

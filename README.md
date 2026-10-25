@@ -305,6 +305,27 @@ seeds 1-6 each, every model read through its look as it lands, and the members o
 arXiv 2412.09871):
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keycode.ipynb)
 
+The key in the told head's rotation (0.1.82). An added code is a sum: two SEPs' codes agree in proportion to the places where their keys
+agree, so a record one character away still matches most of the asked key and the head has to learn the margin. `--key_rot=1` puts the
+key into the rotation of the head the pointer term trains (`--ptr_block`, `--ptr_head`), the way the anchored rotation carries a record's
+address on its anchor pairs (`key_rotary.py`): at each SEP the key code would code (the same rule), each of the head's eight pairs before
+the anchor levels turns by
+
+    phi_j(SEP) = sum_{k=1}^{n} P[j, k, x_{SEP-k}]   (mod 2 pi),     P fixed phases, uniform on [0, 2 pi)
+
+in place of its anchored angle, for the query and the key alike; between two SEPs those pairs then score
+sum_j Re[q_j conj(k_j) e^{i (phi_j(asking) - phi_j(record))}]: the same key turns every pair alike, one byte different anywhere turns
+every pair by an unrelated angle - a binding of the whole key (the angle addition of FHRR) rather than a sum of its parts. The phases are
+drawn once from a generator seeded `crc32("KEYROT|v1")` (8 x 9 x 256, no gradient, the same for every seed); nothing is added to any input
+and every other head, pair and position keeps the anchored angles. Off (the default) every run is 0.1.81's bit for bit; on, the name
+carries `_krt`, the phases ship beside the weights (`key_rot.safetensors`, `scale.json`'s `key_rot`), the record carries the told head's
+scores at the index entries by pair group (`grid.key_rot.use`), and `rotary_scale.Core` applies the rotation before the look's capture.
+The rotation on the key-hard pointer recipe and on the pointer recipe without the key-hard rows at 24,000 steps, seeds 1-6 each, every
+model read through its look as it lands, and the members on up to three models whose look passes the rule, `colab/nano_keyrot.ipynb`
+(prior art: rotary position embedding, Su et al. 2021, arXiv 2104.09864; binding as angle addition, Schlegel, Neubert and Protzel,
+A comparison of Vector Symbolic Architectures, arXiv 2001.11797):
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keyrot.ipynb)
+
 Then:
 
 ```bash
