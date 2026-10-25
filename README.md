@@ -273,6 +273,13 @@ look read on the stored Alhena-P, Alhena-P2 and (at the same head, as a control)
 through it, and the members on up to five models whose look passes the rule, `colab/nano_readout.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_readout.ipynb)
 
+The key-hard pointer screen (0.1.80 as is). The pointer term (0.1.78) trained on the key-hard rows (0.1.75): with `--grid_hard=0.5` on the
+Alhena-P recipe the last two of the batch's four grid rows carry 24 keys built from parts that recombine, so a match on any part of a key
+finds two to four records and only the whole key finds one, and the term reads every grid row's index entries, the hard rows' included.
+The request is read off the head's look (`rotary_scale.look_read`, above). Six such models and Alhena-P again on two new seeds, each read
+through its look as it lands, and the members on up to three models whose look passes the rule, `colab/nano_keypointer.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keypointer.ipynb)
+
 Then:
 
 ```bash
