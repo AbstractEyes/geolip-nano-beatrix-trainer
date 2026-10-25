@@ -280,6 +280,12 @@ The request is read off the head's look (`rotary_scale.look_read`, above). Six s
 through its look as it lands, and the members on up to three models whose look passes the rule, `colab/nano_keypointer.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keypointer.ipynb)
 
+The longer run (0.1.80 as is). The key-hard pointer recipe at `--steps=48000` (the cosine schedule over the longer run, nothing else
+changed) on the five seeds whose head stalled at 24,000 steps, Alhena-P at 48,000 steps on two of the same seeds (the length without the
+key-hard rows), and the key-hard pointer recipe at 24,000 steps on two new seeds (the replication), each read through its look as it lands,
+and the members on up to three 48,000-step models whose look passes the rule, `colab/nano_keypointer_long.ipynb`:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keypointer_long.ipynb)
+
 Then:
 
 ```bash
