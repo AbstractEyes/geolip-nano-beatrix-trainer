@@ -74,10 +74,12 @@ try:
     from . import grid_rows as gr  # noqa: E402  (the package; 0.1.70: the addressed grid rows)
     from . import anchored_rope as ar  # noqa: E402  (the package; 0.1.70: the anchored multi-position rotary)
     from . import pointer as pt  # noqa: E402  (the package; 0.1.78: the pointer term)
+    from . import key_code as kcm  # noqa: E402  (the package; 0.1.81: the key code at the end-marker)
 except ImportError:                                      # run as a file: the folder is on the path (above)
     import grid_rows as gr  # noqa: E402
     import anchored_rope as ar  # noqa: E402
     import pointer as pt  # noqa: E402
+    import key_code as kcm  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -217,6 +219,14 @@ assert PTR_POS in ("sep", "both") and ARGS.get("ptr_stop", "0") in ("0", "1"), (
 assert PTR_LAM > 0 or (PTR_POS == "sep" and not PTR_STOP), "--ptr_pos and --ptr_stop are forms of the pointer term (--ptr_lam > 0)"
 assert PTR_POS == "sep" or GRID_ABYTES == 2, "--ptr_pos=both reads the two-byte address (the second digit's position)"
 PTR_FORM = {**(dict(pos=PTR_POS) if PTR_POS != "sep" else {}), **(dict(stop=True) if PTR_STOP else {})}   # record fields: non-defaults only
+# 0.1.81: THE KEY CODE AT THE END-MARKER. --key_code=fixed|learned adds the whole key to the input at each SEP whose last CUE lies in the 10
+# positions before it, one table an offset back (key_code.py): e'_t = e_t + sum_{k=1}^{n(t)} T_k[x_{t-k}], n(t) the key's length (6-9
+# bytes on the bed's rows); fixed = N(0, 1) rows drawn once from a crc32-seeded generator (a buffer: no gradient, no draw from the run's
+# generators, the same rows for every seed); learned = tables born zero, trained with the core under the bed's pure Adam and clip. Off (the
+# default) = 0.1.80 bit for bit; the run's name carries _kcf or _kcl. The tables ship beside the weights (key_code.safetensors; scale.json's
+# key_code) and rotary_scale.Core applies them.
+KEY_CODE = ARGS.get("key_code", "")
+assert KEY_CODE in ("",) + kcm.FORMS, f"--key_code={KEY_CODE!r}: fixed or learned (absent: off)"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -237,6 +247,7 @@ assert HEAD_AT in ("question", "both") and (HEAD_AT == "question" or HEAD_FORM =
     f"--head_at={HEAD_AT!r}: question, or both (the index entries too) with --head=digit"
 assert PTR_LAM == 0 or (GRID == "ag" and HEAD_FORM == "digit"), \
     "--ptr_lam supervises a head at the grid rows' index entries (--grid=ag) beside the address head (--head=digit: one novelty gate pass)"
+assert not KEY_CODE or GRID == "ag", "--key_code is a form of the grid cores' input (--grid=ag: its tables ship beside the core)"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
 N_HARD = int(round(N_AG * GRID_HARD))                                        # 0.1.75: the batch's key-hard grid rows (its last ones)
 assert GRID_HARD == 0 or N_HARD > 0, f"--grid_hard={GRID_HARD} rounds to no key-hard row of the batch's {N_AG} grid rows"
@@ -245,6 +256,7 @@ if GRID:
     assert not PAIR and not GAUGE_ONLY and not INIT, "the grid cores train from birth, alone"
     assert not WD or not HEAD_FORM, "the address head trains under the bed's pure Adam (its parameters are outside the decay sets' model)"
     assert not WD or not VALUE_ADDR, "the value-path tables train under the bed's pure Adam (they are outside the decay sets' model)"
+    assert not WD or KEY_CODE != "learned", "the learned key code trains under the bed's pure Adam (it is outside the decay sets' model)"
 T0 = time.time()
 LN2 = math.log(2.0)
 BANDS = [(0, 128), (128, 256), (256, 512), (512, 100000)]
@@ -673,6 +685,16 @@ class Craft:
             log(f"the address on the value path: {ar.LEVELS} level tables x {ar.NULL} digits x {self.cfg.d_model} added to the input of every "
                 f"token inside the grid rows' compartments (key stream; null digits add nothing), born zero, "
                 f"{self.value_addr.table.numel():,} parameters under the same Adam and clip")
+        self.key_code = None                     # 0.1.81: the key code at the end-marker (--key_code=fixed|learned)
+        if KEY_CODE:                             # no draw from the run's generators: the fixed rows come from their own seeded generator
+            self.key_code = kcm.KeyCode(self.cfg.d_model, KEY_CODE).to(DEV)
+            kcm.patch_key(self.model, self.key_code)          # after the value-path tables: the embedding's output, then the code
+            if KEY_CODE == "learned":            # born zero: step 0's forward is the code-off craft's
+                self.params = self.params + [self.key_code.table]
+            log(f"the key code at the end-marker ({KEY_CODE}): {kcm.K} tables x {kcm.VOCAB} bytes x {self.cfg.d_model} added at each SEP "
+                f"whose CUE lies in the {kcm.K + 1} positions before it, the key's bytes one table an offset back; "
+                + (f"N(0, 1) rows seeded crc32({kcm.SEED_TAG!r}), no gradient" if KEY_CODE == "fixed" else
+                   f"born zero, {self.key_code.table.numel():,} parameters under the same Adam and clip"))
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
             assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
@@ -1686,6 +1708,16 @@ def finish(c: Craft) -> tuple:
             _v = grid_block["value_addr"]
             log(f"the value-path tables: norm by level {' / '.join(f'{x:.4f}' for x in _v['norm'])}; by digit (level 1) "
                 + " ".join(f"{x:.3f}" for x in _v["row_norm"][0]) + "; (level 2) " + " ".join(f"{x:.3f}" for x in _v["row_norm"][1]))
+        if c.key_code is not None:              # 0.1.81: the key code: its form, its tables' reach by offset, its share of the SEPs' input
+            _rd = ag_set("read")[:MB]            # the end read's first batch of grid rows (records, index entries, questions)
+            _x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r, _ in _rd]).astype(np.int64), device=DEV)[:, :-1]
+            set_streams(c, grid_aux([m for _, m in _rd], 0))
+            grid_block["key_code"] = dict(kcm.record(c.key_code), share=kcm.share_read(c.model, c.key_code, _x))
+            set_streams(c, None)
+            _k = grid_block["key_code"]
+            log(f"the key code ({_k['form']}): the tables' norm by offset {' / '.join(f'{x:.3f}' for x in _k['norm'])}; at the read rows' "
+                f"{_k['share']['seps']} coded SEPs (keys {_k['share']['key_len']:.2f} bytes) the code's norm {_k['share']['code_norm']:.3f}, "
+                f"the input's {_k['share']['input_norm']:.3f} (without the code {_k['share']['plain_norm']:.3f}), the share {_k['share']['share']:.4f}")
         if c.ptr is not None:                   # 0.1.78: the pointer term: its form, gate, descent and the head's mass on the read rows
             pc = c.ptr_curve
             p0, plast = (pc[0], float(np.mean(pc[-50:]))) if pc else (None, None)
@@ -1743,6 +1775,9 @@ def finish(c: Craft) -> tuple:
             if c.value_addr is not None:         # 0.1.76: the value-path tables beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.value_addr.table.detach().cpu().contiguous()}, os.path.join(wdir, "value_addr.safetensors"))
                 _sj["value_addr"] = dict(levels=ar.LEVELS, digits=ar.NULL, d=c.cfg.d_model)
+            if c.key_code is not None:           # 0.1.81: the key code's tables beside the craft (rotary_scale.Core applies them)
+                save_file({"table": c.key_code.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_code.safetensors"))
+                _sj["key_code"] = dict(form=KEY_CODE, k=kcm.K, vocab=kcm.VOCAB, d=c.cfg.d_model)
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
                 _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)

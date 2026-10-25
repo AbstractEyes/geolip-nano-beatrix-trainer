@@ -286,6 +286,25 @@ key-hard rows), and the key-hard pointer recipe at 24,000 steps on two new seeds
 and the members on up to three 48,000-step models whose look passes the rule, `colab/nano_keypointer_long.ipynb`:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keypointer_long.ipynb)
 
+The key code at the end-marker (0.1.81). The byte-trigram input gives each position its own byte and the two before it, so the SEP
+after a key carries only the key's last two bytes, on the record's side and on the index entry's side alike; on the key-hard rows four
+records share them, and a head comparing one SEP with another finds four equal matches. `--key_code=fixed|learned` adds the whole key
+at each SEP whose CUE lies in the 10 positions before it (`key_code.py`), one table for each distance back:
+
+    e'(SEP) = e(SEP) + sum_{k=1}^{n} T_k[x_{SEP-k}],     n = the key's length (6 to 9 bytes on the bed's rows)
+
+so the inner product of two SEPs' codes adds over the places where their keys' bytes agree. `fixed`: the rows are N(0, 1), the byte
+tables' own initial scale, drawn once from a generator seeded `crc32("KEYCODE|v1")` and never trained (the same rows for every seed);
+`learned`: the tables are born zero and trained with the model (589,824 parameters). The code reads only the bytes between a CUE and its
+SEP (the key), never a value or an address; every other position, and a SEP with no CUE in reach (the rows' heads), is unchanged. Off (the
+default) every run is 0.1.80's bit for bit; on, the name carries `_kcf` or `_kcl`, the tables ship beside the weights
+(`key_code.safetensors`, `scale.json`'s `key_code`), the record carries the tables' norm by distance and the code's share of the SEPs'
+input, and `rotary_scale.Core` applies the code after the value-path tables. Both forms on the key-hard pointer recipe at 24,000 steps,
+seeds 1-6 each, every model read through its look as it lands, and the members on up to three models whose look passes the rule,
+`colab/nano_keycode.ipynb` (prior art: the hashed byte n-gram embeddings of the Byte Latent Transformer, Pagnoni et al. 2024,
+arXiv 2412.09871):
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keycode.ipynb)
+
 Then:
 
 ```bash

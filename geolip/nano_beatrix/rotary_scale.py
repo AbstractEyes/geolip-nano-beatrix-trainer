@@ -68,6 +68,7 @@ try:
     from . import grid_rows as gr
     from . import anchored_rope as ar
     from . import pointer as pt
+    from . import key_code as kcm
     from . import __version__ as _PKG_VERSION
 except ImportError:                                      # run as a file: the folder on the path
     import sys
@@ -75,6 +76,7 @@ except ImportError:                                      # run as a file: the fo
     import grid_rows as gr  # noqa: E402
     import anchored_rope as ar  # noqa: E402
     import pointer as pt  # noqa: E402
+    import key_code as kcm  # noqa: E402
     _PKG_VERSION = "file"
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
 
@@ -411,8 +413,9 @@ class StackedAdam:
 
 
 # ------------------------------------------------------------------ the core
-def _digest(model: nn.Module, extra: torch.Tensor | None = None) -> str:
-    """The core's state as one hash; extra (0.1.76: the value-path tables) joins it when the core carries them."""
+def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch.Tensor | None = None) -> str:
+    """The core's state as one hash; extra (0.1.76: the value-path tables) and key_code (0.1.81: the key code's tables) join it when the
+    core carries them (a core without either hashes as before)."""
     h = hashlib.sha256()
     for k, v in sorted(model.state_dict().items()):
         h.update(k.encode())
@@ -420,12 +423,16 @@ def _digest(model: nn.Module, extra: torch.Tensor | None = None) -> str:
     if extra is not None:
         h.update(b"value_addr")
         h.update(extra.detach().cpu().contiguous().numpy().tobytes())
+    if key_code is not None:
+        h.update(b"key_code")
+        h.update(key_code.detach().cpu().contiguous().numpy().tobytes())
     return h.hexdigest()
 
 
 class Core:
     """A trained grid core from its weights folder (config.json, model.safetensors, scale.json, addr_head.safetensors), frozen: the
-    anchored rotation patched in when scale.json names it, the address head beside it. look (0.1.80): the head the look sources read -
+    anchored rotation patched in when scale.json names it, the value-path tables (0.1.76) and the key code (0.1.81) in the embedding when
+    the folder carries their files, the address head beside it. look (0.1.80): the head the look sources read -
     "ptr" = the block and head the core's pointer term trained (scale.json's ptr; none on a core without the term), a (block, head) pair
     with the block numbered from 1 as the reads print it (the control on a core without the term), or None (no look sources)."""
 
@@ -461,6 +468,19 @@ class Core:
             self.value_addr.table.data.copy_(load_file(vp)["table"].to(self.dev))
             self.value_addr.table.requires_grad_(False)
             ar.patch_value(self.model, self.value_addr)
+        self.key_code = None
+        kp = os.path.join(folder, "key_code.safetensors")
+        assert os.path.exists(kp) == ("key_code" in self.scale), "scale.json names the key code's tables exactly when their file is there"
+        if os.path.exists(kp):                                    # 0.1.81: the key code at the end-marker, after the value-path tables
+            kf = self.scale["key_code"]
+            assert kf.get("k") == kcm.K and kf.get("vocab") == kcm.VOCAB and kf.get("d") == self.cfg.d_model, kf
+            self.key_code = kcm.KeyCode(self.cfg.d_model, kf["form"]).to(self.dev)
+            t = load_file(kp)["table"]
+            assert tuple(t.shape) == tuple(self.key_code.table.shape), (tuple(t.shape), tuple(self.key_code.table.shape))
+            with torch.no_grad():
+                self.key_code.table.copy_(t.to(self.dev))         # the stored rows (the fixed form's: its seeded draw, as trained)
+            self.key_code.table.requires_grad_(False)
+            kcm.patch_key(self.model, self.key_code)
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")
         if os.path.exists(hp):
@@ -487,8 +507,10 @@ class Core:
             self.look_cap.on = False                                       # on in pass 1 only (batch_views)
 
     def state_digest(self) -> str:
-        """The frozen core's state (the model's state dict, and the value-path tables when it carries them) as one hash."""
-        return _digest(self.model, None if self.value_addr is None else self.value_addr.table)
+        """The frozen core's state (the model's state dict, and the value-path tables and the key code's tables when it carries them) as
+        one hash."""
+        return _digest(self.model, None if self.value_addr is None else self.value_addr.table,
+                       None if self.key_code is None else self.key_code.table)
 
     def set_streams(self, metas: list, request=None) -> None:
         """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a

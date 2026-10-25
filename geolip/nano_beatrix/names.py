@@ -71,7 +71,8 @@ def run_tag(args: dict) -> str:
     # 0.1.75: the key-hard share of the grid rows ("_kh50" for .5; none names nothing)
     # 0.1.76: the value-path address ("_va1"; off names nothing)
     # 0.1.78: the pointer term, its weight, block and head ("_pt10b4h0" for lambda .1 on block 4's head 0; off names nothing)
-    scale = ((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
+    # 0.1.81: the key code at the end-marker ("_kcf" fixed, "_kcl" learned; off names nothing)
+    scale =((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
              + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
              + (f"_cp{int(args['rotary_content'])}" if int(args.get("rotary_content", "2")) != 2 else "")
              + (f"_ab{int(args['grid_abytes'])}" if int(args.get("grid_abytes", "2")) != 2 else "")
@@ -80,6 +81,7 @@ def run_tag(args: dict) -> str:
              + (f"_pt{int(round(float(args['ptr_lam']) * 100))}b{int(args.get('ptr_block', '4'))}h{int(args.get('ptr_head', '0'))}"
                 + ("p2" if args.get("ptr_pos", "sep") == "both" else "") + ("sg" if args.get("ptr_stop", "0") == "1" else "")
                 if float(args.get("ptr_lam", "0")) > 0 else "")
+             + ({"fixed": "_kcf", "learned": "_kcl"}[args["key_code"]] if args.get("key_code") else "")
              + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
              + (f"i{float(args.get('head_lam_i', '1.0')):g}" if args.get("head") and args.get("head_at", "question") == "both" else "")
              + (f"_{args['series']}" if args.get("series") else ""))
