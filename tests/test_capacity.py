@@ -3,7 +3,10 @@
 phases its SEP takes inside a row; the bank's keys are distinct, outside the excluded set and coded at the reach in both key forms; a
 planted head whose eight pairs align only for the true key reproduces the moment's mean (the annealed average) within its Monte Carlo error
 while the typical value (the median) sits below it; on a saved core the read's capture through the told block equals the full forward's
-look capture bit for bit, and the record carries its fields and its run parameters in its name. CPU only; the Hub is never touched."""
+look capture bit for bit, and the record carries its fields and its run parameters in its name. THE TAIL READ (0.1.86): a pair's
+length is one after unit_pairs and its angle kept; tail_conditions' three leaks (base, the competitors' lengths set to the true
+record's, the true score set to the median) equal the sums written out by hand; on the saved core the tail's base equals the read's
+EMULATED bit for bit, its bands count its look errors and its strongest competitors are classed. CPU only; the Hub is never touched."""
 import json
 import math
 
@@ -92,7 +95,8 @@ def test_a_planted_head_meets_the_moment():
     assert np.median(W[:, 0]) < 0.5 * want                                # the typical sum far below the annealed one
 
 
-def test_the_read_on_a_saved_core(tmp_path):
+def _saved_core(tmp_path):
+    """A crafted core with the value address and the key rotation (the long keys, reach 12) at 48 records a row, saved as a stored core."""
     m, st = _craft(n_ctx=gr.CTX, seed=3)
     va = ar.ValueAddress(m.cfg.d_model, st)
     with torch.no_grad():
@@ -108,6 +112,11 @@ def test_the_read_on_a_saved_core(tmp_path):
     sj["key_rot"] = dict(pairs=kr.J, k=12, vocab=kc.VOCAB, block=BLOCK, head=HEAD, seed_tag=kr.seed_tag(12))
     sj["ptr"] = dict(lam=0.1, block=BLOCK, head=HEAD)
     json.dump(sj, open(d / "scale.json", "w", encoding="utf-8"), indent=1)
+    return d
+
+
+def test_the_read_on_a_saved_core(tmp_path):
+    d = _saved_core(tmp_path)
     core = rs.Core(str(d), "cpu")
     held = [SRC[1:]]
     rows = cp.read_rows(core, held, 4)
@@ -135,3 +144,67 @@ def test_the_read_on_a_saved_core(tmp_path):
     out = cp.run(str(d), held, str(tmp_path / "out"), R=4, ns=(10,), draws=1, bank_n=10, log=None)
     again = cp.run(str(d), held, str(tmp_path / "out"), R=4, ns=(10,), draws=1, bank_n=10, log=None)
     assert out == again                                                   # resume-first: the record is read back
+
+
+def test_pair_lengths_and_unit_pairs():
+    g = torch.Generator().manual_seed(5)
+    v = torch.randn(7, 2 * cp.J, generator=g)
+    v[0, 0] = v[0, cp.J] = 0.0                                            # a zero pair stays zero
+    n = cp.pair_norms(cp.unit_pairs(v))
+    assert n[0, 0] == 0.0
+    n[0, 0] = 1.0
+    assert torch.allclose(n, torch.ones_like(n), atol=1e-6)
+    ang = lambda x: torch.atan2(x[..., cp.J:], x[..., :cp.J])   # noqa: E731
+    assert torch.allclose(ang(cp.unit_pairs(v))[1:], ang(v)[1:], atol=1e-6)                   # the angles kept
+    turned = cp.turn(v, torch.rand(7, cp.J, generator=g) * 6.28)
+    assert torch.allclose(cp.pair_norms(turned), cp.pair_norms(v), atol=1e-5)                  # a turn keeps every pair's length
+
+
+def test_the_tail_conditions_by_hand():
+    g = torch.Generator().manual_seed(7)
+    q, t, bank = (torch.randn(r, 2 * cp.J, generator=g) for r in (6, 6, 50))
+    sc = 1.0 / math.sqrt(2 * ar.PAIRS)
+    st = (q * t).sum(-1) * sc
+    c = cp.tail_conditions(q, t, st, bank, (10, 50))
+    qd, td, bd = q.double(), t.double(), bank.double()
+    tl = torch.sqrt(td[:, :cp.J] ** 2 + td[:, cp.J:] ** 2)
+    bl = torch.sqrt(bd[:, :cp.J] ** 2 + bd[:, cp.J:] ** 2)
+    med = float(np.median(st.numpy()))
+    for m in range(6):
+        for j, n in enumerate((10, 50)):
+            s_base = [float((qd[m] * bd[k]).sum()) * sc for k in range(n)]
+            s_m = [sc * sum(float(tl[m, p] * (qd[m, p] * bd[k, p] + qd[m, cp.J + p] * bd[k, cp.J + p]) / bl[k, p]) for p in range(cp.J))
+                   for k in range(n)]
+            want = {"base": sum(math.exp(s - float(st[m])) for s in s_base), "M": sum(math.exp(s - float(st[m])) for s in s_m),
+                    "E": sum(math.exp(s - med) for s in s_base)}
+            for name, w in want.items():
+                assert abs(c[name][0][m, j] - w) <= 1e-4 * w + 1e-12, (name, m, n, c[name][0][m, j], w)
+
+
+def test_the_tail_on_a_saved_core(tmp_path):
+    d = _saved_core(tmp_path)
+    held = [SRC[1:]]
+    ns = (30, 100, 300)
+    rec = cp.read_core(str(d), held, R=4, ns=ns, draws=1, log=None)                 # its bank: max(ns) vectors, as the tail's
+    tl = cp.tail_core(str(d), held, R=4, ns=ns, log=None)
+    for n in ns:
+        a, b = rec["emulated"][str(n)], tl["base"][str(n)]
+        for f in ("mean", "median", "p99", "max", "look_error", "argmax_error", "entries", "moment"):
+            assert a[f] == b[f], (n, f)                                          # the base is the read's EMULATED, bit for bit
+    for f in ("core", "version", "rows", "layout", "key_form", "entries", "pool", "bank", "ns", "s_core", "true_score_median", "base", "M",
+              "E", "pool_length_ratio", "true_pair_length", "top_competitor", "wall"):
+        assert f in tl, f
+    assert tl["s_core"] == rec["s_core"] and (tl["pool"], tl["entries"], tl["bank"]) == (4 * 72, 96, 300)
+    pr = tl["pool_length_ratio"]
+    assert (pr["all"]["n"], pr["records"]["n"], pr["entries"]["n"]) == (288, 192, 96)
+    for name in ("base", "M", "E"):
+        for n in ns:
+            v = tl[name][str(n)]
+            k = round(v["look_error"] * 96)
+            assert sum(v["look_by_margin_pct"].values()) == k == sum(v["look_by_true_pct"].values()), (name, n)
+    top = tl["top_competitor"]
+    assert sum(top["source"].values()) == top["n"] == round(tl["base"]["300"]["look_error"] * 96)
+    assert abs(sum(top["bank_share"].values()) - 1.0) < 1e-9
+    assert cp.tail_name("abc", 192, 1) == "abc_captail_r192_s1.json"
+    out = cp.run_tail(str(d), held, str(tmp_path / "out"), R=4, ns=(30,), log=None)
+    assert out == cp.run_tail(str(d), held, str(tmp_path / "out"), R=4, ns=(30,), log=None)   # resume-first

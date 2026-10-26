@@ -28,7 +28,14 @@ typical leak (the median) sits far under it. EMULATED keys: the core's own form 
 keys: a cue word + six digits, 16,000,000), otherwise the form's shape with the word drawn as random lowercase letters of a cue word's
 length (the standard keys: a cue word + three digits, 16,000 in all); every byte at every distance has its fixed phase, so the shape keeps
 the SEP coded and the phase differences of distinct keys uniform, and the content is always a real record's. CPU or card; deterministic
-for a given core, held-out text, R and seed."""
+for a given core, held-out text, R and seed.
+
+THE TAIL READ (0.1.86, tail_core): where the look error's tail comes from. The pair score is |q_j| |k_j| cos(the phase difference) /
+sqrt(hd) and the moment models the phases only, so two length tails can carry the look error: the competitors' (pooled pairs longer
+than the true record's) and the entries' (true scores low in the margin's spread). On the same rows and bank as the read, the EMULATED
+leak is computed three ways on the same competitors - as read (base); with every competitor's pair lengths set to its entry's true
+record's, its angles kept (M); with every entry's true score set to the core's median true score (E) - beside the look errors' entries
+by their margin's percentile and the pooled pairs' lengths against the true records'."""
 from __future__ import annotations
 
 import json
@@ -303,6 +310,159 @@ def run(folder: str, held: list, out_dir: str, R: int = 192, seed: int = 1, log=
             log(f"[capacity] {tag[:40]}: done before")
         return json.load(open(path, encoding="utf-8"))
     rec = read_core(folder, held, R=R, seed=seed, log=log, **kw)
+    os.makedirs(out_dir, exist_ok=True)
+    tmp = path + ".tmp"
+    json.dump(rec, open(tmp, "w", encoding="utf-8"), indent=1)
+    os.replace(tmp, path)
+    return rec
+
+
+# ---- THE TAIL READ (0.1.86) ----
+TAIL_NS = (1000, 4096, 10000, 100000, 1000000)          # 4,096 = a window's worth of keyed end-markers
+BANDS = ((0.0, 1.0), (1.0, 10.0), (10.0, 50.0), (50.0, 100.0))   # percentile bands (of the entries' margin, of their true score)
+SOURCES = ("own record", "a record of its row", "another row's record", "an index entry")
+
+
+def pair_norms(v: torch.Tensor) -> torch.Tensor:
+    """The J pairs' lengths (..., J) of key dims (..., 2 J) in the head's rotate-half order."""
+    return torch.sqrt(v[..., :J] ** 2 + v[..., J:] ** 2)
+
+
+def unit_pairs(v: torch.Tensor) -> torch.Tensor:
+    """Every pair of the key dims scaled to length one, its angle kept (a zero pair stays zero)."""
+    m = pair_norms(v)
+    m2 = torch.cat([m, m], dim=-1)
+    return torch.where(m2 > 0, v / m2.clamp_min(1e-30), torch.zeros_like(v))
+
+
+def bank_of(core: rs.Core, cap: dict, seed: int, nb: int) -> tuple:
+    """The EMULATED bank as read_core draws it (the same generator, the same order of draws): (the bank (nb, 2 J), each vector's
+    pooled source (nb,))."""
+    rng = np.random.default_rng(gr.crc(f"{SEED_TAG}|bank|{seed}|{core.key_form}"))
+    k0 = turn(cap["pool_k"], -cap["pool_phi"])
+    bkeys = bank_keys(rng, core.key_form, nb, set(cap["q_key"]) | set(cap["pool_key"]))
+    bphi = key_phases(core.key_rot, bkeys)
+    content = torch.from_numpy(rng.integers(len(k0), size=nb))
+    return turn(k0[content], bphi), content
+
+
+@torch.no_grad()
+def tail_conditions(q: torch.Tensor, t: torch.Tensor, st: torch.Tensor, bank: torch.Tensor, ns) -> dict:
+    """W_N and the largest (s_n - s_t) at every N, three ways on the same competitors:
+        base  s(m, n) = (1 / sqrt(hd)) sum_j Re[q_j(m) conj(k_j(n))]                      (the read's EMULATED);
+        M     s_M(m, n) = (1 / sqrt(hd)) sum_j |t_j(m)| Re[q_j(m) conj(k_j(n) / |k_j(n)|)]   (the competitor's pair lengths = the entry's
+              true record's, its angles kept), against the same true score;
+        E     the base scores against the core's median true score for every entry."""
+    ta = pair_norms(t)
+    med = float(np.median(st.numpy()))
+    return {"base": emulated(q, st, bank, ns),
+            "M": emulated(q * torch.cat([ta, ta], dim=-1), st, unit_pairs(bank), ns),
+            "E": emulated(q, torch.full_like(st, med), bank, ns)}
+
+
+def _pct_rank(v: np.ndarray) -> np.ndarray:
+    """Each value's percentile rank among v, in [0, 100)."""
+    order = np.argsort(v, kind="stable")
+    r = np.empty(len(v))
+    r[order] = np.arange(len(v))
+    return 100.0 * r / len(v)
+
+
+def _by_band(rank: np.ndarray, mask: np.ndarray) -> dict:
+    return {f"{a:g}-{b:g}": int((mask & (rank >= a) & (rank < b)).sum()) for a, b in BANDS}
+
+
+@torch.no_grad()
+def tail_core(folder: str, held: list, R: int = 192, seed: int = 1, ns=TAIL_NS, batch: int = 4, dev: str = "cpu", log=print) -> dict:
+    """THE TAIL READ of one stored core: the read's rows (read_rows) and bank (bank_of) and, at each N, tail_conditions' three leaks
+    (mean, median, p99, max, look error, argmax error, the moment) with the look errors' entries by their margin's and their true
+    score's percentile band; the pooled pairs' lengths over the true records' median length per pair (p50, p99, max; all, the records'
+    end-markers, the index entries'); the true records' pair lengths (p01, p50, p99); and at the largest N each base look error's
+    strongest competitor - its pooled source (the entry's own record, a record of its row, another row's record, an index entry; beside
+    their shares of the bank's draws), its share of W_N, its pair lengths over the entry's true record's (mean and max over the pairs)."""
+    t0 = time.time()
+    torch.backends.cuda.matmul.allow_tf32 = False
+    core = rs.Core(folder, dev)
+    kr = core.key_rot
+    rows = read_rows(core, held, R, seed)
+    cap = capture(core, rows, batch=batch, log=log)
+    t_cap = time.time() - t0
+    sc = 1.0 / math.sqrt(2 * krm.ar.PAIRS)
+    st = (cap["q"] * cap["t"]).sum(-1) * sc
+    so = (cap["q"][:, None, :] * cap["inrow"]).sum(-1) * sc
+    margin = st - so.mean(1)
+    s_core = float(margin.mean()) / J
+    is_rec, own, row_recs, off = [], [], [], 0                     # the pool in capture's order: a row's records' SEPs, then its entries'
+    for _, mt in rows:
+        nr, ne = len(mt["recs"]), len(mt["index"])
+        is_rec += [True] * nr + [False] * ne
+        own += [off + e["rec"] for e in mt["index"]]
+        row_recs += [nr] * ne
+        off += nr + ne
+    is_rec, own = torch.tensor(is_rec), torch.tensor(own)
+    assert off == len(cap["pool_k"]) and len(own) == len(st) and torch.equal(cap["pool_k"][own], cap["t"]), "the pool's layout"
+    nb = int(max(ns))
+    bank, content = bank_of(core, cap, seed, nb)
+    t_bank = time.time() - t0
+    conds = tail_conditions(cap["q"], cap["t"], st, bank, ns)
+    rank_m, rank_t = _pct_rank(margin.numpy()), _pct_rank(st.numpy())
+    out = {}
+    for name, (W, M) in conds.items():
+        out[name] = {}
+        for j, n in enumerate(ns):
+            look = W[:, j] >= 1.0
+            out[name][str(n)] = dict(_stats(W[:, j], M[:, j]), moment=moment(s_core, n), look_by_margin_pct=_by_band(rank_m, look),
+                                     look_by_true_pct=_by_band(rank_t, look))
+    ta = pair_norms(cap["t"])
+    pl = pair_norms(cap["pool_k"])
+    ratio = pl / ta.median(0).values
+    qs = lambda v, p: [float(x) for x in torch.quantile(v, p, dim=0)]   # noqa: E731
+    pool_ratio = {g: dict(n=int(sel.sum()), p50=qs(ratio[sel], .5), p99=qs(ratio[sel], .99), max=[float(x) for x in ratio[sel].max(0).values])
+                  for g, sel in (("all", torch.ones(len(pl), dtype=torch.bool)), ("records", is_rec), ("entries", ~is_rec))}
+    P, n_rec, rr = len(pl), int(is_rec.sum()), np.array(row_recs, dtype=np.float64)
+    W_b = conds["base"][0][:, -1]
+    idx = np.nonzero(W_b >= 1.0)[0]
+    kinds, shares, lmean, lmax = dict.fromkeys(SOURCES, 0), [], [], []
+    for i in range(0, len(idx), 32):
+        part = torch.from_numpy(idx[i:i + 32])
+        d = (cap["q"][part] @ bank.T) * sc - st[part, None]
+        best, top = d.max(1)
+        src = content[top]
+        for m, s in zip(part.tolist(), src.tolist()):
+            same_row = int(cap["pool_row"][s]) == int(cap["q_row"][m])
+            kind = (SOURCES[0] if s == int(own[m]) else SOURCES[1] if bool(is_rec[s]) and same_row else
+                    SOURCES[2] if bool(is_rec[s]) else SOURCES[3])
+            kinds[kind] += 1
+        shares += (np.exp(best.double().numpy()) / W_b[part.numpy()]).tolist()
+        r = pl[src] / ta[part]
+        lmean += r.mean(1).tolist()
+        lmax += r.max(1).values.tolist()
+    med = lambda v: float(np.median(v)) if len(v) else None   # noqa: E731
+    top = dict(n=int(len(idx)), source=kinds,
+               bank_share={SOURCES[0]: 1.0 / P, SOURCES[1]: float(np.mean(rr - 1)) / P, SOURCES[2]: float(np.mean(n_rec - rr)) / P,
+                           SOURCES[3]: (P - n_rec) / P},
+               share_of_W_median=med(shares), length_ratio_mean_median=med(lmean), length_ratio_max_median=med(lmax))
+    return dict(core=core.tag, version=_PKG_VERSION, seed=seed, rows=R, hard_rows=R - R // 2, layout=core.layout, key_form=core.key_form,
+                reach=kr.k, told=dict(block=kr.block, head=kr.head), entries=int(len(st)), pool=P, bank=nb,
+                bank_keys="form" if N_FORM[core.key_form] >= 10 * nb else "shape", ns=[int(n) for n in ns], s_core=s_core,
+                true_score_median=float(np.median(st.numpy())), base=out["base"], M=out["M"], E=out["E"], pool_length_ratio=pool_ratio,
+                true_pair_length=dict(p01=qs(ta, .01), p50=qs(ta, .5), p99=qs(ta, .99)), top_competitor=top,
+                wall=dict(capture=round(t_cap, 1), bank=round(t_bank - t_cap, 1), total=round(time.time() - t0, 1)))
+
+
+def tail_name(tag: str, R: int, seed: int) -> str:
+    return f"{tag}_captail_r{R}_s{seed}.json"
+
+
+def run_tail(folder: str, held: list, out_dir: str, R: int = 192, seed: int = 1, log=print, **kw) -> dict:
+    """Resume-first: the record at out_dir/<core>_captail_r<R>_s<seed>.json is returned when it exists, else read and written."""
+    tag = os.path.basename(os.path.normpath(folder))
+    path = os.path.join(out_dir, tail_name(tag, R, seed))
+    if os.path.exists(path):
+        if log:
+            log(f"[capacity tail] {tag[:40]}: done before")
+        return json.load(open(path, encoding="utf-8"))
+    rec = tail_core(folder, held, R=R, seed=seed, log=log, **kw)
     os.makedirs(out_dir, exist_ok=True)
     tmp = path + ".tmp"
     json.dump(rec, open(tmp, "w", encoding="utf-8"), indent=1)

@@ -367,6 +367,19 @@ lane's read of it (a commit with its parent named), so no two lanes read one mod
 [![Lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_lane2.ipynb)
 [![Lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_lane3.ipynb)
 
+0.1.86: the tail read (`capacity.tail_core`). The capacity read's mean leak follows the moment of random phases, but its look error
+runs far above what random phases at one fixed pair length give. A pair's score is |q_j| |k_j| cos(the phase difference) / sqrt(hd),
+so two length tails can carry the look error: the competitors' (pooled pairs longer than the true record's) and the entries' (true
+scores low in the margin's spread). On the read's own rows and bank (its base equals the read's EMULATED numbers bit for bit) the leak
+is computed three ways on the same competitors - as read; with every competitor's pair lengths set to its entry's true record's, its
+angles kept; with every entry's true score set to the model's median - at N = 10^3, 4,096 (a window's worth of keyed end-markers),
+10^4, 10^5 and 10^6, beside the look errors' entries by their margin's percentile, the pooled pairs' lengths against the true
+records', and each look error's strongest competitor. The eighteen models at 48 records a row, as three lanes,
+`colab/nano_capacity_tail_lane{1,2,3}.ipynb`:
+[![Tail lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_tail_lane1.ipynb)
+[![Tail lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_tail_lane2.ipynb)
+[![Tail lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_tail_lane3.ipynb)
+
 Then:
 
 ```bash
