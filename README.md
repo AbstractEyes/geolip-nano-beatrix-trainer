@@ -380,6 +380,20 @@ records', and each look error's strongest competitor. The eighteen models at 48 
 [![Tail lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_tail_lane2.ipynb)
 [![Tail lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_tail_lane3.ipynb)
 
+0.1.87: two forms of the binding, read for capacity. The key rotation binds the whole key into the told head's eight shared pairs; the
+capacity read found that eight pairs hold ten thousand keys and leak near a million, and that the wrong looks at a million come from
+competitors whose key pairs run a few percent longer than the true record's. `--key_norm=1` holds the key's bound pairs at one length
+(4.16) at the coded end-markers before the turn, the query untouched: every competitor's pair lengths equal every true record's by
+construction. `--key_pairs=16` binds all sixteen of the told head's pairs at the coded end-markers (the anchor pairs too, there only),
+with phases drawn from crc32("KEYROT|v1|j16"): at the same margin a pair, the random-phase leak at a million falls from about .2 to
+about 5e-8. Neither adds a parameter; the defaults are 0.1.86 bit for bit; the names carry `_krtn` and `_krt16`. `rotary_scale.Core`
+reads either form from `scale.json`, and the capacity read takes the bound pairs from the model. Twelve models at 48 records a row (six
+seeds of each form) on the G4, `colab/nano_norm16.ipynb`, and their capacity on two CPU runtimes beside it,
+`colab/nano_capacity_ns_lane{1,2}.ipynb`:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_norm16.ipynb)
+[![Capacity lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_ns_lane1.ipynb)
+[![Capacity lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_ns_lane2.ipynb)
+
 Then:
 
 ```bash

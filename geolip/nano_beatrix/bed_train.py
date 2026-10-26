@@ -238,6 +238,14 @@ assert KEY_CODE in ("",) + kcm.FORMS, f"--key_code={KEY_CODE!r}: fixed or learne
 # rotary_scale.Core applies them.
 KEY_ROT = ARGS.get("key_rot", "0") == "1"
 assert ARGS.get("key_rot", "0") in ("0", "1"), f"--key_rot={ARGS.get('key_rot')!r}: 0 or 1"
+# 0.1.87: TWO FORMS OF THE BINDING (the capacity read's next step; key_rotary.py). --key_pairs=16 binds all sixteen of the told head's
+# pairs at the coded SEPs (the anchor levels' pairs too, there only; their phases 16 x K x 256 seeded crc32("KEYROT|v1|j16")); --key_norm=1
+# holds the key's bound pairs at one length rho (4.16) at the coded SEPs before the turn, the query untouched. No parameter either way. The
+# defaults (8, 0) = 0.1.86 bit for bit; the run's name carries _krt16 or _krtn.
+KEY_PAIRS = int(ARGS.get("key_pairs", "8"))
+assert KEY_PAIRS in krm.PAIR_FORMS and (KEY_PAIRS == krm.J or KEY_ROT), f"--key_pairs={KEY_PAIRS}: 8 or 16, with --key_rot=1"
+KEY_NORM = ARGS.get("key_norm", "0") == "1"
+assert ARGS.get("key_norm", "0") in ("0", "1") and (not KEY_NORM or KEY_ROT), f"--key_norm={ARGS.get('key_norm')!r}: 0 or 1, with --key_rot=1"
 # 0.1.83: THE LARGER ROW. --grid_comps=48 composes the grid rows in the AG48 layout (grid_rows.LAYOUTS: 64 slots of 64 bytes, 48
 # compartments - 48 of the 64 addresses - the index and the questions of 24 asked records); --grid_keys=long writes every grid row's keys as
 # a cue word + six digits (9-12 bytes; the key-hard rows' factorial over the word and the last three digits) and sets the key's reach to 12
@@ -728,11 +736,13 @@ class Craft:
                    f"born zero, {self.key_code.table.numel():,} parameters under the same Adam and clip"))
         self.key_rot = None                      # 0.1.82: the key in the told head's rotation (--key_rot=1)
         if KEY_ROT:                              # no parameter, no draw from the run's generators: the phases come from their own seeded generator
-            self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K).to(DEV)    # 0.1.83: the reach 12 at the long keys
+            self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K, pairs=KEY_PAIRS, norm=KEY_NORM).to(DEV)   # 0.1.83: the reach 12
             krm.patch(self.model, self.key_rot)  # before the pointer term's capture of the same block: it keeps the rotated q and k
-            log(f"the key in the told head's rotation: block {PTR_BLOCK} head {PTR_HEAD}, pairs 0-{krm.J - 1} at each SEP whose CUE lies in "
-                f"the {KEY_K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {krm.J} x "
-                f"{KEY_K} x {kcm.VOCAB} phases seeded crc32({krm.seed_tag(KEY_K)!r})) in place of their anchored angles; no parameter")
+            log(f"the key in the told head's rotation: block {PTR_BLOCK} head {PTR_HEAD}, pairs 0-{KEY_PAIRS - 1} at each SEP whose CUE lies "
+                f"in the {KEY_K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {KEY_PAIRS} x "
+                f"{KEY_K} x {kcm.VOCAB} phases seeded crc32({krm.seed_tag(KEY_K, KEY_PAIRS)!r})) in place of their anchored angles"
+                + (f"; the key's bound pairs there held at length {self.key_rot.rho:g} before the turn" if KEY_NORM else "")
+                + "; no parameter")
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
             assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
@@ -886,7 +896,7 @@ def key_rot_use(c) -> dict:
         with torch.autocast("cuda", dtype=torch.bfloat16):
             c.model(x)
         q, k, h = c.ptr.qk()
-        out = krm.use_read(q, k, h, x, [m for _, m in rd], c.key_rot.on)
+        out = krm.use_read(q, k, h, x, [m for _, m in rd], c.key_rot.on, pairs=c.key_rot.pairs)
         set_streams(c, None)
         c.ptr.clear()
     if was:
@@ -1852,7 +1862,10 @@ def finish(c: Craft) -> tuple:
                 _sj["key_code"] = dict(form=KEY_CODE, k=kcm.K, vocab=kcm.VOCAB, d=c.cfg.d_model)
             if c.key_rot is not None:            # 0.1.82: the key rotation's phases beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.key_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_rot.safetensors"))
-                _sj["key_rot"] = dict(pairs=krm.J, k=KEY_K, vocab=kcm.VOCAB, block=PTR_BLOCK, head=PTR_HEAD, seed_tag=krm.seed_tag(KEY_K))
+                _sj["key_rot"] = dict(pairs=KEY_PAIRS, k=KEY_K, vocab=kcm.VOCAB, block=PTR_BLOCK, head=PTR_HEAD,
+                                      seed_tag=krm.seed_tag(KEY_K, KEY_PAIRS))
+                if KEY_NORM:                     # 0.1.87: the norm and its length (absent: no norm, 0.1.86's file)
+                    _sj["key_rot"].update(norm=1, rho=c.key_rot.rho)
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
                 _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)

@@ -35,7 +35,11 @@ sqrt(hd) and the moment models the phases only, so two length tails can carry th
 than the true record's) and the entries' (true scores low in the margin's spread). On the same rows and bank as the read, the EMULATED
 leak is computed three ways on the same competitors - as read (base); with every competitor's pair lengths set to its entry's true
 record's, its angles kept (M); with every entry's true score set to the core's median true score (E) - beside the look errors' entries
-by their margin's percentile and the pooled pairs' lengths against the true records'."""
+by their margin's percentile and the pooled pairs' lengths against the true records'.
+
+0.1.87: the bound pairs J come from the core (8, or 16 for a core whose told head binds all sixteen at the coded SEPs): the key
+dims, the turn, the margin a pair and the moment N I0(s)^J / (e^{J s} + N I0(s)^J) read J; a core with the key's norm is read as
+stored (its captured keys carry the norm). At eight pairs and no norm every number is 0.1.86's."""
 from __future__ import annotations
 
 import json
@@ -67,7 +71,9 @@ def turn(v: torch.Tensor, ang: torch.Tensor) -> torch.Tensor:
     """The key dims (..., 2 J) - first the J pairs' first components, then their second (the head's rotate-half order) - turned by the
     angles (..., J): (x1, x2) -> (x1 cos - x2 sin, x2 cos + x1 sin), the rotation rope_half applies."""
     c, s = torch.cos(ang), torch.sin(ang)
-    x1, x2 = v[..., :J], v[..., J:]
+    j = ang.shape[-1]                                                    # 0.1.87: the bound pairs (8 or 16) from the angles
+    assert v.shape[-1] == 2 * j, (tuple(v.shape), tuple(ang.shape))
+    x1, x2 = v[..., :j], v[..., j:]
     return torch.cat([x1 * c - x2 * s, x2 * c + x1 * s], dim=-1)
 
 
@@ -121,9 +127,9 @@ def bank_keys(rng: np.random.Generator, key_form: str, n: int, exclude: set) -> 
     return out
 
 
-def moment(s: float, n: int) -> float:
-    """The moment of random phases: N I0(s)^J / (e^{J s} + N I0(s)^J), in log space."""
-    a = math.log(n) + J * math.log(float(np.i0(s))) - J * s
+def moment(s: float, n: int, pairs: int = J) -> float:
+    """The moment of random phases: N I0(s)^J / (e^{J s} + N I0(s)^J), in log space (0.1.87: J = the bound pairs, 8 or 16)."""
+    a = math.log(n) + pairs * math.log(float(np.i0(s))) - pairs * s
     return 1.0 / (1.0 + math.exp(-a)) if a > -700 else 0.0
 
 
@@ -143,7 +149,7 @@ def capture(core: rs.Core, rows: list, batch: int = 4, log=print) -> dict:
     row and its key."""
     kr = core.key_rot
     assert kr is not None and core.look == (kr.block, kr.head), "the read needs the key rotation and its told head as the look"
-    h, kd = kr.head, torch.tensor(KD)
+    h, kd = kr.head, torch.tensor(krm.key_dims(kr.pairs))             # 0.1.87: the bound pairs' dims (8: KD)
     qs, ts, inrow, q_row, q_key = [], [], [], [], []
     pk, pphi, prow, pkey = [], [], [], []
     t0 = time.time()
@@ -185,6 +191,14 @@ def capture(core: rs.Core, rows: list, batch: int = 4, log=print) -> dict:
             log(f"[capacity] {core.tag[:40]}: {done}/{len(rows)} rows read, {el:.0f} s, ~{el / done * (len(rows) - done):.0f} s left")
     return dict(q=torch.stack(qs), t=torch.stack(ts), inrow=torch.stack(inrow), q_row=torch.tensor(q_row), q_key=q_key,
                 pool_k=torch.stack(pk), pool_phi=torch.stack(pphi), pool_row=torch.tensor(prow), pool_key=pkey)
+
+
+def _told(kr: krm.KeyRotary) -> dict:
+    """The told head as a record field; 0.1.87: its bound pairs and norm only off the defaults (eight pairs, no norm: 0.1.86's field)."""
+    out = dict(block=kr.block, head=kr.head)
+    if kr.pairs != J or kr.norm:
+        out.update(pairs=kr.pairs, norm=int(kr.norm), rho=kr.rho if kr.norm else None)
+    return out
 
 
 def _stats(W: np.ndarray, maxd: np.ndarray) -> dict:
@@ -267,9 +281,9 @@ def read_core(folder: str, held: list, R: int = 192, seed: int = 1, ns=NS, draws
     st = (cap["q"] * cap["t"]).sum(-1) * sc                                          # the true scores (Q,)
     so = (cap["q"][:, None, :] * cap["inrow"]).sum(-1) * sc                           # the row's other records (Q, comps - 1)
     margin = st - so.mean(1)
-    s_core = float(margin.mean()) / J
-    qa = torch.sqrt(cap["q"][:, :J] ** 2 + cap["q"][:, J:] ** 2)                      # the true pairs' magnitudes |q_j| |k_j| / sqrt(hd)
-    ta = torch.sqrt(cap["t"][:, :J] ** 2 + cap["t"][:, J:] ** 2)
+    s_core = float(margin.mean()) / kr.pairs                                         # 0.1.87: over the bound pairs (8 or 16)
+    qa = pair_norms(cap["q"])                                                         # the true pairs' magnitudes |q_j| |k_j| / sqrt(hd)
+    ta = pair_norms(cap["t"])
     pair_mag = (qa * ta * sc).mean(0)
     w_in = torch.exp((so - st[:, None]).double()).sum(1).numpy()
     # EMULATED: the pooled contents unrotated by their own phases, turned by fresh keys' phases
@@ -285,13 +299,13 @@ def read_core(folder: str, held: list, R: int = 192, seed: int = 1, ns=NS, draws
     W_r, M_r, smallest = real(cap, st, [n for n in ns if n <= len(cap["pool_k"])], draws=draws, seed=seed)
     out_e, out_r = {}, {}
     for j, n in enumerate([n for n in ns if n <= nb]):
-        out_e[str(n)] = dict(_stats(W_e[:, j], M_e[:, j]), moment=moment(s_core, n))
+        out_e[str(n)] = dict(_stats(W_e[:, j], M_e[:, j]), moment=moment(s_core, n, kr.pairs))
     for j, n in enumerate([n for n in ns if n <= len(cap["pool_k"])]):
         if n <= smallest:
             out_r[str(n)] = _stats(W_r[:, :, j].reshape(-1), M_r[:, :, j].reshape(-1))
     pct = lambda v, p: float(np.quantile(v.numpy() if torch.is_tensor(v) else v, p))   # noqa: E731
     return dict(core=core.tag, version=_PKG_VERSION, seed=seed, rows=R, hard_rows=R - R // 2, layout=core.layout, key_form=core.key_form,
-                reach=kr.k, told=dict(block=kr.block, head=kr.head), entries=int(len(st)), pool=int(len(cap["pool_k"])),
+                reach=kr.k, told=_told(kr), entries=int(len(st)), pool=int(len(cap["pool_k"])),
                 pool_smallest_allowed=int(smallest), bank=nb, draws=draws,
                 bank_keys="form" if N_FORM[core.key_form] >= 10 * nb else "shape",
                 s_core=s_core, margin=dict(mean=float(margin.mean()), p01=pct(margin, .01), p10=pct(margin, .1), p50=pct(margin, .5)),
@@ -324,8 +338,9 @@ SOURCES = ("own record", "a record of its row", "another row's record", "an inde
 
 
 def pair_norms(v: torch.Tensor) -> torch.Tensor:
-    """The J pairs' lengths (..., J) of key dims (..., 2 J) in the head's rotate-half order."""
-    return torch.sqrt(v[..., :J] ** 2 + v[..., J:] ** 2)
+    """The J pairs' lengths (..., J) of key dims (..., 2 J) in the head's rotate-half order (0.1.87: J from the dims, 8 or 16)."""
+    j = v.shape[-1] // 2
+    return torch.sqrt(v[..., :j] ** 2 + v[..., j:] ** 2)
 
 
 def unit_pairs(v: torch.Tensor) -> torch.Tensor:
@@ -391,8 +406,8 @@ def tail_core(folder: str, held: list, R: int = 192, seed: int = 1, ns=TAIL_NS, 
     st = (cap["q"] * cap["t"]).sum(-1) * sc
     so = (cap["q"][:, None, :] * cap["inrow"]).sum(-1) * sc
     margin = st - so.mean(1)
-    s_core = float(margin.mean()) / J
-    is_rec, own, row_recs, off = [], [], [], 0                     # the pool in capture's order: a row's records' SEPs, then its entries'
+    s_core = float(margin.mean()) / kr.pairs                       # 0.1.87: over the bound pairs (8 or 16)
+    is_rec, own, row_recs, off = [], [], [], 0                    # the pool in capture's order: a row's records' SEPs, then its entries'
     for _, mt in rows:
         nr, ne = len(mt["recs"]), len(mt["index"])
         is_rec += [True] * nr + [False] * ne
@@ -411,7 +426,7 @@ def tail_core(folder: str, held: list, R: int = 192, seed: int = 1, ns=TAIL_NS, 
         out[name] = {}
         for j, n in enumerate(ns):
             look = W[:, j] >= 1.0
-            out[name][str(n)] = dict(_stats(W[:, j], M[:, j]), moment=moment(s_core, n), look_by_margin_pct=_by_band(rank_m, look),
+            out[name][str(n)] = dict(_stats(W[:, j], M[:, j]), moment=moment(s_core, n, kr.pairs), look_by_margin_pct=_by_band(rank_m, look),
                                      look_by_true_pct=_by_band(rank_t, look))
     ta = pair_norms(cap["t"])
     pl = pair_norms(cap["pool_k"])
@@ -443,7 +458,7 @@ def tail_core(folder: str, held: list, R: int = 192, seed: int = 1, ns=TAIL_NS, 
                            SOURCES[3]: (P - n_rec) / P},
                share_of_W_median=med(shares), length_ratio_mean_median=med(lmean), length_ratio_max_median=med(lmax))
     return dict(core=core.tag, version=_PKG_VERSION, seed=seed, rows=R, hard_rows=R - R // 2, layout=core.layout, key_form=core.key_form,
-                reach=kr.k, told=dict(block=kr.block, head=kr.head), entries=int(len(st)), pool=P, bank=nb,
+                reach=kr.k, told=_told(kr), entries=int(len(st)), pool=P, bank=nb,
                 bank_keys="form" if N_FORM[core.key_form] >= 10 * nb else "shape", ns=[int(n) for n in ns], s_core=s_core,
                 true_score_median=float(np.median(st.numpy())), base=out["base"], M=out["M"], E=out["E"], pool_length_ratio=pool_ratio,
                 true_pair_length=dict(p01=qs(ta, .01), p50=qs(ta, .5), p99=qs(ta, .99)), top_competitor=top,

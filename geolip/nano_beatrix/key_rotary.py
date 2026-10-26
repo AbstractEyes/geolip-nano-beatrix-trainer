@@ -14,7 +14,13 @@ position, pair, head and block keeps the anchored angles; nothing is added to an
 its rows' bytes before the blocks run (the craft's embedding forward, patched as key_code patches it; rotary_scale.Core.trunk sets them
 itself), and the told block's rotation reads them. The rotation is installed before any capture of the block, so pointer.HeadCapture
 keeps the rotated q and k the kernel reads. 0.1.83: the reach K is a parameter (KeyRotary(..., k)): the long keys of the larger grid row
-read K = 12 with phases drawn from crc32("KEYROT|v1|k12"); K = 9 is 0.1.82's rotation and draw exactly."""
+read K = 12 with phases drawn from crc32("KEYROT|v1|k12"); K = 9 is 0.1.82's rotation and draw exactly.
+
+0.1.87: two forms of the binding (the capacity read's next step). pairs = 16 binds all sixteen of the told head's pairs at the coded SEPs
+(the anchor levels' pairs too: there they turn by the key's phases instead of the address digits'; everywhere else they keep the anchored
+angles), with phases (16, K, VOCAB) drawn from crc32("KEYROT|v1|j16"). norm = True holds the key's bound pairs at one length rho at the
+coded SEPs before the turn, k_j <- rho k_j / |k_j| (the query, the other pairs, positions, heads and blocks untouched): every competitor's
+pair lengths equal every true record's by construction. The defaults (pairs 8, no norm) are 0.1.86's rotation and draw exactly."""
 from __future__ import annotations
 
 import hashlib
@@ -37,36 +43,51 @@ J = ar.SHARED                           # the told head's key pairs: the eight p
 SEED_TAG = "KEYROT|v1"
 TWO_PI = 2 * math.pi
 assert J == 8, "the key rotation is written for the anchored split's eight shared pairs"
+PAIR_FORMS = (J, ar.PAIRS)              # 0.1.87: the bound pairs - the eight shared pairs (0.1.82), or all sixteen of the told head
+RHO = 4.16                              # 0.1.87: the norm's length (the 48-record models' median key-pair length at the true record)
 
 
-def seed_tag(k: int = kcm.K) -> str:
-    """0.1.83: the phases' seed tag at the reach K: 0.1.82's crc32("KEYROT|v1") at K = 9, crc32("KEYROT|v1|k<K>") at any other reach."""
-    return SEED_TAG if int(k) == kcm.K else f"{SEED_TAG}|k{int(k)}"
+def seed_tag(k: int = kcm.K, pairs: int = J) -> str:
+    """0.1.83: the phases' seed tag at the reach K: 0.1.82's crc32("KEYROT|v1") at K = 9, crc32("KEYROT|v1|k<K>") at any other reach;
+    0.1.87: "|j16" after "KEYROT|v1" at sixteen bound pairs (eight pairs name nothing)."""
+    base = SEED_TAG if int(pairs) == J else f"{SEED_TAG}|j{int(pairs)}"
+    return base if int(k) == kcm.K else f"{base}|k{int(k)}"
 
 
-def phase_table(k: int = kcm.K) -> torch.Tensor:
-    """(J, K, VOCAB) float32 phases uniform on [0, 2 pi) from a CPU generator seeded crc32(seed_tag(K)): the same draw in every process
-    (0.1.83: the reach K a parameter; K = 9 is 0.1.82's draw exactly)."""
-    g = torch.Generator().manual_seed(zlib.crc32(seed_tag(k).encode()))
-    return torch.rand(J, int(k), kcm.VOCAB, generator=g, dtype=torch.float64).mul_(TWO_PI).float()
+def phase_table(k: int = kcm.K, pairs: int = J) -> torch.Tensor:
+    """(pairs, K, VOCAB) float32 phases uniform on [0, 2 pi) from a CPU generator seeded crc32(seed_tag(K, pairs)): the same draw in every
+    process (0.1.83: the reach K a parameter; K = 9 is 0.1.82's draw exactly; 0.1.87: the pairs a parameter, 8 the same draw)."""
+    assert int(pairs) in PAIR_FORMS, f"pairs {pairs!r}: one of {PAIR_FORMS}"
+    g = torch.Generator().manual_seed(zlib.crc32(seed_tag(k, pairs).encode()))
+    return torch.rand(int(pairs), int(k), kcm.VOCAB, generator=g, dtype=torch.float64).mul_(TWO_PI).float()
+
+
+def key_dims(pairs: int = J) -> list:
+    """The bound pairs' dims in the head, rotate-half: pair j = dims j and j + PAIRS (first the pairs' first components, then their
+    second); at sixteen pairs every dim of the head in order."""
+    return list(range(int(pairs))) + list(range(ar.PAIRS, ar.PAIRS + int(pairs)))
 
 
 class KeyRotary(torch.nn.Module):
     """The phases P (a buffer, not in any state dict) and the current forward's key angles: set(idx) before the blocks run, read by the
     told block's rotation. block is numbered from 1, as scale.json's ptr. k (0.1.83): the reach - a SEP is coded when its CUE lies in the
-    k + 1 positions before it (9: 0.1.82's; 12: the long keys of the larger grid row)."""
+    k + 1 positions before it (9: 0.1.82's; 12: the long keys of the larger grid row). pairs (0.1.87): the bound pairs, 8 or 16; norm
+    (0.1.87): the key's bound pairs held at length rho at the coded SEPs."""
 
-    def __init__(self, block: int, head: int, k: int = kcm.K) -> None:
+    def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: bool = False, rho: float = RHO) -> None:
         super().__init__()
-        self.block, self.head, self.k = int(block), int(head), int(k)
-        self.register_buffer("table", phase_table(self.k), persistent=False)
+        assert int(pairs) in PAIR_FORMS, f"pairs {pairs!r}: one of {PAIR_FORMS}"
+        self.block, self.head, self.k, self.pairs = int(block), int(head), int(k), int(pairs)
+        self.norm, self.rho = bool(norm), float(rho)
+        assert self.rho > 0, rho
+        self.register_buffer("table", phase_table(self.k, self.pairs), persistent=False)
         self.phi = self.on = None
 
     def phases(self, idx: torch.Tensor, off: torch.Tensor | None = None) -> tuple:
-        """idx (B, n) bytes -> (phi (B, n, J) float32 in [0, 2 pi), on (B, n) bool: the coded SEPs). The phases of a key are the same
+        """idx (B, n) bytes -> (phi (B, n, pairs) float32 in [0, 2 pi), on (B, n) bool: the coded SEPs). The phases of a key are the same
         float values wherever the key stands (the same gathers summed in the same order); past a key's length the null column adds 0."""
         off = kcm.key_offsets(idx, self.k) if off is None else off
-        t = torch.cat([self.table, self.table.new_zeros(J, self.k, 1)], dim=-1)           # (J, K, VOCAB + 1)
+        t = torch.cat([self.table, self.table.new_zeros(self.pairs, self.k, 1)], dim=-1)  # (pairs, K, VOCAB + 1)
         phi = None
         for k in range(self.k):
             p = t[:, k][:, off[..., k]]                                                     # (J, B, n)
@@ -81,9 +102,21 @@ class KeyRotary(torch.nn.Module):
         self.phi = self.on = None
 
 
+def norm_key(k: torch.Tensor, h: int, on: torch.Tensor, rho: float, pairs: int = J) -> torch.Tensor:
+    """0.1.87: the told head's bound key pairs at the coded SEPs held at length rho, k_j <- rho k_j / |k_j| (rotate-half: pair j = dims j
+    and j + PAIRS; the length in float32); every other position, pair and head value for value (a factor of exactly one)."""
+    kh = k[:, h]                                                                            # (B, n, hd)
+    a, b = kh[..., :pairs], kh[..., ar.PAIRS:ar.PAIRS + pairs]
+    m = torch.sqrt(a.float() ** 2 + b.float() ** 2).clamp_min(1e-6)
+    f = torch.where(on[..., None], rho / m, torch.ones_like(m)).to(kh.dtype)
+    kh = torch.cat([a * f, kh[..., pairs:ar.PAIRS], b * f, kh[..., ar.PAIRS + pairs:]], dim=-1)
+    return torch.cat([k[:, :h], kh[:, None], k[:, h + 1:]], dim=1)
+
+
 def _keyrot_rotate(self, q, k, offset: int = 0):
-    """The told block's rotation: anchored_rope._anchored_rotate's angles, with the told head's pairs 0 .. J - 1 turned by the key's phases
-    at the coded SEPs instead. The other heads' angles are the anchored ones, value for value."""
+    """The told block's rotation: anchored_rope._anchored_rotate's angles, with the told head's pairs 0 .. pairs - 1 turned by the key's
+    phases at the coded SEPs instead (0.1.87: and, with the norm, the key's bound pairs there at length rho before the turn). The other
+    heads' angles are the anchored ones, value for value."""
     kr = self._keyrot
     B, H, n = q.shape[0], q.shape[1], q.shape[-2]
     assert offset == 0, "the key rotation is written for a whole-row forward (no cache)"
@@ -96,9 +129,11 @@ def _keyrot_rotate(self, q, k, offset: int = 0):
     ak = ak.expand(B, H, n, ak.shape[-1]).clone()
     on = kr.on.to(q.device)[..., None]
     phi = kr.phi.to(device=q.device, dtype=aq.dtype)
-    h = kr.head
-    aq[:, h, :, :J] = torch.where(on, phi, aq[:, h, :, :J])
-    ak[:, h, :, :J] = torch.where(on, phi, ak[:, h, :, :J])
+    h, P = kr.head, kr.pairs
+    aq[:, h, :, :P] = torch.where(on, phi, aq[:, h, :, :P])
+    ak[:, h, :, :P] = torch.where(on, phi, ak[:, h, :, :P])
+    if kr.norm:                                           # 0.1.87: the key's bound pairs at one length (the turn keeps lengths)
+        k = norm_key(k, h, kr.on.to(k.device), kr.rho, P)
     return (rope_half(q, aq.cos().to(q.dtype), aq.sin().to(q.dtype)),
             rope_half(k, ak.cos().to(k.dtype), ak.sin().to(k.dtype)))
 
@@ -130,26 +165,33 @@ def table_digest(t: torch.Tensor) -> str:
 
 def record(kr: KeyRotary) -> dict:
     """The rotation as a record field: the form, the pairs, the table's size and digest, the told head (0.1.83: the reach and its seed
-    tag; at K = 9 the field is 0.1.82's)."""
-    return dict(form="phase", pairs=J, k=kr.k, vocab=kcm.VOCAB, block=kr.block, head=kr.head, seed_tag=seed_tag(kr.k),
-                digest=table_digest(kr.table))
+    tag; at K = 9 the field is 0.1.82's; 0.1.87: the bound pairs, and the norm and its length when on - off and at eight pairs the field
+    is 0.1.86's)."""
+    out = dict(form="phase", pairs=kr.pairs, k=kr.k, vocab=kcm.VOCAB, block=kr.block, head=kr.head, seed_tag=seed_tag(kr.k, kr.pairs),
+               digest=table_digest(kr.table))
+    if kr.norm:
+        out.update(norm=1, rho=kr.rho)
+    return out
 
 
-KEY_DIMS = list(range(J)) + list(range(ar.PAIRS, ar.PAIRS + J))                                   # pairs 0 .. J - 1 (rotate-half layout)
+KEY_DIMS = key_dims(J)                                                                             # pairs 0 .. J - 1 (rotate-half layout)
 ANCHOR_DIMS = list(range(J, ar.PAIRS)) + list(range(ar.PAIRS + J, 2 * ar.PAIRS))                 # the anchor levels' pairs
 
 
 @torch.no_grad()
-def use_read(q: torch.Tensor, k: torch.Tensor, h: int, idx: torch.Tensor, metas: list, on: torch.Tensor) -> dict:
+def use_read(q: torch.Tensor, k: torch.Tensor, h: int, idx: torch.Tensor, metas: list, on: torch.Tensor, pairs: int = J) -> dict:
     """The told head's use of the key pairs on one forward's grid rows: q, k its rotated query and key (B, H, n, hd), h the head, idx the
     rows' input bytes (B, n), metas their grid metas (grid_rows), on the coded SEPs (B, n). At each index entry's SEP (where the pointer term
     trains the head) the score toward its true record's SEP, toward the row's other records' SEPs (their mean) and toward itself, split into
     the key pairs and the anchor pairs, in logit units (q . k / sqrt(hd)); the key pairs' magnitude (the norm over their dims) at the coded
-    SEPs and at every other position, for the query and the key."""
+    SEPs and at every other position, for the query and the key. 0.1.87: pairs = the bound pairs (at sixteen, every pair is a key pair and
+    the anchor terms are 0)."""
     hd = q.shape[-1]
     sc = 1.0 / math.sqrt(hd)
     qh, kh = q[:, h].float(), k[:, h].float()                                       # (B, n, hd)
-    kd, ad = torch.tensor(KEY_DIMS, device=q.device), torch.tensor(ANCHOR_DIMS, device=q.device)
+    kdl = key_dims(pairs)
+    adl = [d for d in range(2 * ar.PAIRS) if d not in kdl]
+    kd, ad = torch.tensor(kdl, device=q.device), torch.tensor(adl, device=q.device, dtype=torch.long)
     parts = {s: [] for s in ("key_true", "key_other", "key_self", "anchor_true", "anchor_other")}
     for b, m in enumerate(metas):
         row = idx[b]

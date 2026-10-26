@@ -54,7 +54,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "ptr_pos", "ptr_stop",                                             # 0.1.79: its positions and its gradient's reach
              "key_code",                                                        # 0.1.81: the key code at the end-marker
              "key_rot",                                                         # 0.1.82: the key in the told head's rotation
-             "grid_comps", "grid_keys")                                         # 0.1.83: the larger grid row and the long keys
+             "grid_comps", "grid_keys",                                         # 0.1.83: the larger grid row and the long keys
+             "key_pairs", "key_norm")                                           # 0.1.87: the binding's forms
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -141,7 +142,8 @@ def run_label(run: list) -> str:
     if kv.get("key_code"):                                        # 0.1.81: the key code at the end-marker
         parts.append(f"key code {kv['key_code']}")
     if kv.get("key_rot") == "1":                                  # 0.1.82: the key in the told head's rotation
-        parts.append("key rotation")
+        parts.append("key rotation" + (f" over {kv['key_pairs']} pairs" if kv.get("key_pairs") not in (None, "8") else "")
+                     + (" with the key's norm" if kv.get("key_norm") == "1" else ""))      # 0.1.87: the binding's forms
     if kv.get("grid_comps") not in (None, "24"):                  # 0.1.83: the larger grid row
         parts.append(f"{kv['grid_comps']} records a row")
     if kv.get("grid_keys") not in (None, "std"):                  # 0.1.83: the long keys
