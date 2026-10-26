@@ -350,6 +350,17 @@ arXiv 2008.02217; Frady, Kleyko and Sommer 2018, A theory of sequence indexing a
 arXiv 1803.00412):
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_largerows.ipynb)
 
+0.1.85: the binding's capacity read (`capacity.py`). A row holds at most ~92 competing keys; the read measures how many the told
+head's eight bound pairs keep apart past that, with no training. A stored model reads 192 rows at its own layout and keys' form (half
+key-hard), the trunk through the told block only, and keeps the head's rotated query and key at every keyed end-marker; each index
+entry's true score is set against pools of other keys - REAL (the other rows' end-markers) and EMULATED (a pooled key's content
+unrotated by its own phases and turned by the phases of a fresh key, to 10^6) - and the leak, one minus the true record's share of
+the head's softmax, is recorded at N = 10^2 .. 10^6 (mean, median, 99th percentile, the look error and the argmax error) beside the
+moment of random phases, N I0(s)^8 / (exp(8 s) + N I0(s)^8). The moment is an annealed average, dominated by rare near-aligned
+competitors (Derrida 1981, the random-energy model); the median shows the typical leak. The thirty stored binding models,
+`colab/nano_capacity.ipynb` on a CPU runtime:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity.ipynb)
+
 Then:
 
 ```bash
