@@ -617,7 +617,9 @@ def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int =
                 key_form: str = "std") -> list:
     """A last-site batch: each row 18 owned compartments (a per-batch permutation of the owned cycled over the rows) and 6 never-owned,
     its questions asking the owned records in a drawn order. 0.1.83: at the layout's counts (MEMBER_ROW: AG48 36 owned + 12 never-owned)
-    and its questions' room (AG48: the first 24 of the owned in the drawn order); AG = 0.1.82's rows. -> [(row, meta)]."""
+    and its questions' room. 0.1.84: the asked are the row's first `ask` owned IN THE CYCLED ORDER (then drawn into the questions' order),
+    so every member is asked equally often in a batch, as train_last's member mode asserts (AG48: 8 rows x 24 asked = 4 a member; 0.1.83
+    asked a drawn 24 of the 36 and broke the equality); AG asks all 18 and its rows are 0.1.82's byte for byte. -> [(row, meta)]."""
     n_own, n_nev = MEMBER_ROW[layout]
     ask = gr.lay(layout)["ask"]
     perm = rng.permutation(len(owned))
@@ -627,8 +629,8 @@ def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int =
         own = [owned[int(k)] for k in seq[r * n_own:(r + 1) * n_own]]
         nev = [int(a) for a in rng.choice(never, size=n_nev, replace=False)]
         addrs = sorted(own + nev)
-        asked = [addrs.index(a) for a in own]
-        asked = [asked[int(i)] for i in rng.permutation(len(asked))][:ask]
+        asked = [addrs.index(a) for a in own][:ask]                  # 0.1.84: the first `ask` in the cycled order (AG: all 18)
+        asked = [asked[int(i)] for i in rng.permutation(len(asked))]
         p = int(rng.integers(0, len(packed) - gr.CTX - 2))
         out.append(gr.compose_ag(rng, packed[p:p + gr.CTX + 1].tobytes(), gr.CTX, addrs=addrs, asked=asked, abytes=abytes, layout=layout,
                                  key_form=key_form))

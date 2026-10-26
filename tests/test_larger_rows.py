@@ -5,7 +5,8 @@ for byte (a fingerprint of 0.1.82's rows) and the reach 9 is 0.1.82's phases (th
 question in their slots; the key-hard keys at 48 keep a one-part neighbour for every part and four records an ending; key_offsets at 12
 codes a 12-byte key's SEP (and 9 does not); the 12-reach phases are their own seeded draw; the members' rows at AG48; the reading core
 takes the layout, the keys' form and the reach from scale.json and reads back the trainer's forward; the names and the runner carry the
-flags. CPU only; the Hub is never touched."""
+flags. 0.1.84: the members' batches ask every member equally often at either layout (train_last's member mode), AG's rows unchanged.
+CPU only; the Hub is never touched."""
 import hashlib
 import json
 
@@ -28,6 +29,7 @@ from test_value_addr import STEM, W_BASE, _craft
 BLOCK, HEAD = 4, 0
 FP_0182_AG = "25dd2532a35e2f2a2554d8d48b7f7d2ead9538d067129fb6a40f12ccfc2c6aed"        # 0.1.82's rows (lr_fingerprints.py, trainer c8fdd19)
 FP_0182_PHASES = "e03ed849a52a270be011f9fa0dead7485b549901ffadbe02210ee03fe7789212"    # 0.1.82's 8 x 9 x 256 phases (the same)
+FP_0183_MEMBER_AG = "2b0f1d5995016d9a677dddc7431fd83dc53f5baed68d91b84cdb3b1b1bf4dc0d"  # the AG member rows under 0.1.82 and 0.1.83 (lr_member_fp.py)
 SRC = bytes(np.random.default_rng(3).integers(32, 127, size=gr.CTX + 1, dtype=np.uint8))
 
 
@@ -166,6 +168,33 @@ def test_the_members_rows_at_48():
         assert len(m["recs"]) == 48 and len(m["questions"]) == 24 and m["recs"][m["questions"][qi]["rec"]]["addr"] == addr
     ag = rs.member_rows(np.random.default_rng(71), np.frombuffer(SRC * 3, dtype=np.uint8), owned, never)
     assert all(len(m["recs"]) == 24 and len(m["questions"]) == 18 for _, m in ag)       # AG: 0.1.82's 18 + 6, every owned asked
+
+
+@pytest.mark.parametrize("layout,key_form,per", [("AG48", "std", 4), ("AG48", "long", 4), ("AG", "std", 3)])
+def test_the_member_batches_ask_every_member_equally(layout, key_form, per):
+    # 0.1.84: train_last's member mode needs every owned member asked equally often in a batch; at AG48 the 24 asked of a row's 36 owned
+    # are the first 24 in the cycled order (8 rows x 24 = 4 a member); 0.1.83 drew them and broke the equality
+    owned, never = rs.owned_sets()
+    packed = np.frombuffer(SRC * 3, dtype=np.uint8)
+    for step in range(12):
+        rows = rs.member_rows(np.random.default_rng([1, gr.crc("SCALE|memb|last"), step]), packed, owned, never, layout=layout,
+                              key_form=key_form)
+        qt = rs.question_table([m for _, m in rows], owned)
+        own = qt["own"]
+        sel = np.nonzero(own >= 0)[0]
+        assert len(sel) == per * rs.N_OWN and (np.bincount(own[sel], minlength=rs.N_OWN) == per).all(), (layout, step)
+
+
+def test_the_member_rows_at_ag_are_0183s():
+    # the fix touches the asked set at AG48 only: AG's member rows are 0.1.83's (= 0.1.82's) byte for byte
+    owned, never = rs.owned_sets()
+    packed = np.frombuffer(SRC * 3, dtype=np.uint8)
+    h = hashlib.sha256()
+    for step in range(4):
+        for row, m in rs.member_rows(np.random.default_rng([3, step]), packed, owned, never):
+            h.update(row)
+            h.update(json.dumps(m, sort_keys=True).encode())
+    assert h.hexdigest() == FP_0183_MEMBER_AG
 
 
 def test_the_core_reads_the_layout_the_keys_and_the_reach(tmp_path):

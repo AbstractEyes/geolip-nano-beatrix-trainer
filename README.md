@@ -339,7 +339,9 @@ pairs of magnitude s and unrelated phases the asked record's mean weight is abou
 
     exp(8 s) / (exp(8 s) + (N - 1) I0(s)^8)
 
-(.9947 -> .9927 at s = 2 from 24 to 48 records). The defaults are 0.1.82's rows and rotation bit for bit; at the larger row the name
+(.9947 -> .9927 at s = 2 from 24 to 48 records). 0.1.84: the members' rows at 48 records ask the first 24 of each row's 36 owned
+compartments in the cycled order, so every member is asked equally often in a batch (4 a batch), as the members' trainer requires. The
+defaults are 0.1.82's rows and rotation bit for bit; at the larger row the name
 carries `_gc48` (and `_kl` for the long keys), `scale.json` carries `grid_layout` and `grid_keys`, and `rotary_scale` composes every read
 and every member row at the core's layout (at 48: 36 owned and 12 never-owned compartments, 24 of the owned asked). The rotation at 48
 records with and without the key-hard rows, seeds 1-6 each, the members on up to three models whose look passes the rule, then the long
