@@ -99,6 +99,7 @@ A_GRID = (0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
 BETAS, EPS, LR, WARM = (0.9, 0.98), 1e-8, 1e-3, 50
 ROWS_LAST, ROWS_MID = 8, 8                               # a batch's rows (the bed's micro-batch)
 OWN_PER_ROW, NEVER_PER_ROW = 18, 6
+MEMBER_ROW = {"AG": (OWN_PER_ROW, NEVER_PER_ROW), "AG48": (36, 12)}   # 0.1.83: a last-site row's owned and never-owned compartments
 COMPILE = True                                           # the stacked writes compiled (static shapes; the gate below)
 COMPILE_MAX_SHAPES = 16                                  # the session's shapes: 2 trainers, the trace, the reads, the text bits
 _COMPILED, _SHAPES = {}, set()
@@ -461,6 +462,9 @@ class Core:
         self.n_blocks = len(m.blocks)
         self.scale = json.load(open(os.path.join(folder, "scale.json"), encoding="utf-8"))
         self.abytes = int(self.scale.get("abytes", 2))            # 0.1.74: the address form the core was trained on (its rows are built so)
+        self.layout = self.scale.get("grid_layout", "AG")         # 0.1.83: the grid layout and the keys' form it was trained on (the same)
+        self.key_form = self.scale.get("grid_keys", "std")
+        assert self.layout in gr.LAYOUTS and self.key_form in gr.KEY_FORMS, (self.layout, self.key_form)
         self.anchor = None
         if isinstance(self.scale.get("rotary"), dict):            # 0.1.73: at the split the core was trained with (ALHENA's 2 or ALHENA-W's 4)
             self.anchor = ar.AnchorStreams(ar.content_of(self.scale["rotary"]))
@@ -492,9 +496,10 @@ class Core:
         assert os.path.exists(rp) == ("key_rot" in self.scale), "scale.json names the key rotation's phases exactly when their file is there"
         if os.path.exists(rp):                                    # 0.1.82: the key in the told head's rotation, before the look's capture
             kf = self.scale["key_rot"]
-            assert kf.get("pairs") == krm.J and kf.get("k") == kcm.K and kf.get("vocab") == kcm.VOCAB, kf
+            assert kf.get("pairs") == krm.J and kf.get("k") == gr.KEY_MAX[self.key_form] and kf.get("vocab") == kcm.VOCAB, kf
+            assert kf.get("seed_tag", krm.SEED_TAG) == krm.seed_tag(int(kf["k"])), kf   # 0.1.83: the reach and its draw (9: 0.1.82's)
             assert self.anchor is not None, "the key rotation turns pairs of the anchored rotation"
-            self.key_rot = krm.KeyRotary(int(kf["block"]), int(kf["head"])).to(self.dev)
+            self.key_rot = krm.KeyRotary(int(kf["block"]), int(kf["head"]), k=int(kf["k"])).to(self.dev)
             t = load_file(rp)["table"]
             assert tuple(t.shape) == tuple(self.key_rot.table.shape), (tuple(t.shape), tuple(self.key_rot.table.shape))
             with torch.no_grad():
@@ -593,41 +598,56 @@ def load_heldout(path: str, ctx: int = gr.CTX) -> list:
     return out
 
 
-def gauge_rows(seed: int, name: str, n: int, docs: list, abytes: int = 2, hard: bool = False) -> list:
+def gauge_rows(seed: int, name: str, n: int, docs: list, abytes: int = 2, hard: bool = False, layout: str = "AG",
+               key_form: str = "std") -> list:
     """bed_train's gauge rows (ag_set): n grid rows from the generator [seed, crc("SCALE|<name>")], the filler the documents `docs` in
     turn behind a DOC byte. The members' read uses the cores' own read rows ("read", the held-out documents) and calibration rows
     ("calib", the held-out documents reversed). abytes (0.1.74): the core's address form. hard (0.1.75): key-hard rows (grid_rows.hard_keys
-    drawn from the generator before each row, as bed_train's ag_rows; "hard" with the held-out documents = the trainer's hard-row read)."""
+    drawn from the generator before each row, as bed_train's ag_rows; "hard" with the held-out documents = the trainer's hard-row read).
+    layout and key_form (0.1.83): the core's grid layout and keys' form (scale.json; AG and std = 0.1.82's rows)."""
     rng = np.random.default_rng([seed, gr.crc(f"SCALE|{name}")])
     out = []
     for j in range(n):
-        keys = gr.hard_keys(rng) if hard else None
-        out.append(gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes, keys=keys))
+        keys = gr.hard_keys(rng, layout, key_form) if hard else None
+        out.append(gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes, keys=keys, layout=layout, key_form=key_form))
     return out
 
 
-def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int = ROWS_LAST, abytes: int = 2) -> list:
+def member_rows(rng, packed: np.ndarray, owned: list, never: list, n_rows: int = ROWS_LAST, abytes: int = 2, layout: str = "AG",
+                key_form: str = "std") -> list:
     """A last-site batch: each row 18 owned compartments (a per-batch permutation of the owned cycled over the rows) and 6 never-owned,
-    its questions asking the owned records in a drawn order. -> [(row, meta)]."""
+    its questions asking the owned records in a drawn order. 0.1.83: at the layout's counts (MEMBER_ROW: AG48 36 owned + 12 never-owned)
+    and its questions' room (AG48: the first 24 of the owned in the drawn order); AG = 0.1.82's rows. -> [(row, meta)]."""
+    n_own, n_nev = MEMBER_ROW[layout]
+    ask = gr.lay(layout)["ask"]
     perm = rng.permutation(len(owned))
-    seq = np.concatenate([perm] * (n_rows * OWN_PER_ROW // len(owned) + 2))
+    seq = np.concatenate([perm] * (n_rows * n_own // len(owned) + 2))
     out = []
     for r in range(n_rows):
-        own = [owned[int(k)] for k in seq[r * OWN_PER_ROW:(r + 1) * OWN_PER_ROW]]
-        nev = [int(a) for a in rng.choice(never, size=NEVER_PER_ROW, replace=False)]
+        own = [owned[int(k)] for k in seq[r * n_own:(r + 1) * n_own]]
+        nev = [int(a) for a in rng.choice(never, size=n_nev, replace=False)]
         addrs = sorted(own + nev)
         asked = [addrs.index(a) for a in own]
-        asked = [asked[int(i)] for i in rng.permutation(len(asked))]
+        asked = [asked[int(i)] for i in rng.permutation(len(asked))][:ask]
         p = int(rng.integers(0, len(packed) - gr.CTX - 2))
-        out.append(gr.compose_ag(rng, packed[p:p + gr.CTX + 1].tobytes(), gr.CTX, addrs=addrs, asked=asked, abytes=abytes))
+        out.append(gr.compose_ag(rng, packed[p:p + gr.CTX + 1].tobytes(), gr.CTX, addrs=addrs, asked=asked, abytes=abytes, layout=layout,
+                                 key_form=key_form))
     return out
 
 
-def owned_row(rng, src: bytes, addr: int, abytes: int = 2) -> tuple:
+def owned_row(rng, src: bytes, addr: int, abytes: int = 2, layout: str = "AG", key_form: str = "std") -> tuple:
     """A mid-site row: an ordinary grid row that shows `addr`'s compartment, its 24 questions in a drawn order (one asks addr's record).
-    -> (row, meta, the question index asking addr's record)."""
-    others = rng.choice([a for a in range(gr.N_ADDR) if a != addr], size=gr.N_COMP - 1, replace=False)
-    row, meta = gr.compose_ag(rng, src, gr.CTX, addrs=[addr] + [int(a) for a in others], abytes=abytes)
+    0.1.83: at the layout (AG48: 47 other compartments; the questions ask addr's record and 23 of the others, in a drawn order); AG =
+    0.1.82's row. -> (row, meta, the question index asking addr's record)."""
+    L = gr.lay(layout)
+    others = rng.choice([a for a in range(gr.N_ADDR) if a != addr], size=L["comps"] - 1, replace=False)
+    addrs = [addr] + [int(a) for a in others]
+    asked = None
+    if L["ask"] < L["comps"]:                            # the member's record among the asked (AG asks every record: None, 0.1.82's draw)
+        mine = sorted(addrs).index(addr)
+        rest = rng.choice([i for i in range(L["comps"]) if i != mine], size=L["ask"] - 1, replace=False)
+        asked = [int(i) for i in rng.permutation([mine] + [int(i) for i in rest])]
+    row, meta = gr.compose_ag(rng, src, gr.CTX, addrs=addrs, asked=asked, abytes=abytes, layout=layout, key_form=key_form)
     qi = next(i for i, q in enumerate(meta["questions"]) if meta["recs"][q["rec"]]["addr"] == addr)
     return row, meta, qi
 
@@ -693,7 +713,8 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
     dev = core.dev
     codes = code_tables(N_OWN).to(dev)
     opts = {k: StackedAdam(list(s.parameters()), s.M) for k, s in stacks.items()}
-    start, rec = 0, dict(site="last", steps=steps, rows_per_step=ROWS_LAST, questions_per_member_step=ROWS_LAST * OWN_PER_ROW // N_OWN,
+    q_step = ROWS_LAST * min(MEMBER_ROW[core.layout][0], gr.lay(core.layout)["ask"]) // N_OWN     # 0.1.83: the layout's asked owned
+    start, rec = 0, dict(site="last", steps=steps, rows_per_step=ROWS_LAST, questions_per_member_step=q_step,
                          curve={k: [] for k in stacks}, trace=[], ms_per_step=None, absent_member_steps=0)
     if ckpt and os.path.exists(ckpt):
         start, rec = _ckpt_load(ckpt, stacks, opts)
@@ -701,7 +722,7 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
     salt = gr.crc("SCALE|memb|last")
 
     def make(step):
-        rows = member_rows(np.random.default_rng([seed, salt, step]), packed, owned, never, abytes=core.abytes)
+        rows = member_rows(np.random.default_rng([seed, salt, step]), packed, owned, never, abytes=core.abytes, layout=core.layout, key_form=core.key_form)
         return rows, question_table([m for _, m in rows], owned)
     pf = _Prefetch(make, start, steps)
     present = torch.ones(N_OWN, dtype=torch.bool, device=dev)
@@ -759,7 +780,7 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
 def _solo_batch(core: Core, stk, owned: list, never: list, packed: np.ndarray, seed: int, codes: torch.Tensor) -> float:
     """The trace's solo read: one member-mode batch from its own generator, each owner alone at weight 1 (whole coded answers)."""
     dev = core.dev
-    rows = member_rows(np.random.default_rng([seed, gr.crc("SCALE|memb|trace")]), packed, owned, never, abytes=core.abytes)
+    rows = member_rows(np.random.default_rng([seed, gr.crc("SCALE|memb|trace")]), packed, owned, never, abytes=core.abytes, layout=core.layout, key_form=core.key_form)
     qt = question_table([m for _, m in rows], owned)
     x = to_x(rows, dev)
     core.set_streams([m for _, m in rows])
@@ -802,7 +823,7 @@ def train_mid(core: Core, arms: StackedArms, steps: int, seed: int, packed: np.n
         rows, qis = [], []
         for j in mem:
             p = int(rng.integers(0, len(packed) - gr.CTX - 2))
-            row, meta, qi = owned_row(rng, packed[p:p + gr.CTX + 1].tobytes(), owned[int(j)], abytes=core.abytes)
+            row, meta, qi = owned_row(rng, packed[p:p + gr.CTX + 1].tobytes(), owned[int(j)], abytes=core.abytes, layout=core.layout, key_form=core.key_form)
             rows.append((row, meta))
             qis.append(qi)
         return rows, np.array(mem), qis
@@ -1920,7 +1941,7 @@ def compile_check(core: Core, packed: np.ndarray, owned: list, never: list, seed
     the largest value. The members are moved off their born zero first so every gradient is live."""
     global COMPILE
     dev = core.dev
-    rows = member_rows(np.random.default_rng([seed, crc("SCALE|compile")]), packed, owned, never, abytes=core.abytes)
+    rows = member_rows(np.random.default_rng([seed, crc("SCALE|compile")]), packed, owned, never, abytes=core.abytes, layout=core.layout, key_form=core.key_form)
     qt = question_table([m for _, m in rows], owned)
     x = to_x(rows, dev)
     with torch.no_grad():
@@ -2046,8 +2067,8 @@ def run_core(core_folder: str, out_dir: str, seed: int, bed_dir: str, heldout_pa
     owned, never = owned_sets()
     packed = load_packed(bed_dir)
     held = load_heldout(heldout_path)
-    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)
-    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1], abytes=core.abytes)
+    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form)
+    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1], abytes=core.abytes, layout=core.layout, key_form=core.key_form)
     t0 = time.time()
     meta = dict(core=core.tag, seed=seed, owned=owned, never=never, arm_spec=ARM_SPEC, amoe=AMOE_PIN, toy_hidden=TOY_HID,
                 codes="SCALE|code|<i>: a crc-seeded derangement of a-z", betas=list(BETAS), eps=EPS, lr=LR, warm=WARM)
@@ -2177,8 +2198,8 @@ def read0(core_folder: str, members_folder: str, out_path: str, seed: int, heldo
     core = Core(core_folder, dev, look=look)
     owned, never = owned_sets()
     held = load_heldout(heldout_path)
-    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)
-    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1], abytes=core.abytes)
+    read_rows = gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form)
+    cal_rows = gauge_rows(seed, "calib", calib_batches * ROWS_LAST, held[::-1], abytes=core.abytes, layout=core.layout, key_form=core.key_form)
     stacks = {"arms": _load_stack(StackedArms(N_OWN, core.d), os.path.join(members_folder, f"arms_last_m{N_OWN}_st{last_steps}.safetensors"), core.dev),
               "toys": _load_stack(StackedToys(N_OWN, core.d), os.path.join(members_folder, f"toys_last_m{N_OWN}_st{last_steps}.safetensors"), core.dev)}
     rec = dict(core=core.tag, members=os.path.basename(os.path.normpath(members_folder)), seed=seed, head_at=core.head_at,
@@ -2239,9 +2260,9 @@ def look_read(core_folder: str, out_path: str, seed: int, heldout_path: str, loo
     assert core.anchor is not None, "the look sources put their address in the anchored core's streams"
     owned, _ = owned_sets()
     held = load_heldout(heldout_path)
-    sets = {"read": gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes)}
+    sets = {"read": gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form)}
     if hard_batches:
-        sets["hard"] = gauge_rows(seed, "hard", hard_batches * ROWS_LAST, held, abytes=core.abytes, hard=True)
+        sets["hard"] = gauge_rows(seed, "hard", hard_batches * ROWS_LAST, held, abytes=core.abytes, hard=True, layout=core.layout, key_form=core.key_form)
     rec = dict(core=core.tag, seed=seed, version=_PKG_VERSION, look=dict(block=core.look[0], head=core.look[1], thr=LOOK_THR,
                from_ptr=look == "ptr"), sets={k: len(v) for k, v in sets.items()}, views=list(LOOK_VIEWS), requests=list(LOOK_REQS))
     n_all = sum(len(v) for v in sets.values())

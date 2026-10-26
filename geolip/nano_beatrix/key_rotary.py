@@ -13,7 +13,8 @@ an unrelated angle: a binding of the whole key (the angle addition of FHRR), whe
 position, pair, head and block keeps the anchored angles; nothing is added to any input; no parameter. A forward's phases are set from
 its rows' bytes before the blocks run (the craft's embedding forward, patched as key_code patches it; rotary_scale.Core.trunk sets them
 itself), and the told block's rotation reads them. The rotation is installed before any capture of the block, so pointer.HeadCapture
-keeps the rotated q and k the kernel reads."""
+keeps the rotated q and k the kernel reads. 0.1.83: the reach K is a parameter (KeyRotary(..., k)): the long keys of the larger grid row
+read K = 12 with phases drawn from crc32("KEYROT|v1|k12"); K = 9 is 0.1.82's rotation and draw exactly."""
 from __future__ import annotations
 
 import hashlib
@@ -38,29 +39,36 @@ TWO_PI = 2 * math.pi
 assert J == 8, "the key rotation is written for the anchored split's eight shared pairs"
 
 
-def phase_table() -> torch.Tensor:
-    """(J, K, VOCAB) float32 phases uniform on [0, 2 pi) from a CPU generator seeded crc32(SEED_TAG): the same draw in every process."""
-    g = torch.Generator().manual_seed(zlib.crc32(SEED_TAG.encode()))
-    return torch.rand(J, kcm.K, kcm.VOCAB, generator=g, dtype=torch.float64).mul_(TWO_PI).float()
+def seed_tag(k: int = kcm.K) -> str:
+    """0.1.83: the phases' seed tag at the reach K: 0.1.82's crc32("KEYROT|v1") at K = 9, crc32("KEYROT|v1|k<K>") at any other reach."""
+    return SEED_TAG if int(k) == kcm.K else f"{SEED_TAG}|k{int(k)}"
+
+
+def phase_table(k: int = kcm.K) -> torch.Tensor:
+    """(J, K, VOCAB) float32 phases uniform on [0, 2 pi) from a CPU generator seeded crc32(seed_tag(K)): the same draw in every process
+    (0.1.83: the reach K a parameter; K = 9 is 0.1.82's draw exactly)."""
+    g = torch.Generator().manual_seed(zlib.crc32(seed_tag(k).encode()))
+    return torch.rand(J, int(k), kcm.VOCAB, generator=g, dtype=torch.float64).mul_(TWO_PI).float()
 
 
 class KeyRotary(torch.nn.Module):
     """The phases P (a buffer, not in any state dict) and the current forward's key angles: set(idx) before the blocks run, read by the
-    told block's rotation. block is numbered from 1, as scale.json's ptr."""
+    told block's rotation. block is numbered from 1, as scale.json's ptr. k (0.1.83): the reach - a SEP is coded when its CUE lies in the
+    k + 1 positions before it (9: 0.1.82's; 12: the long keys of the larger grid row)."""
 
-    def __init__(self, block: int, head: int) -> None:
+    def __init__(self, block: int, head: int, k: int = kcm.K) -> None:
         super().__init__()
-        self.block, self.head = int(block), int(head)
-        self.register_buffer("table", phase_table(), persistent=False)
+        self.block, self.head, self.k = int(block), int(head), int(k)
+        self.register_buffer("table", phase_table(self.k), persistent=False)
         self.phi = self.on = None
 
     def phases(self, idx: torch.Tensor, off: torch.Tensor | None = None) -> tuple:
         """idx (B, n) bytes -> (phi (B, n, J) float32 in [0, 2 pi), on (B, n) bool: the coded SEPs). The phases of a key are the same
         float values wherever the key stands (the same gathers summed in the same order); past a key's length the null column adds 0."""
-        off = kcm.key_offsets(idx) if off is None else off
-        t = torch.cat([self.table, self.table.new_zeros(J, kcm.K, 1)], dim=-1)            # (J, K, VOCAB + 1)
+        off = kcm.key_offsets(idx, self.k) if off is None else off
+        t = torch.cat([self.table, self.table.new_zeros(J, self.k, 1)], dim=-1)           # (J, K, VOCAB + 1)
         phi = None
-        for k in range(kcm.K):
+        for k in range(self.k):
             p = t[:, k][:, off[..., k]]                                                     # (J, B, n)
             phi = p if phi is None else phi + p
         phi = torch.remainder(phi, TWO_PI).permute(1, 2, 0).contiguous()
@@ -121,8 +129,9 @@ def table_digest(t: torch.Tensor) -> str:
 
 
 def record(kr: KeyRotary) -> dict:
-    """The rotation as a record field: the form, the pairs, the table's size and digest, the told head."""
-    return dict(form="phase", pairs=J, k=kcm.K, vocab=kcm.VOCAB, block=kr.block, head=kr.head, seed_tag=SEED_TAG,
+    """The rotation as a record field: the form, the pairs, the table's size and digest, the told head (0.1.83: the reach and its seed
+    tag; at K = 9 the field is 0.1.82's)."""
+    return dict(form="phase", pairs=J, k=kr.k, vocab=kcm.VOCAB, block=kr.block, head=kr.head, seed_tag=seed_tag(kr.k),
                 digest=table_digest(kr.table))
 
 

@@ -238,6 +238,20 @@ assert KEY_CODE in ("",) + kcm.FORMS, f"--key_code={KEY_CODE!r}: fixed or learne
 # rotary_scale.Core applies them.
 KEY_ROT = ARGS.get("key_rot", "0") == "1"
 assert ARGS.get("key_rot", "0") in ("0", "1"), f"--key_rot={ARGS.get('key_rot')!r}: 0 or 1"
+# 0.1.83: THE LARGER ROW. --grid_comps=48 composes the grid rows in the AG48 layout (grid_rows.LAYOUTS: 64 slots of 64 bytes, 48
+# compartments - 48 of the 64 addresses - the index and the questions of 24 asked records); --grid_keys=long writes every grid row's keys as
+# a cue word + six digits (9-12 bytes; the key-hard rows' factorial over the word and the last three digits) and sets the key's reach to 12
+# (a SEP is coded when its CUE lies in the 13 positions before it: the key rotation's phases are then 8 x 12 x 256, seeded
+# crc32("KEYROT|v1|k12")). The defaults (24, std) = 0.1.82 bit for bit; the run's name carries _gc48 and _kl.
+GRID_COMPS = int(ARGS.get("grid_comps", "24"))
+GRID_LAYOUT = {24: "AG", 48: "AG48"}.get(GRID_COMPS)
+assert GRID_LAYOUT is not None and (GRID_COMPS == 24 or GRID == "ag"), \
+    f"--grid_comps={GRID_COMPS}: 24 or 48, a layout of the addressed grid rows (--grid=ag)"
+GRID_KEYS = ARGS.get("grid_keys", "std")
+assert GRID_KEYS in gr.KEY_FORMS and (GRID_KEYS == "std" or GRID == "ag"), f"--grid_keys={GRID_KEYS!r}: std or long (--grid=ag)"
+assert gr.fits(GRID_LAYOUT, GRID_KEYS, GRID_ABYTES), f"the {GRID_LAYOUT} layout does not hold {GRID_KEYS} keys (the long keys need 48)"
+KEY_K = gr.KEY_MAX[GRID_KEYS]                                   # the key's reach: 9 (0.1.81's K) or 12
+assert not KEY_CODE or KEY_K == kcm.K, "--key_code's tables reach 9 bytes: the long keys are built for the key rotation"
 HEAD_FORM = ARGS.get("head", "")
 HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # 0.1.72: THE FIND FORM. --head_at=both trains the same head at each index entry's SEP too (grid_rows.index_head_targets: both streams at
@@ -560,8 +574,8 @@ def ag_rows(rng, n, docs=None, n_hard=0):
             src = packed[p:p + CTX + 1].tobytes()
         else:
             src = bytes([DOC]) + docs[j % len(docs)]
-        keys = gr.hard_keys(rng) if j >= n - n_hard else None
-        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES, keys=keys))
+        keys = gr.hard_keys(rng, GRID_LAYOUT, GRID_KEYS) if j >= n - n_hard else None
+        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES, keys=keys, layout=GRID_LAYOUT, key_form=GRID_KEYS))
     return out
 
 
@@ -677,9 +691,13 @@ class Craft:
                 f"{_rel}-{ar.SHARED - 1} content; 8-15 two anchor levels at 2 pi k / 9)")
         if GRID_ABYTES == 1:                     # 0.1.74
             log("the grid rows' addresses as one byte 0x80 + a (unique in the row), in the frames and the index; the streams keep the digits")
+        if GRID_LAYOUT != "AG" or GRID_KEYS != "std":   # 0.1.83
+            _L = gr.lay(GRID_LAYOUT)
+            log(f"the larger grid row: the {GRID_LAYOUT} layout ({_L['comps']} compartments of {_L['slot']} bytes, {_L['ask']} of them "
+                f"asked), {GRID_KEYS} keys (up to {KEY_K} bytes; the key's reach {KEY_K})")
         if GRID_HARD > 0:                        # 0.1.75
-            log(f"key-hard rows: the last {N_HARD} of the batch's {N_AG} grid rows (24 keys the factorial of their parts: a partial key "
-                f"match fails on them); the hard-row read beside the end read")
+            log(f"key-hard rows: the last {N_HARD} of the batch's {N_AG} grid rows ({gr.lay(GRID_LAYOUT)['comps']} keys the factorial of "
+                f"their parts: a partial key match fails on them); the hard-row read beside the end read")
         if HEAD_FORM == "digit":                 # the per-digit address head: torch's default weight, the bias at the uniform prior 1/8
             torch.manual_seed(gr.crc(f"SCALE|head|s{SEED}"))
             self.addr_head = torch.nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(DEV)
@@ -710,11 +728,11 @@ class Craft:
                    f"born zero, {self.key_code.table.numel():,} parameters under the same Adam and clip"))
         self.key_rot = None                      # 0.1.82: the key in the told head's rotation (--key_rot=1)
         if KEY_ROT:                              # no parameter, no draw from the run's generators: the phases come from their own seeded generator
-            self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD).to(DEV)
+            self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K).to(DEV)    # 0.1.83: the reach 12 at the long keys
             krm.patch(self.model, self.key_rot)  # before the pointer term's capture of the same block: it keeps the rotated q and k
             log(f"the key in the told head's rotation: block {PTR_BLOCK} head {PTR_HEAD}, pairs 0-{krm.J - 1} at each SEP whose CUE lies in "
-                f"the {kcm.K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {krm.J} x "
-                f"{kcm.K} x {kcm.VOCAB} phases seeded crc32({krm.SEED_TAG!r})) in place of their anchored angles; no parameter")
+                f"the {KEY_K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {krm.J} x "
+                f"{KEY_K} x {kcm.VOCAB} phases seeded crc32({krm.seed_tag(KEY_K)!r})) in place of their anchored angles; no parameter")
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
             assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
@@ -1737,8 +1755,10 @@ def finish(c: Craft) -> tuple:
                 head.update(at="both", lam_i=HEAD_LAM_I, index=dict(
                     term_step1=i0_, term_last50=ilast, descended=(bool(ilast < 0.1 * i0_) if ic else None),
                     curve=[[i + 1, ic[i]] for i in range(0, len(ic), LOG_EVERY)] + ([[len(ic), ic[-1]]] if ic else [])))
-        grid_block = dict(layout="AG", p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=head, trace=c.trace, read=read,
-                          series=ARGS.get("series", ""))
+        grid_block = dict(layout=GRID_LAYOUT, p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=head, trace=c.trace,
+                          read=read, series=ARGS.get("series", ""))
+        if GRID_KEYS != "std":                  # 0.1.83: the long keys (the default record is 0.1.82's; the layout is its "layout")
+            grid_block["keys"] = GRID_KEYS
         if GRID_ABYTES != 2:                    # 0.1.74: the one-byte address form (the default record is 0.1.73's)
             grid_block["abytes"] = GRID_ABYTES
         if GRID_HARD > 0:                       # 0.1.75: the key-hard share of the training grid rows (the default record is 0.1.74's)
@@ -1813,9 +1833,13 @@ def finish(c: Craft) -> tuple:
             if c.addr_head is not None:
                 save_file({k: v.detach().cpu().contiguous() for k, v in c.addr_head.state_dict().items()}, os.path.join(wdir, "addr_head.safetensors"))
             _sj = dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=HEAD_FORM or None, head_lam=HEAD_LAM,
-                       layout=dict(slot=gr.SLOT, comps=gr.N_COMP, radix=gr.RADIX, levels=gr.LEVELS))
+                       layout=dict(slot=gr.lay(GRID_LAYOUT)["slot"], comps=gr.lay(GRID_LAYOUT)["comps"], radix=gr.RADIX, levels=gr.LEVELS))
             if HEAD_AT == "both":                # 0.1.72: the head's positions (the stored cores' files carry none: the questions)
                 _sj.update(head_at=HEAD_AT, head_lam_i=HEAD_LAM_I)
+            if GRID_LAYOUT != "AG":              # 0.1.83: the layout and the keys' form the core was trained on (rotary_scale composes its rows so)
+                _sj["grid_layout"] = GRID_LAYOUT
+            if GRID_KEYS != "std":
+                _sj["grid_keys"] = GRID_KEYS
             if GRID_ABYTES != 2:                 # 0.1.74: the address form the core was trained on (rotary_scale composes its rows so)
                 _sj["abytes"] = GRID_ABYTES
             if GRID_HARD > 0:                    # 0.1.75: the key-hard share it trained on (provenance; the members' rows stay standard)
@@ -1828,7 +1852,7 @@ def finish(c: Craft) -> tuple:
                 _sj["key_code"] = dict(form=KEY_CODE, k=kcm.K, vocab=kcm.VOCAB, d=c.cfg.d_model)
             if c.key_rot is not None:            # 0.1.82: the key rotation's phases beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.key_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_rot.safetensors"))
-                _sj["key_rot"] = dict(pairs=krm.J, k=kcm.K, vocab=kcm.VOCAB, block=PTR_BLOCK, head=PTR_HEAD, seed_tag=krm.SEED_TAG)
+                _sj["key_rot"] = dict(pairs=krm.J, k=KEY_K, vocab=kcm.VOCAB, block=PTR_BLOCK, head=PTR_HEAD, seed_tag=krm.seed_tag(KEY_K))
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
                 _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)

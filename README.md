@@ -326,6 +326,28 @@ model read through its look as it lands, and the members on up to three models w
 A comparison of Vector Symbolic Architectures, arXiv 2001.11797):
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_keyrot.ipynb)
 
+The larger row (0.1.83). The grid row of 24 records in 128-byte compartments is one layout of several the window holds. `--grid_comps=48`
+composes the rows in the layout `AG48` (`grid_rows.LAYOUTS`): 64 slots of 64 bytes - the head, 48 compartments (48 of the 64 addresses,
+sorted), the index of the 24 asked records, their 24 questions - the largest row the 4,096-byte window and the two-digit address code
+hold with 24 questions; the 24 records not asked are present and addressed, and compete at every end-marker. `--grid_keys=long` names
+the records with long keys (`bed_frames.key_long`: a cue word + six digits, 9-12 bytes) and reaches 12 bytes back from each end-marker
+(`key_code.key_offsets(idx, k)`), so the key rotation turns by 8 x 12 x 256 phases of their own seeded draw (`crc32("KEYROT|v1|k12")`).
+The key-hard rows grow with the row: 2 words x 2 hundreds digits x 2 tens digits x 6 units digits at 48 (the long keys: the fourth to
+sixth digits at 2 x 2 x 6, the first three one draw for the row), so every key still has a neighbour one part away in each part and each
+ending is shared by four records. At a question's end-marker at most 92 other coded end-markers compete (68 at 24 records); with eight
+pairs of magnitude s and unrelated phases the asked record's mean weight is about
+
+    exp(8 s) / (exp(8 s) + (N - 1) I0(s)^8)
+
+(.9947 -> .9927 at s = 2 from 24 to 48 records). The defaults are 0.1.82's rows and rotation bit for bit; at the larger row the name
+carries `_gc48` (and `_kl` for the long keys), `scale.json` carries `grid_layout` and `grid_keys`, and `rotary_scale` composes every read
+and every member row at the core's layout (at 48: 36 owned and 12 never-owned compartments, 24 of the owned asked). The rotation at 48
+records with and without the key-hard rows, seeds 1-6 each, the members on up to three models whose look passes the rule, then the long
+keys on the key-hard recipe, seeds 1-6, `colab/nano_largerows.ipynb` (prior art: Ramsauer et al. 2020, Hopfield Networks is All You Need,
+arXiv 2008.02217; Frady, Kleyko and Sommer 2018, A theory of sequence indexing and working memory in recurrent neural networks,
+arXiv 1803.00412):
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_largerows.ipynb)
+
 Then:
 
 ```bash

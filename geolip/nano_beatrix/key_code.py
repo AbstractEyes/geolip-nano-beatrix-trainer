@@ -35,10 +35,13 @@ def fixed_table(d: int) -> torch.Tensor:
     return torch.randn(K, VOCAB, d, generator=g)
 
 
-def key_offsets(idx: torch.Tensor) -> torch.Tensor:
+def key_offsets(idx: torch.Tensor, k: int = K) -> torch.Tensor:
     """idx (B, n) bytes -> (B, n, K) long: at each coded SEP (its last CUE in the K + 1 positions before it, no SEP between them) column
-    k - 1 holds x_{t-k} for k = 1 .. n(t) and VOCAB (the null row) past the key; every other position VOCAB in every column."""
+    k - 1 holds x_{t-k} for k = 1 .. n(t) and VOCAB (the null row) past the key; every other position VOCAB in every column.
+    0.1.83: the reach K a parameter (the key rotation at the long keys reads K = 12; the default K = 9 is 0.1.81's function exactly)."""
     assert idx.dim() == 2, tuple(idx.shape)
+    assert int(k) >= 1, k
+    K = int(k)                                                             # noqa: N806 (the reach, as the module's constant names it)
     n = idx.shape[1]
     pad = F.pad(idx.long(), (K + 1, 0), value=-1)                         # position t of idx is position t + K + 1 of pad
     back = torch.stack([pad[:, K + 1 - j:K + 1 - j + n] for j in range(K + 2)], dim=-1)   # back[..., j] = x_{t-j}, j = 0 .. K + 1

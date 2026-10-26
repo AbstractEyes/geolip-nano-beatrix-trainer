@@ -15,7 +15,14 @@ question's answer-producing positions (its SEP and its six value bytes, which pr
 anchor as key and THE ADDRESS THEY ASK FOR as query; every other token carries the null anchor for both.
 
 Positions in the meta are row positions (0 .. ctx); the input x is row[:-1] and the target y is row[1:], so the target of input
-position t is row[t + 1]. Self-test (pure numpy): python grid_rows.py --selftest"""
+position t is row[t + 1].
+
+THE LARGER ROW (0.1.83): a layout names the slot size, the compartments, the index's and the questions' slots and how many records the
+questions ask. "AG" is the row above byte for byte (the module's constants); "AG48" is 64 slots of 64 bytes: slot 0 the head, slots 1-48
+48 compartments (48 of the 64 addresses, sorted), slots 49-55 the index of the asked records, slots 56-63 the questions, 24 of the 48
+records asked (a draw). Two key forms: "std" (bed_frames.key_name, a cue word + three digits, 6-9 bytes) and "long"
+(bed_frames.key_long, a cue word + six digits, 9-12 bytes). A row of either layout or form names them in its meta (the default meta is
+0.1.82's). Self-test (pure numpy): python grid_rows.py --selftest"""
 from __future__ import annotations
 
 import sys
@@ -45,6 +52,44 @@ VLEN = bf.REGISTERS["caption"][3]
 HEAD = bytes([DOC, MODE]) + b"c" + bytes([SEP]) + b"g" + bytes([SEP])
 # the segments of a row's target bytes (bits_by_segment): what the byte at row position t + 1 belongs to
 SEGMENTS = ("head", "frame", "comp_text", "index_entry", "index_text", "q_answer", "q_other", "q_text")
+# 0.1.83: the layouts (slot bytes, compartments, the index's slots [lo, hi), the questions' slots [lo, hi), the records a row asks)
+LAYOUTS = {"AG": dict(slot=SLOT, comps=N_COMP, index=(25, 28), quest=(28, 32), ask=N_COMP),
+           "AG48": dict(slot=64, comps=48, index=(49, 56), quest=(56, 64), ask=24)}
+KEY_FORMS = ("std", "long")
+N_KEYS = {"std": 16 * 1000, "long": 16 * 1000 * 1000}       # bed_frames.key_name / key_long: the cue words x the numbers
+KEY_MAX = {"std": 9, "long": 12}                            # the longest key of each form (the longest cue word, 6 letters, + the digits)
+
+
+def lay(layout: str = "AG") -> dict:
+    """0.1.83: a layout's numbers: slot, comps, comp_slots, index_lo / index_hi, quest_lo / quest_hi (row positions), ask, n_slots."""
+    assert layout in LAYOUTS, f"the grid layout {layout!r}: one of {sorted(LAYOUTS)}"
+    L = LAYOUTS[layout]
+    s = L["slot"]
+    out = dict(name=layout, slot=s, comps=L["comps"], comp_slots=tuple(range(1, 1 + L["comps"])), index_lo=L["index"][0] * s,
+               index_hi=L["index"][1] * s, quest_lo=L["quest"][0] * s, quest_hi=L["quest"][1] * s, ask=L["ask"], n_slots=CTX // s)
+    assert out["comps"] < L["index"][0] and L["index"][1] <= L["quest"][0] and L["quest"][1] <= out["n_slots"], out
+    return out
+
+
+assert (lay("AG")["index_lo"], lay("AG")["index_hi"], lay("AG")["quest_lo"], lay("AG")["quest_hi"]) == (INDEX_LO, INDEX_HI, QUEST_LO, QUEST_HI)
+
+
+def fits(layout: str, key_form: str, abytes: int = 2) -> bool:
+    """0.1.83: the layout holds a row of the form's longest keys: a compartment's frame in its slot, the index's DATA, `ask` entries
+    CUE key SEP address and END in the index's slots, `ask` questions CUE key SEP value END in the questions' slots (AG at the long keys
+    does not: 24 entries of 16 bytes overrun its 384)."""
+    L, k = lay(layout), KEY_MAX[key_form]
+    return (1 + abytes + 1 + k + 1 + VLEN + 1 <= L["slot"] and 2 + L["ask"] * (k + 2 + abytes) <= L["index_hi"] - L["index_lo"]
+            and L["ask"] * (k + 3 + VLEN) <= L["quest_hi"] - L["quest_lo"])
+
+
+def std_keys(rng, n: int, key_form: str = "std") -> list:
+    """0.1.83: a row's standard draw of n distinct keys: the cue word + three digits form from a permutation of its 16,000 (0.1.70's draw),
+    or the cue word + six digits form from 16,000,000 without replacement."""
+    assert key_form in KEY_FORMS, key_form
+    if key_form == "std":
+        return [bf.key_name(int(i)) for i in rng.permutation(N_KEYS["std"])[:n]]
+    return [bf.key_long(int(i)) for i in rng.choice(N_KEYS["long"], size=n, replace=False)]
 
 
 def crc(tag: str) -> int:
@@ -87,22 +132,33 @@ def owned_order(n_owned: int = 48) -> tuple:
     return tuple(int(a) for a in perm[:n_owned]), tuple(sorted(int(a) for a in perm[n_owned:]))
 
 
-def hard_keys(rng) -> list:
+def hard_keys(rng, layout: str = "AG", key_form: str = "std") -> list:
     """0.1.75: THE KEY-HARD ROW's keys: the factorial of their parts - 2 words x 2 hundreds digits x 2 tens digits x
     3 units digits = 24 distinct keys, so every key has a neighbour that differs from it in exactly one part, for each of the four parts (a
     match on any part of the key is right on at most half of such a row's entries; only the whole key on all), in a drawn order.
-    -> [key bytes] (N_COMP)."""
+    0.1.83: the layout's count - the units digits are comps / 8 (3 at AG, 6 at AG48), so each ending (the tens and units digits, the last
+    two bytes) still falls on 4 records; the long form (key_form "long") draws its first three digits once for the row and varies the
+    word and the 4th, 5th and 6th digits the same way. AG and "std" are 0.1.75's draw byte for byte.
+    -> [key bytes] (the layout's comps)."""
+    L = lay(layout)
+    assert key_form in KEY_FORMS, key_form
     nw = len(bf.WORDS)
+    nu = L["comps"] // 8
+    assert nu * 8 == L["comps"] and nu <= 10, L
     w = rng.choice(nw, size=2, replace=False)
+    pre = int(rng.integers(0, 1000)) if key_form == "long" else 0            # the long form's fixed first three digits
     h = rng.choice(10, size=2, replace=False)
     t = rng.choice(10, size=2, replace=False)
-    u = rng.choice(10, size=3, replace=False)
-    idx = [int(a) + nw * (100 * int(b) + 10 * int(c) + int(d)) for a in w for b in h for c in t for d in u]   # key_name's index
-    assert len(idx) == N_COMP and len(set(idx)) == N_COMP
-    return [bf.key_name(idx[int(i)]) for i in rng.permutation(N_COMP)]
+    u = rng.choice(10, size=nu, replace=False)
+    num = [(1000 * pre if key_form == "long" else 0) + 100 * int(b) + 10 * int(c) + int(d) for b in h for c in t for d in u]
+    idx = [int(a) + nw * n for a in w for n in num]                             # key_name's / key_long's index
+    assert len(idx) == L["comps"] and len(set(idx)) == L["comps"]
+    name = bf.key_name if key_form == "std" else bf.key_long
+    return [name(idx[int(i)]) for i in rng.permutation(L["comps"])]
 
 
-def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False, abytes: int = 2, keys=None) -> tuple:
+def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False, abytes: int = 2, keys=None,
+               layout: str = "AG", key_form: str = "std") -> tuple:
     """One addressed grid row. rng: the row's numpy Generator; src: corpus text (at least ctx + 1 bytes; specials become newlines).
     addrs: the row's 24 addresses (None = 24 distinct draws of the 64); they are sorted onto slots 1-24. asked: the records the questions
     ask, as indices into the sorted compartments, in question order (None = all 24 in a drawn order). swap_index: one pair of index
@@ -110,37 +166,43 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     the address as two digit bytes (2, the default: the rows of 0.1.73 byte for byte) or as one byte 0x80 + a (1), in the frame and in
     the index entry alike; the draws and the streams are the same either way. keys (0.1.75): the compartments' 24 keys in slot order
     (hard_keys: the key-hard row); None = the standard draw. The standard draw is made either way, so every other draw of the row is the
-    same; a row with given keys says so in its meta ("hard").
+    same; a row with given keys says so in its meta ("hard"). layout and key_form (0.1.83): the row's layout (LAYOUTS; "AG" = the row
+    above, "AG48" = 48 compartments of 64 bytes, 24 asked) and its keys' form ("std" or "long"); asked None asks the layout's first `ask`
+    of a drawn order (AG: all 24, 0.1.70's draw). addrs, asked and keys count the layout's compartments.
     -> (row bytes of ctx + 1, meta)."""
     assert abytes in (1, 2), abytes
     assert ctx == CTX, f"the addressed grid is laid out for a {CTX}-byte window, got {ctx}"
+    L = lay(layout)
+    assert fits(layout, key_form, abytes), f"the {layout} layout does not hold a row of {key_form} keys"
+    nc = L["comps"]
     if addrs is None:
-        addrs = rng.choice(N_ADDR, size=N_COMP, replace=False)
+        addrs = rng.choice(N_ADDR, size=nc, replace=False)
     addrs = sorted(int(a) for a in addrs)
-    assert len(addrs) == N_COMP and len(set(addrs)) == N_COMP and all(0 <= a < N_ADDR for a in addrs), addrs
-    std = [bf.key_name(int(i)) for i in rng.permutation(16000)[:N_COMP]]
+    assert len(addrs) == nc and len(set(addrs)) == nc and all(0 <= a < N_ADDR for a in addrs), addrs
+    std = std_keys(rng, nc, key_form)
     hard = keys is not None
     keys = std if not hard else [bytes(k) for k in keys]
-    assert len(keys) == N_COMP and len(set(keys)) == N_COMP, "a row's 24 keys are distinct"
-    vals = [bf.value(rng, "letters", VLEN) for _ in range(N_COMP)]
-    order = [int(i) for i in (rng.permutation(N_COMP) if asked is None else asked)]
-    assert order and len(set(order)) == len(order) and all(0 <= i < N_COMP for i in order), order
+    assert len(keys) == nc and len(set(keys)) == nc, f"a row's {nc} keys are distinct"
+    vals = [bf.value(rng, "letters", VLEN) for _ in range(nc)]
+    order = [int(i) for i in (rng.permutation(nc)[:L["ask"]] if asked is None else asked)]
+    assert order and len(order) <= L["ask"] and len(set(order)) == len(order) and all(0 <= i < nc for i in order), order
     row = bytearray(bf.clean_filler(src, ctx + 1))
     row[0:len(HEAD)] = HEAD
     recs = []
-    for j, (a, s) in enumerate(zip(addrs, COMP_SLOTS)):
+    for j, (a, s) in enumerate(zip(addrs, L["comp_slots"])):
         frame = bytes([DATA]) + addr_bytes(a, abytes) + bytes([CUE]) + keys[j] + bytes([SEP]) + vals[j] + bytes([END])
-        lo = s * SLOT
-        assert len(frame) <= SLOT
+        lo = s * L["slot"]
+        assert len(frame) <= L["slot"]
         row[lo:lo + len(frame)] = frame
-        recs.append(dict(addr=a, slot=s, lo=lo, hi=lo + SLOT, key=keys[j].decode(), value=vals[j].decode(),
+        recs.append(dict(addr=a, slot=s, lo=lo, hi=lo + L["slot"], key=keys[j].decode(), value=vals[j].decode(),
                          frame_end=lo + len(frame), v0=lo + 2 + abytes + len(keys[j]) + 1))
     shown = list(order)
     if swap_index:                                      # a corrupted index: two entries trade their addresses
         assert len(order) >= 2
         i, j = (int(x) for x in rng.choice(len(order), size=2, replace=False))
         shown[i], shown[j] = order[j], order[i]
-    entries, p = [], INDEX_LO + 1
+    ilo, ihi, qlo, qhi = L["index_lo"], L["index_hi"], L["quest_lo"], L["quest_hi"]
+    entries, p = [], ilo + 1
     ix = bytearray([DATA])
     for qi, o in enumerate(order):
         e = bytes([CUE]) + keys[o] + bytes([SEP]) + addr_bytes(recs[shown[qi]]["addr"], abytes)
@@ -148,24 +210,26 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
         ix += e
         p += len(e)
     ix += bytes([END])
-    assert INDEX_LO + len(ix) <= INDEX_HI, len(ix)
-    row[INDEX_LO:INDEX_LO + len(ix)] = ix
-    quest, p = [], QUEST_LO
+    assert ilo + len(ix) <= ihi, len(ix)
+    row[ilo:ilo + len(ix)] = ix
+    quest, p = [], qlo
     qb = bytearray()
     for o in order:
         q = bytes([CUE]) + keys[o] + bytes([SEP]) + vals[o] + bytes([END])
         quest.append(dict(rec=o, lo=p, sep=p + 1 + len(keys[o]), v0=p + 2 + len(keys[o]), end=p + 2 + len(keys[o]) + VLEN))
         qb += q
         p += len(q)
-    assert QUEST_LO + len(qb) <= QUEST_HI, len(qb)
-    row[QUEST_LO:QUEST_LO + len(qb)] = qb
+    assert qlo + len(qb) <= qhi, len(qb)
+    row[qlo:qlo + len(qb)] = qb
     row = bytes(row[:ctx + 1])
-    meta = dict(layout="AG", addrs=addrs, recs=recs, index=entries, index_end=INDEX_LO + len(ix), questions=quest,
-                quest_end=QUEST_LO + len(qb), swap_index=swap_index)
+    meta = dict(layout=layout, addrs=addrs, recs=recs, index=entries, index_end=ilo + len(ix), questions=quest,
+                quest_end=qlo + len(qb), swap_index=swap_index)
     if abytes != 2:                                     # 0.1.74: the one-byte form names itself; the default meta is 0.1.73's
         meta["abytes"] = abytes
     if hard:                                            # 0.1.75: a row with given keys (the key-hard row) names itself
         meta["hard"] = True
+    if key_form != "std":                               # 0.1.83: the long keys name themselves (the layout is the meta's "layout")
+        meta["keys"] = key_form
     return row, meta
 
 
@@ -287,15 +351,16 @@ def decode_scores(s, thr: float = 0.5) -> list:
 
 
 def segments(meta: dict, ctx: int = CTX) -> np.ndarray:
-    """The segment id (SEGMENTS) of every target byte (the byte at row position t + 1 for input position t)."""
+    """The segment id (SEGMENTS) of every target byte (the byte at row position t + 1 for input position t); 0.1.83: at the row's layout."""
+    L = lay(meta.get("layout", "AG"))
     seg = np.full(ctx + 1, SEGMENTS.index("q_text"), dtype=np.int8)
-    seg[:SLOT] = SEGMENTS.index("head")
+    seg[:L["slot"]] = SEGMENTS.index("head")
     for r in meta["recs"]:
         seg[r["lo"]:r["hi"]] = SEGMENTS.index("comp_text")
         seg[r["lo"]:r["frame_end"]] = SEGMENTS.index("frame")
-    seg[INDEX_LO:INDEX_HI] = SEGMENTS.index("index_text")
-    seg[INDEX_LO:meta["index_end"]] = SEGMENTS.index("index_entry")
-    seg[QUEST_LO:meta["quest_end"]] = SEGMENTS.index("q_other")
+    seg[L["index_lo"]:L["index_hi"]] = SEGMENTS.index("index_text")
+    seg[L["index_lo"]:meta["index_end"]] = SEGMENTS.index("index_entry")
+    seg[L["quest_lo"]:meta["quest_end"]] = SEGMENTS.index("q_other")
     for q in meta["questions"]:
         seg[q["v0"]:q["end"] + 1] = SEGMENTS.index("q_answer")
     return seg[1:]
@@ -372,9 +437,84 @@ def selftest(n: int = 200) -> None:
             for q in m1["questions"]:
                 sp = slice(q["sep"], q["sep"] + VLEN + 1)
                 assert (dq1[sp] == digits(m1["recs"][q["rec"]]["addr"])).all()
+    larger = selftest_larger(src, n)
     print(f"grid_rows self-test: {n} rows x 2 address forms OK (frames, index, questions, streams, segments; the forms share every draw "
           f"and stream; 1 in 5 with a swapped index; 1 in 3 asking 18); {n // 4} key-hard rows x 2 forms OK (24 distinct keys, a one-part "
-          f"neighbour for every part; the row's other draws the standard row's)")
+          f"neighbour for every part; the row's other draws the standard row's); {larger}")
+
+
+def selftest_larger(src: bytes, n: int = 200) -> str:
+    """0.1.83: the AG48 rows in both key forms: every frame, index entry and question where the meta says and inside its slots, 48 sorted
+    addresses on slots 1-48, 24 asked and distinct, the streams' spans, the segments; the key-hard keys at AG48 in both forms and at AG
+    (distinct, a one-part neighbour for every part, each ending on 4 records); which layouts hold which keys (AG not the long ones)."""
+    def parts_of(k: bytes, key_form: str) -> tuple:
+        s = k.decode()
+        word, num = s[:-3 if key_form == "std" else -6], s[-3 if key_form == "std" else -6:]
+        return (word, num[-3], num[-2], num[-1]) if key_form == "std" else (word, num[:3], num[3], num[4], num[5])
+
+    rows = 0
+    assert fits("AG", "std") and fits("AG", "std", 1) and fits("AG48", "std") and fits("AG48", "long") and not fits("AG", "long")
+    for layout, key_form in (("AG48", "std"), ("AG48", "long")):
+        L = lay(layout)
+        for t in range(n // 2):
+            r = np.random.default_rng([13, t])
+            asked = None if t % 3 else list(r.permutation(L["comps"])[:18])
+            row, m = compose_ag(r, src, addrs=None, asked=asked, swap_index=t % 5 == 4, layout=layout, key_form=key_form)
+            rows += 1
+            assert len(row) == CTX + 1 and row[:len(HEAD)] == HEAD and m["layout"] == layout
+            assert (m.get("keys", "std")) == key_form
+            assert [rec["slot"] for rec in m["recs"]] == list(L["comp_slots"]) and m["addrs"] == sorted(m["addrs"])
+            assert len(m["recs"]) == L["comps"] and len(set(m["addrs"])) == L["comps"]
+            for rec in m["recs"]:
+                assert rec["hi"] - rec["lo"] == L["slot"] and rec["frame_end"] <= rec["hi"]
+                assert row[rec["lo"]] == DATA and row[rec["v0"]:rec["v0"] + VLEN].decode() == rec["value"] and row[rec["v0"] - 1] == SEP
+                lk = len(rec["key"])
+                assert (6 <= lk <= 9) if key_form == "std" else (9 <= lk <= 12), rec["key"]
+            nq = L["ask"] if asked is None else 18
+            assert len(m["questions"]) == nq == len(m["index"]) and len({q["rec"] for q in m["questions"]}) == nq
+            assert L["index_lo"] < m["index"][0]["lo"] and m["index_end"] <= L["index_hi"] and m["quest_end"] <= L["quest_hi"]
+            assert m["questions"][0]["lo"] == L["quest_lo"]
+            y = row[1:]
+            for qi, (q, e) in enumerate(zip(m["questions"], m["index"])):
+                rec = m["recs"][q["rec"]]
+                assert row[q["lo"]] == CUE and row[q["sep"]] == SEP and row[q["lo"] + 1:q["sep"]].decode() == rec["key"]
+                assert bytes(y[p] for p in answer_positions(m)[qi]) == rec["value"].encode() + bytes([END])
+                assert row[e["a_pos"] - 1] == SEP and row[e["lo"] + 1:e["a_pos"] - 1].decode() == rec["key"]
+            dk, dq = streams(m)
+            for rec in m["recs"]:
+                assert (dk[rec["lo"]:rec["hi"]] == digits(rec["addr"])).all()
+            for q in m["questions"]:
+                sp = slice(q["sep"], q["sep"] + VLEN + 1)
+                assert (dk[sp] == NULL).all() and (dq[sp] == digits(m["recs"][q["rec"]]["addr"])).all()
+            assert (dk[:L["slot"]] == NULL).all() and (dk[L["index_lo"]:L["index_hi"]] == NULL).all()
+            assert segments(m).shape == (CTX,)
+        for t in range(n // 4):
+            kh = hard_keys(np.random.default_rng([17, t]), layout, key_form)
+            parts = [parts_of(k, key_form) for k in kh]
+            np_ = len(parts[0])
+            assert len(set(kh)) == L["comps"]
+            var = [i for i in range(np_) if len({p[i] for p in parts}) > 1]
+            assert len(var) == 4 and sorted(len({p[i] for p in parts}) for i in var) == sorted([2, 2, 2, L["comps"] // 8]), var
+            for p in parts:                             # a neighbour that differs in exactly one part, for each varying part
+                for i in var:
+                    assert any(q[i] != p[i] and all(q[j] == p[j] for j in range(np_) if j != i) for q in parts), (p, i)
+            ends = {}
+            for k in kh:
+                ends[k[-2:]] = ends.get(k[-2:], 0) + 1
+            assert set(ends.values()) == {4}, ends       # each ending (the trigram's last two bytes) on 4 records
+            row1, m1 = compose_ag(np.random.default_rng([7, t]), src, keys=kh, layout=layout, key_form=key_form)
+            assert m1["hard"] and [r_["key"].encode() for r_ in m1["recs"]] == kh
+    for t in range(n // 4):                             # the key-hard keys at AG in the standard form: 0.1.75's property kept
+        kh = hard_keys(np.random.default_rng([17, t]))
+        ends = {}
+        for k in kh:
+            ends[k[-2:]] = ends.get(k[-2:], 0) + 1
+        assert len(kh) == N_COMP and set(ends.values()) == {4}
+    lw = max(len(w) for w in bf.WORDS)                  # the forms' longest keys: the longest cue word + three or six digits
+    assert lw + 3 == KEY_MAX["std"] and lw + 6 == KEY_MAX["long"], lw
+    assert max(len(bf.key_long(i)) for i in range(16)) == KEY_MAX["long"] and max(len(bf.key_name(i)) for i in range(16)) == KEY_MAX["std"]
+    return (f"0.1.83: {rows} rows at AG48 (both key forms) OK; {3 * (n // 4)} key-hard key sets OK (48 at AG48 in both forms, 24 at AG; "
+            f"distinct, a one-part neighbour for every part, each ending on 4 records); AG holds the standard keys, AG48 both forms")
 
 
 if __name__ == "__main__" and "--selftest" in sys.argv:

@@ -53,7 +53,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "ptr_lam", "ptr_block", "ptr_head",                                # 0.1.78: the pointer term
              "ptr_pos", "ptr_stop",                                             # 0.1.79: its positions and its gradient's reach
              "key_code",                                                        # 0.1.81: the key code at the end-marker
-             "key_rot")                                                         # 0.1.82: the key in the told head's rotation
+             "key_rot",                                                         # 0.1.82: the key in the told head's rotation
+             "grid_comps", "grid_keys")                                         # 0.1.83: the larger grid row and the long keys
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -141,6 +142,10 @@ def run_label(run: list) -> str:
         parts.append(f"key code {kv['key_code']}")
     if kv.get("key_rot") == "1":                                  # 0.1.82: the key in the told head's rotation
         parts.append("key rotation")
+    if kv.get("grid_comps") not in (None, "24"):                  # 0.1.83: the larger grid row
+        parts.append(f"{kv['grid_comps']} records a row")
+    if kv.get("grid_keys") not in (None, "std"):                  # 0.1.83: the long keys
+        parts.append(f"{kv['grid_keys']} keys")
     if kv.get("head"):
         parts.append(f"head {kv['head']} {kv.get('head_lam', '1')}")
         if kv.get("head_at", "question") == "both":                  # 0.1.72: the term at the index entries too

@@ -58,6 +58,12 @@ def key_name(idx: int) -> bytes:
     return f"{WORDS[idx % len(WORDS)]}{idx // len(WORDS):03d}".encode()
 
 
+def key_long(idx: int) -> bytes:
+    """0.1.83: the long keys of the larger grid row: a cue word + a six-digit number (16 x 1,000,000 keys, 9-12 bytes)."""
+    assert 0 <= idx < len(WORDS) * 1000000, idx
+    return f"{WORDS[idx % len(WORDS)]}{idx // len(WORDS):06d}".encode()
+
+
 def record_bytes(key: bytes, val: bytes) -> bytes:
     return bytes([CUE]) + key + bytes([SEP]) + val
 
