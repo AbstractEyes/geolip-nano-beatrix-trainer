@@ -360,6 +360,12 @@ moment of random phases, N I0(s)^8 / (exp(8 s) + N I0(s)^8). The moment is an an
 competitors (Derrida 1981, the random-energy model); the median shows the typical leak. The thirty stored binding models,
 `colab/nano_capacity.ipynb` on a CPU runtime:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity.ipynb)
+The same read as three lanes on three CPU runtimes at once, `colab/nano_capacity_lane{1,2,3}.ipynb`: every lane walks the thirty in
+the same order and claims a model on the Hub before reading it, by a small file written only if the repo has not moved since the
+lane's read of it (a commit with its parent named), so no two lanes read one model; a record does not depend on its lane.
+[![Lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_lane1.ipynb)
+[![Lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_lane2.ipynb)
+[![Lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_lane3.ipynb)
 
 Then:
 
