@@ -78,12 +78,14 @@ try:
     from . import pointer as pt  # noqa: E402  (the package; 0.1.78: the pointer term)
     from . import key_code as kcm  # noqa: E402  (the package; 0.1.81: the key code at the end-marker)
     from . import key_rotary as krm  # noqa: E402  (the package; 0.1.82: the key in the told head's rotation)
+    from . import path_rotary as prm  # noqa: E402  (the package; 0.1.92: the path in one head's rotation)
 except ImportError:                                      # run as a file: the folder is on the path (above)
     import grid_rows as gr  # noqa: E402
     import anchored_rope as ar  # noqa: E402
     import pointer as pt  # noqa: E402
     import key_code as kcm  # noqa: E402
     import key_rotary as krm  # noqa: E402
+    import path_rotary as prm  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -308,6 +310,32 @@ assert PTR_LAM == 0 or (GRID == "ag" and HEAD_FORM == "digit"), \
 assert not KEY_CODE or GRID == "ag", "--key_code is a form of the grid cores' input (--grid=ag: its tables ship beside the core)"
 assert not KEY_ROT or (GRID == "ag" and ROTARY == "anchored" and PTR_LAM > 0 and not PTR_STOP), \
     "--key_rot turns the pointer term's head (--ptr_lam > 0, its capture's plain form) on the anchored rotation's pairs (--grid=ag)"
+# 0.1.92: THE PATH IN ONE HEAD'S ROTATION (path_rotary.py). --path_bind=8 turns one head of every anchored block (--path_head, default 7)
+# on its eight anchor pairs by its unit path's phases at every position, in place of the installed angles: the units the fusion stage's
+# entropy rule cuts at 3.0 bits on the atlas table (--path_table, else $GEOLIP_ATLAS_TABLE, else the rotary repo's copy fetched without a
+# token; its sha256 pinned), phi_j(t) = sum over the path's last --path_k (16) bytes of P[j, offset, byte], P fixed phases uniform on
+# [0, 2 pi) drawn once from crc32("PATHROT|v1") (a buffer: no gradient, no draw from the run's generators, the same phases for every
+# seed). --path_form=same turns the query and the key at t by phi(t) (the node's identity); next turns the key at u by phi(u - 1) (the
+# continuation lookup: a query meets the bytes that followed its own path earlier in the row). No parameter, nothing added to any input.
+# The end read adds heldout_bpb_path_off (the same held-out rows with the path off) and heldout_bpb_by_repeat (the held-out bits at the
+# positions whose path occurred earlier in the row, against the others); --repeat_read=1 adds the split alone to a run without the path.
+# Off (the default) = 0.1.91 bit for bit; the run's name carries _pbs8h7 or _pbn8h7. The phases ship beside the weights
+# (path_rot.safetensors; scale.json's path_rot) and rotary_scale.Core applies them.
+PATH_BIND = int(ARGS.get("path_bind", "0"))
+assert PATH_BIND in (0, prm.PAIRS), f"--path_bind={PATH_BIND}: 0 (off) or {prm.PAIRS} (the head's anchor pairs)"
+PATH_FORM = ARGS.get("path_form", "")
+PATH_HEAD = int(ARGS.get("path_head", "7"))
+PATH_K = int(ARGS.get("path_k", str(prm.K)))
+PATH_TABLE = ARGS.get("path_table", "")
+assert ARGS.get("repeat_read", "0") in ("0", "1"), f"--repeat_read={ARGS.get('repeat_read')!r}: 0 or 1"
+REPEAT_READ = ARGS.get("repeat_read", "0") == "1"
+assert (PATH_FORM in prm.FORMS) == bool(PATH_BIND), f"--path_form={PATH_FORM!r}: same or next, exactly with --path_bind={prm.PAIRS}"
+assert PATH_BIND or not any(k in ARGS for k in ("path_head", "path_k")), "--path_head and --path_k are forms of the path (--path_bind)"
+assert not PATH_BIND or (GRID == "ag" and ROTARY == "anchored" and not PTR_STOP), \
+    "--path_bind turns pairs of the anchored rotation (--grid=ag) in every block (not with the pointer's stopped capture, which forms one head)"
+assert not PATH_BIND or not KEY_ROT or PATH_HEAD != PTR_HEAD, "the told head keeps the key rotation: the path takes another head"
+assert 1 <= PATH_K <= 64, f"--path_k={PATH_K}: 1 .. 64"
+assert not PATH_TABLE or PATH_BIND or REPEAT_READ, "--path_table is the unit rule's table (--path_bind or --repeat_read)"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
 N_HARD = int(round(N_AG * GRID_HARD))                                        # 0.1.75: the batch's key-hard grid rows (its last ones)
 assert GRID_HARD == 0 or N_HARD > 0, f"--grid_hard={GRID_HARD} rounds to no key-hard row of the batch's {N_AG} grid rows"
@@ -782,6 +810,21 @@ class Craft:
                 + (f"; the key's bound pairs held at length {self.key_rot.rho:g} before the turn at the records' SEPs only (the index "
                    f"entries' and the questions' keys free)" if KEY_NORM == 2 else "")
                 + "; no parameter")
+        self.units, self.path_rot, self.path_blocks = None, None, 0     # 0.1.92: the unit rule (the path, the repeat read) and the path
+        if PATH_BIND or REPEAT_READ:             # buffers only, no draw from the run's generators: the state dict stays the house body's
+            self.units = prm.Units(PATH_TABLE or None).to(DEV)
+        if PATH_BIND:                            # after the key rotation, before the pointer term's capture: it keeps the rotated q and k
+            self.path_rot = prm.PathRotary(self.units, PATH_FORM, head=PATH_HEAD, k=PATH_K).to(DEV)
+            self.path_blocks = prm.patch(self.model, self.path_rot)
+            log(f"the path in head {PATH_HEAD}'s rotation ({PATH_FORM}): in {self.path_blocks} anchored blocks its pairs {prm.LO}-"
+                f"{prm.LO + prm.PAIRS - 1} turned at every position by its unit path's phases (the entropy rule at {self.units.theta:g} bits, "
+                f"witness floor {self.units.floor:g}; the path's last {PATH_K} bytes; {prm.PAIRS} x {PATH_K} x {prm.VOCAB} phases seeded "
+                f"crc32({prm.seed_tag(PATH_K)!r})) in place of their anchored angles"
+                + ("; the key at u by the path ending at u - 1" if PATH_FORM == "next" else "; the query and the key by the same path")
+                + "; no parameter")
+        elif REPEAT_READ:
+            log(f"the repeat read: the held-out bits split at the positions whose unit path (the entropy rule at {self.units.theta:g} bits) "
+                f"occurred earlier in the row")
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
             assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
@@ -1355,13 +1398,16 @@ def logprobs(x):
 
 
 @torch.no_grad()
-def heldout_bits(disable_bank=False):
+def heldout_bits(disable_bank=False, units=None):
     """Held-out bits a byte: the mean, by byte class, and BY POSITION in the window (the row frame of eval/position_bits.py; the
-    eval rows are single documents behind a DOC byte, so the row frame is the document frame)."""
+    eval rows are single documents behind a DOC byte, so the row frame is the document frame). 0.1.92: with the unit rule (units), also
+    split at the input positions whose unit path occurred earlier in the row (path_rotary.repeat_mask) against the others
+    (heldout_bits.by_repeat; None without it)."""
     from geolip.alephllm.eval import position_bits as pb
     tot, n = 0.0, 0
     cls = {c: [0.0, 0] for c in BYTE_CLASSES}
     pos_acc = None
+    rep = None if units is None else prm.RepeatSplit()
     for i in range(0, len(eval_docs), 16):
         rows = [bytes([DOC]) + d[:CTX] for d in eval_docs[i:i + 16]]
         x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rows]).astype(np.int64), device=DEV)
@@ -1371,6 +1417,8 @@ def heldout_bits(disable_bank=False):
         pos_acc = pb.merge(pos_acc, pb.bits_by_position(nll))
         tgt = x[:, 1:].cpu().numpy()
         nl = nll.cpu().numpy()
+        if rep is not None:
+            rep.add(nl, prm.repeat_mask(units, x[:, :-1]))
         tot += float(nl.sum())
         n += nl.size
         cc = CLS_TABLE[tgt]
@@ -1380,6 +1428,7 @@ def heldout_bits(disable_bank=False):
                 cls[c][0] += float(nl[sel].sum())
                 cls[c][1] += int(sel.sum())
     heldout_bits.by_position = pb.finish(pos_acc)
+    heldout_bits.by_repeat = None if rep is None else rep.out()
     return tot / n / LN2, {c: (v[0] / v[1] / LN2 if v[1] else None) for c, v in cls.items()}
 
 
@@ -1728,8 +1777,9 @@ def finish(c: Craft) -> tuple:
     model.eval()
     if PAIR:
         log(f"the gauges of {c.arm}")
-    bits, by_cls = heldout_bits()
+    bits, by_cls = heldout_bits(units=c.units)
     by_pos = heldout_bits.by_position
+    by_rep = heldout_bits.by_repeat                     # 0.1.92: None without the unit rule
     collapse = bf.plain_collapse(by_pos["row"]) if by_pos and "row" in by_pos else None
     if collapse and collapse["flag"]:
         log(f"FLAG plain collapse: the windows {collapse['windows_over']} read above {collapse['threshold']} bits a byte (worst {collapse['worst_window']}"
@@ -1737,6 +1787,19 @@ def finish(c: Craft) -> tuple:
     log("held-out bits by position (row): " + " ".join(f"{b} {v:.3f} (n {by_pos['row_n'][b]})" for b, v in by_pos["row"].items() if v is not None))
     bits_off, by_cls_off = heldout_bits(disable_bank=True)
     log(f"held-out {bits:.4f} bits a byte (dispatch off {bits_off:.4f}); by class " + " ".join(f"{k} {v:.3f}" for k, v in by_cls.items() if v is not None))
+    path_off = None                                     # 0.1.92: the same rows with the path off (the installed rotation in every block)
+    if c.path_rot is not None:
+        c.path_rot.off = True
+        try:
+            _b, _c = heldout_bits(units=c.units)
+            path_off = dict(bits=_b, by_class=_c, by_position=heldout_bits.by_position, by_repeat=heldout_bits.by_repeat)
+        finally:
+            c.path_rot.off = False
+    if by_rep is not None:
+        log(f"held-out bits at the positions whose unit path occurred earlier in the row {by_rep['repeat']:.4f} (share "
+            f"{by_rep['repeat_share']:.3f}), at the others {by_rep['other']:.4f}"
+            + (f"; with the path off {path_off['bits']:.4f} ({path_off['bits'] - bits:+.4f}): at the repeats {path_off['by_repeat']['repeat']:.4f}, "
+               f"at the others {path_off['by_repeat']['other']:.4f}" if path_off else ""))
     fetch_res = {}
     for d in DISTS:
         fetch_res[str(d)] = fetch(d)
@@ -1910,6 +1973,9 @@ def finish(c: Craft) -> tuple:
                                       seed_tag=krm.seed_tag(KEY_K, KEY_PAIRS))
                 if KEY_NORM:                     # 0.1.87: the norm and its length (absent: no norm, 0.1.86's file); 0.1.88: 2 = the
                     _sj["key_rot"].update(norm=KEY_NORM, rho=c.key_rot.rho)       # records' SEPs only
+            if c.path_rot is not None:           # 0.1.92: the path rotation's phases beside the craft (rotary_scale.Core applies them)
+                save_file({"table": c.path_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "path_rot.safetensors"))
+                _sj["path_rot"] = prm.scale_field(c.path_rot)
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
                 _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
@@ -1941,6 +2007,14 @@ def finish(c: Craft) -> tuple:
         R["series"] = ARGS["series"]                 # 0.1.70: a re-run's name piece
     if PLAIN_DOC:
         R["plain_doc"] = True                        # 0.1.90: the plain rows opened by DOC
+    if by_rep is not None:
+        R["heldout_bpb_by_repeat"] = by_rep          # 0.1.92: the held-out bits split at the repeated unit paths
+    if c.path_rot is not None:                       # 0.1.92: the path rotation and the same rows with it off
+        R["path_rot"] = prm.record(c.path_rot, c.path_blocks)
+        R["heldout_bpb_path_off"] = path_off["bits"]
+        R["heldout_bpb_path_off_by_class"] = path_off["by_class"]
+        R["heldout_bpb_path_off_by_position"] = path_off["by_position"]
+        R["heldout_bpb_path_off_by_repeat"] = path_off["by_repeat"]
     return R, os.path.join(BED, f"bed_{c.tag}.json")
 
 

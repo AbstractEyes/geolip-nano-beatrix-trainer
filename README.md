@@ -442,6 +442,26 @@ runtimes, `colab/nano_code44_lane{1,2}.ipynb`, and their capacity on a CPU runti
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_lane2.ipynb)
 [![Capacity](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_c44.ipynb)
 
+0.1.92: the path in one head's rotation (`path_rotary.py`). The key rotation binds a record's whole key into one head's pairs at the end
+of the key; this binds every byte's unit path into one head's pairs at every position. The units are the fusion stage's (the library's
+`model/fusion.py`): a byte starts a unit when the next-byte entropy after the three bytes before it, read from an atlas table of byte
+trigrams, is at least 3.0 bits (or the cell was seen fewer than eight times, or a special byte or a newline is at hand), so a unit runs
+from one choice point to the next, 3.6 bytes on average on the bed's held-out text. `--path_bind=8 --path_form=same|next
+[--path_head=7 --path_k=16]` turns head 7's eight address pairs in every block, at every position, by the phases of the bytes since its
+unit's start (the last 16 of them): `phi_j(t) = sum_k P[j, k, x_(t-k)]`, P fixed random phases drawn once from a seeded generator. With
+`same` the query and the key at a position carry the same path, so two positions with equal paths meet as if unrotated on those pairs;
+with `next` the key at a position carries the path that ended one byte before it, so a query meets the bytes that followed its own path
+earlier in the row (a continuation lookup whose context is the unit's path, a different length at every position). No parameter is
+added and nothing enters the input; every other head and pair keeps its angles, the key rotation's head included. The end read adds
+`heldout_bpb_path_off` (the same rows with the path off) and `heldout_bpb_by_repeat` (the held-out bits at the positions whose path
+occurred earlier in the row, against the others); `--repeat_read=1` adds the split to a run without the path, and
+`rotary_scale.text_read` reads the same numbers from any stored model. The atlas table (240 KB) is fetched without a token from the
+rotary repo's `pillar/` folder and checked against its hash (`--path_table` or `$GEOLIP_ATLAS_TABLE` name a local copy). The default is
+0.1.91 bit for bit; the names carry `_pbs8h7` or `_pbn8h7`. Twelve models (each form on six seeds, the plain-rows recipe otherwise) on one
+or two G4 runtimes, `colab/nano_pillar1_lane{1,2}.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1_lane2.ipynb)
+
 Then:
 
 ```bash

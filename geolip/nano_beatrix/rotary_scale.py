@@ -70,6 +70,7 @@ try:
     from . import pointer as pt
     from . import key_code as kcm
     from . import key_rotary as krm
+    from . import path_rotary as prm
     from . import __version__ as _PKG_VERSION
 except ImportError:                                      # run as a file: the folder on the path
     import sys
@@ -79,6 +80,7 @@ except ImportError:                                      # run as a file: the fo
     import pointer as pt  # noqa: E402
     import key_code as kcm  # noqa: E402
     import key_rotary as krm  # noqa: E402
+    import path_rotary as prm  # noqa: E402
     _PKG_VERSION = "file"
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
 
@@ -417,9 +419,10 @@ class StackedAdam:
 
 # ------------------------------------------------------------------ the core
 def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch.Tensor | None = None,
-            key_rot: torch.Tensor | None = None) -> str:
-    """The core's state as one hash; extra (0.1.76: the value-path tables), key_code (0.1.81: the key code's tables) and key_rot (0.1.82:
-    the key rotation's phases) join it when the core carries them (a core without any hashes as before)."""
+            key_rot: torch.Tensor | None = None, path_rot: torch.Tensor | None = None) -> str:
+    """The core's state as one hash; extra (0.1.76: the value-path tables), key_code (0.1.81: the key code's tables), key_rot (0.1.82:
+    the key rotation's phases) and path_rot (0.1.92: the path rotation's phases) join it when the core carries them (a core without any
+    hashes as before)."""
     h = hashlib.sha256()
     for k, v in sorted(model.state_dict().items()):
         h.update(k.encode())
@@ -433,6 +436,9 @@ def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch
     if key_rot is not None:
         h.update(b"key_rot")
         h.update(key_rot.detach().cpu().contiguous().numpy().tobytes())
+    if path_rot is not None:
+        h.update(b"path_rot")
+        h.update(path_rot.detach().cpu().contiguous().numpy().tobytes())
     return h.hexdigest()
 
 
@@ -511,6 +517,19 @@ class Core:
             with torch.no_grad():
                 self.key_rot.table.copy_(t.to(self.dev))          # the stored phases (the seeded draw, as trained)
             krm.patch(self.model, self.key_rot)
+        self.path_rot = None
+        pp = os.path.join(folder, "path_rot.safetensors")
+        assert os.path.exists(pp) == ("path_rot" in self.scale), "scale.json names the path rotation's phases exactly when their file is there"
+        if os.path.exists(pp):                                    # 0.1.92: the path in one head's rotation, after the key rotation and
+            pf = self.scale["path_rot"]                           # before the look's capture (the unit rule's table: path_rotary.table_file)
+            prm.check_field(pf)
+            assert self.anchor is not None, "the path rotation turns pairs of the anchored rotation"
+            self.path_rot = prm.PathRotary(prm.Units(), pf["form"], head=int(pf["head"]), k=int(pf["k"])).to(self.dev)
+            t = load_file(pp)["table"]
+            assert tuple(t.shape) == tuple(self.path_rot.table.shape), (tuple(t.shape), tuple(self.path_rot.table.shape))
+            with torch.no_grad():
+                self.path_rot.table.copy_(t.to(self.dev))         # the stored phases (the seeded draw, as trained)
+            prm.patch(self.model, self.path_rot)
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")
         if os.path.exists(hp):
@@ -541,7 +560,8 @@ class Core:
         one hash."""
         return _digest(self.model, None if self.value_addr is None else self.value_addr.table,
                        None if self.key_code is None else self.key_code.table,
-                       None if self.key_rot is None else self.key_rot.table)
+                       None if self.key_rot is None else self.key_rot.table,
+                       None if self.path_rot is None else self.path_rot.table)
 
     def set_streams(self, metas: list, request=None) -> None:
         """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a
@@ -567,8 +587,11 @@ class Core:
         if h is None:
             assert lo == 0
             h = m.embed(x)                                # 0.1.82: the patched embedding sets the key rotation's phases from x
-        elif self.key_rot is not None:
-            self.key_rot.set(x)                           # 0.1.82: a forward from a given state reads the phases of the same rows
+        else:
+            if self.key_rot is not None:
+                self.key_rot.set(x)                       # 0.1.82: a forward from a given state reads the phases of the same rows
+            if self.path_rot is not None:
+                self.path_rot.set(x)                      # 0.1.92: and the path's
         cls = m._byte_cls_table[x] if getattr(m, "byte_table", False) else None
         for b in m.blocks[lo:hi]:
             h = b(h, byte_cls=cls)
@@ -2335,6 +2358,64 @@ def look_read(core_folder: str, out_path: str, seed: int, heldout_path: str, loo
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
     log(f"[look] wrote {out_path} ({rec['wall_s'] / 60:.1f} min)")
+    return rec
+
+
+def text_name(core_tag: str) -> str:
+    """0.1.92: the text read's record name for a core (its run's tag + "_text")."""
+    return f"{core_tag}_text"
+
+
+@torch.no_grad()
+def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 128, mb: int = 16, dev: str = "cuda", log=print) -> dict:
+    """0.1.92, THE TEXT READ (no members): the held-out text bits a byte as the trainer's end read forms them (DOC + the first ctx bytes of
+    the first n_docs held-out documents, the craft's own forward under bf16 autocast on the card, batches of mb rows), split at the input
+    positions whose unit path occurred earlier in the row (path_rotary.repeat_mask: the entropy rule at 3.0 bits on the atlas table)
+    against the others; a core with the path rotation is read again with the path off (the installed rotation in every block). The same
+    numbers as the run's own heldout_bpb, heldout_bpb_by_repeat and heldout_bpb_path_off for a core that carries them; the same split for
+    any stored core. One record at out_path, resume-first (an existing record is returned)."""
+    if os.path.exists(out_path):
+        log(f"[text] {os.path.basename(out_path)}: done before")
+        return json.load(open(out_path, encoding="utf-8"))
+    t0 = time.time()
+    core = Core(core_folder, dev, look=None)
+    pr = core.path_rot
+    units = pr.units if pr is not None else prm.Units().to(core.dev)
+    docs = load_heldout(heldout_path)[:n_docs]
+    assert len(docs) == n_docs, f"the held-out file holds {len(docs)} documents of at least {gr.CTX + 64} bytes, the read asks {n_docs}"
+
+    def one(off: bool) -> dict:
+        if pr is not None:
+            pr.off = off
+        try:
+            tot, n, rep = 0.0, 0, prm.RepeatSplit()
+            for i in range(0, len(docs), mb):
+                rows = [bytes([DOC]) + d[:gr.CTX] for d in docs[i:i + mb]]
+                x = torch.from_numpy(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rows]).astype(np.int64)).to(core.dev)
+                core.clear()
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    lg = core.model(x[:, :-1])[0].float()
+                nll = F.cross_entropy(lg.reshape(-1, lg.shape[-1]), x[:, 1:].reshape(-1), reduction="none").view(x.shape[0], -1)
+                nl = nll.cpu().numpy()
+                tot += float(nl.sum())
+                n += nl.size
+                rep.add(nl, prm.repeat_mask(units, x[:, :-1]))
+            return dict(bits=tot / n / math.log(2.0), by_repeat=rep.out())
+        finally:
+            if pr is not None:
+                pr.off = False
+    rec = dict(core=core.tag, version=_PKG_VERSION, docs=len(docs), ctx=gr.CTX, rule=dict(rule="entropy", theta=units.theta,
+               floor=units.floor, table_sha256=prm.TABLE_SHA256), path=(None if pr is None else dict(form=pr.form, head=pr.head, k=pr.k)))
+    rec.update(one(False))
+    if pr is not None:
+        rec["path_off"] = one(True)
+    rec["wall_s"] = time.time() - t0
+    r = rec["by_repeat"]
+    log(f"[text] {core.tag}: held-out {rec['bits']:.4f} bits a byte; at the repeated paths {r['repeat']:.4f} (share {r['repeat_share']:.3f}), "
+        f"elsewhere {r['other']:.4f}" + (f"; the path off {rec['path_off']['bits']:.4f}" if pr is not None else "")
+        + f" ({rec['wall_s']:.0f} s)")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
     return rec
 
 
