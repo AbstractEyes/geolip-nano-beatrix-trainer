@@ -407,6 +407,19 @@ it is not 4.16 (`_krt16r218`). Six sixteen-pair models at 48 records a row with 
 [![Capacity lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_r16_lane1.ipynb)
 [![Capacity lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_r16_lane2.ipynb)
 
+0.1.89: the far read. The capacity read holds its whole bank of competing keys and a block of scores in memory, so it stops near a
+million keys. `capacity_far.far_core` computes the same numbers streamed over the bank, on a grid to 10^8 competitors: the bank is the
+capacity read's draw key for key (the keys drawn in numpy and kept in the loop's order; their phases the same sums in the same order),
+the scores of each block go into the grid's running sums and maxima, and the median-score condition comes from the base sum (every true
+score at the median is the same sum with the true score moved out of the exponent). Models of one layout, key form and rotation share one
+bank, drawn once. Each record carries the first N with a wrong look and the N where half the looks go wrong, and `compare_tail` sets a far
+record against a stored million-key record of the same bank. The capacity read and the tail read are unchanged. Twelve sixteen-pair
+models (six with the records held, six without) read to 10^8 on three TPU runtimes' host machines,
+`colab/nano_capacity_far_lane{1,2,3}.ipynb`, each lane first reproducing a stored million-key read:
+[![Far lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far_lane1.ipynb)
+[![Far lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far_lane2.ipynb)
+[![Far lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far_lane3.ipynb)
+
 Then:
 
 ```bash
