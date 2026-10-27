@@ -420,6 +420,17 @@ models (six with the records held, six without) read to 10^8 on three TPU runtim
 [![Far lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far_lane2.ipynb)
 [![Far lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far_lane3.ipynb)
 
+0.1.90: plain rows opened by a document. The binding's recipe frames every row that is not a grid row (`--plant=1.0`), so a held-out
+row that opens with DOC and then plain text never appears in training, and one seed of six read such text as frame content. Below a
+share of 1 the rows the share leaves unframed are plain windows of the packed stream, which almost never start at a DOC. `--plain_doc=1`
+starts each plain row at the first DOC at or after its drawn place, so the row is a document from its first byte, the held-out text's own
+form. Nothing extra is drawn: at a given share the framed and grid rows are the same rows. The default is 0.1.89 bit for bit, and the
+names carry `d` after the share (`_p75d`). Six sixteen-pair models with the records held and one row in four of the others a plain
+document, on the G4, `colab/nano_plain16.ipynb`, and their capacity on two CPU runtimes beside it, `colab/nano_capacity_p16_lane{1,2}.ipynb`:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_plain16.ipynb)
+[![Capacity lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_p16_lane1.ipynb)
+[![Capacity lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_p16_lane2.ipynb)
+
 Then:
 
 ```bash

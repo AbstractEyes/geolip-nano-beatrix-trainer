@@ -20,6 +20,8 @@ Progress lines carry the job size, the time spent and the time left.
 Usage (through card_gate / run_cf): bed_train.py --out=DIR --arm=sm-free --seed=1 [--steps=3000 --mb=32 --ctx=1024 --lr=1e-3 --smoke=1 --prefetch=0 --wd=0.1]
 Framed rows: --frames=dyn [--sizes=32,128,256 --frame_records=4 --nest=0.3 --overlap=0.0 --ask=any --sized=1 --sliced=32] (bed_frames.py;
 --sized=1 names every frame's size in its open tag, --sliced=32 builds every larger frame as closed 32-byte slices; both off by default)
+[--plant=P --plain_doc=1] (0.1.90): P the share of the non-grid rows framed, the rest plain windows of the packed stream; --plain_doc=1
+opens every plain row at a DOC (the first at or after its drawn place: the held-out gauge's row form, DOC then a document); off by default
 [--gauge_asks=nested,overlap]: after the main gauge, the held-out fetch asked each named question strictly (the diet may ask any)
 [--gauge_only=1 --init=TAG]: a gauge read of a stored craft at this run's context and settings: no step, no training corpus, no weights
 written; the record (tag ending _gauge) carries gauge_only (0.1.26; the nano v1 crafts' interval checks, nano_v1.py)
@@ -96,7 +98,14 @@ WD_SET = ARGS.get("wd_set", "mat")
 assert WD >= 0 and WD_SET in bed_optim.DECAY_SETS, f"--wd={WD} --wd_set={WD_SET!r}: a decay >= 0 on one of {bed_optim.DECAY_SETS}"
 WARM = int(ARGS.get("warmup", "5" if SMOKE else "100"))
 P_PLANT = float(ARGS.get("plant", "0.25"))
-N_EVAL = int(ARGS.get("eval_docs", "16" if SMOKE else "128"))
+# 0.1.90: --plain_doc=1 opens every plain row (a non-grid place the share leaves unframed) at a DOC: the row starts at the first DOC at or
+# after its drawn place and runs on in the packed stream - the held-out gauge's row form (DOC, then a document from its first byte), from
+# the training corpus. No draw (the place moves), so at a share the framed and grid rows are the raw windows' rows. Off = 0.1.89 bit for
+# bit; the run's name carries the share's piece with "d" (_p75d).
+assert ARGS.get("plain_doc", "0") in ("0", "1"), f"--plain_doc={ARGS.get('plain_doc')!r}: 0 or 1"
+PLAIN_DOC = ARGS.get("plain_doc", "0") == "1"
+assert not PLAIN_DOC or P_PLANT < 1.0, f"--plain_doc=1 needs plain rows: a share below 1 (--plant={P_PLANT})"
+N_EVAL =int(ARGS.get("eval_docs", "16" if SMOKE else "128"))
 N_TRIALS = int(ARGS.get("trials", "8" if SMOKE else "64"))
 DISTS = [int(x) for x in ARGS.get("dists", "64,256,512,896").split(",")]
 # the framed rows: "" = the planted rows as before (bit-identical); "A" = the fixed reference layout;
@@ -559,6 +568,11 @@ else:
     offs = np.load(os.path.join(BED, "bed_corpus_offsets.npy"))
     packed = np.insert(corpus, offs[1:], np.uint8(DOC))           # DOC after every document, as the packer does
     log(f"corpus {len(corpus) / 1e6:.1f} MB, {len(offs) - 1:,} documents; packed {len(packed) / 1e6:.1f} MB")
+# 0.1.90: the places a plain row may open at - every DOC of the packed stream that leaves a whole row (CTX + 1 bytes) from itself
+DOCPOS = np.flatnonzero(packed[:len(packed) - CTX - 1] == DOC) if PLAIN_DOC and packed is not None else None
+if DOCPOS is not None:
+    assert len(DOCPOS), "--plain_doc=1: no DOC in the packed stream leaves a whole row"
+    log(f"plain rows opened by DOC: {len(DOCPOS):,} places")
 heldout = []
 HELD = [p for p in (os.path.join(OUT, "heldout_fineweb_edu_head2048.jsonl"), os.path.join(BED, "heldout_fineweb_edu_head2048.jsonl")) if os.path.exists(p)]
 assert HELD, f"no heldout_fineweb_edu_head2048.jsonl in {OUT} or {BED} (bed_corpus.py writes it beside the corpus)"
@@ -641,6 +655,9 @@ def batch(step, salt=None):
                 if r is not None:
                     w, meta = r
                     metas = [meta]
+        elif PLAIN_DOC:                        # 0.1.90: the plain row opened by DOC, the first at or after the drawn place (no draw)
+            q = DOCPOS[min(int(np.searchsorted(DOCPOS, p)), len(DOCPOS) - 1)]
+            w = packed[q:q + CTX + 1].tobytes()
         PLANTED[0] += len(metas)
         PLANTED[1] += 1
         for meta in metas:
@@ -1904,6 +1921,8 @@ def finish(c: Craft) -> tuple:
         R["grid"] = grid_block                       # 0.1.70: the scale test's cores
     if ARGS.get("series"):
         R["series"] = ARGS["series"]                 # 0.1.70: a re-run's name piece
+    if PLAIN_DOC:
+        R["plain_doc"] = True                        # 0.1.90: the plain rows opened by DOC
     return R, os.path.join(BED, f"bed_{c.tag}.json")
 
 

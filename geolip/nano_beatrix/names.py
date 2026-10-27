@@ -45,7 +45,8 @@ def run_tag(args: dict) -> str:
     fr = ("" if not frames else f"_fr{frames}_{register[:3]}_{tags}" + ("_sized" if sized else "") + (f"_sl{sliced}" if sliced else "")
           + (f"_nl{n_lookup}_nb{n_bulk}" if frames == "A" else f"_sz{'-'.join(map(str, sizes))}_r{n_rec_frame}_n{int(nest_p * 100)}_o{int(overlap_p * 100)}")
           + (f"_M{n_facts}" if n_facts else "") + f"_ask{ask}"
-          + (f"_p{int(round(p_plant * 100))}" if p_plant != 1.0 else ""))   # the diet, when not every row is framed
+          + (f"_p{int(round(p_plant * 100))}" + ("d" if args.get("plain_doc", "0") == "1" else "")   # the diet, when not every row is
+             if p_plant != 1.0 else ""))         # framed; 0.1.90: "d" when the plain rows open at a DOC (--plain_doc=1)
     # 0.1.24: the learning rate and the warmup, when not the trainer's defaults (a rate screen's runs would otherwise share one name)
     lr, warm = float(args.get("lr", "1e-3")), int(args.get("warmup", "5" if smoke else "100"))
     hp = (f"_lr{lr:g}" if lr != 1e-3 else "") + (f"_wu{warm}" if warm != (5 if smoke else 100) else "")
