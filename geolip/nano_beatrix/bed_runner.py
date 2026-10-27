@@ -57,7 +57,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "grid_comps", "grid_keys",                                         # 0.1.83: the larger grid row and the long keys
              "key_pairs", "key_norm",                                           # 0.1.87: the binding's forms
              "key_rho",                                                         # 0.1.88: the hold's length
-             "plain_doc")                                                       # 0.1.90: the plain rows opened by DOC
+             "plain_doc",                                                       # 0.1.90: the plain rows opened by DOC
+             "grid_code")                                                       # 0.1.91: the address code
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -154,6 +155,8 @@ def run_label(run: list) -> str:
         parts.append(f"{kv['grid_keys']} keys")
     if kv.get("plain_doc") == "1":                                # 0.1.90: the plain rows opened by DOC, at the share's framed rows
         parts.append(f"plain rows opened by DOC (framed {kv.get('plant', '0.25')})")
+    if kv.get("grid_code") not in (None, "8x2"):                  # 0.1.91: the address code
+        parts.append(f"the address code {kv['grid_code']}")
     if kv.get("head"):
         parts.append(f"head {kv['head']} {kv.get('head_lam', '1')}")
         if kv.get("head_at", "question") == "both":                  # 0.1.72: the term at the index entries too

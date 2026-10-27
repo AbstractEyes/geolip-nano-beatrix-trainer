@@ -135,10 +135,12 @@ def moment(s: float, n: int, pairs: int = J) -> float:
 
 def read_rows(core: rs.Core, held: list, R: int, seed: int = 1) -> list:
     """R rows at the core's layout, keys' form and address form through the look read's row maker (the held-out documents as filler):
-    the first half standard ('CAPACITY|v1'), the second key-hard ('CAPACITY|v1|hard'), each from the generator [seed, crc32('SCALE|<name>')]."""
-    a = rs.gauge_rows(seed, SEED_TAG, R // 2, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form)
+    the first half standard ('CAPACITY|v1'), the second key-hard ('CAPACITY|v1|hard'), each from the generator [seed, crc32('SCALE|<name>')].
+    0.1.91: at the core's address code."""
+    code = getattr(core, "code", rs.gr.CODE)
+    a = rs.gauge_rows(seed, SEED_TAG, R // 2, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form, code=code)
     b = rs.gauge_rows(seed, SEED_TAG + "|hard", R - R // 2, held, abytes=core.abytes, hard=True, layout=core.layout,
-                      key_form=core.key_form)
+                      key_form=core.key_form, code=code)
     return a + b
 
 

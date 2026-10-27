@@ -174,7 +174,8 @@ def _bed_batch(n_ag: int, n_hard: int = 0, layout: str = "AG", key_form: str = "
     """bed_train's own batch / ag_rows / grid_aux and the framed composer, lifted out of the file (its module reads a command line and a
     corpus at import), bound to the scale test's framed settings at 4,096 x 8 with n_ag grid rows (0.1.75: the last n_hard of them
     key-hard rows; 0.1.83: at the grid layout and the keys' form, AG and std by default). over (0.1.90): the bound names replaced (the
-    share P_PLANT, the stream packed, the plain rows' PLAIN_DOC and DOCPOS)."""
+    share P_PLANT, the stream packed, the plain rows' PLAIN_DOC and DOCPOS; 0.1.91: the address code GRID_CODE with its GR_RADIX and
+    GR_LEVELS)."""
     import ast
     import os
     from geolip.nano_beatrix import bed_frames as bf
@@ -192,7 +193,8 @@ def _bed_batch(n_ag: int, n_hard: int = 0, layout: str = "AG", key_form: str = "
               GRID_ABYTES=2,                                             # 0.1.74: the grid rows' address form (the default)
               N_HARD=n_hard,                                             # 0.1.75: the batch's key-hard grid rows
               GRID_LAYOUT=layout, GRID_KEYS=key_form,                    # 0.1.83: the grid layout and the keys' form
-              PLAIN_DOC=False, DOCPOS=None)                              # 0.1.90: the plain rows' form (raw windows by default)
+              PLAIN_DOC=False, DOCPOS=None,                              # 0.1.90: the plain rows' form (raw windows by default)
+              GRID_CODE=gr.CODE, GR_RADIX=gr.RADIX, GR_LEVELS=gr.LEVELS) # 0.1.91: the address code (8x2 by default)
     assert set(over) <= set(ns), sorted(set(over) - set(ns))
     ns.update(over)
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bed_train.py", "exec"), ns)

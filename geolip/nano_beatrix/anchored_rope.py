@@ -17,7 +17,13 @@ band alone. Nothing here is a parameter: a patched craft's state dict is the hou
 0.1.73: THE SPLIT AS A PARAMETER (the wide-band screen). The eight pairs before the anchor levels are shared between the relative band and
 the content pairs: with C content pairs (content_pairs, default 2 = the form above, bit for bit) the relative band has R = 8 - C pairs,
 w_j = (10000 * 4^(2R / (2R - 2)))^(-j / R), j = 0..R-1 (the same NTK-aware rule over the band's own 2R dims), and pairs R..7 are content.
-ALHENA-W, C = 4: pairs 0-3 relative (wavelengths 6.3 / 100 / 1,583 / 25,100 positions), pairs 4-7 content, pairs 8-15 the anchor levels."""
+ALHENA-W, C = 4: pairs 0-3 relative (wavelengths 6.3 / 100 / 1,583 / 25,100 positions), pairs 4-7 content, pairs 8-15 the anchor levels.
+
+0.1.91: THE ADDRESS CODE (grid_rows.CODES). The eight anchor pairs carry L levels of R / 2 pairs each (L R / 2 = 8), level l's pairs at
+w_k = 2 pi k / (R + 1), k = 1 .. R / 2, turned by (digit - R) w_k: over a level's pairs sum_k cos(w_k d) is R / 2 at d = 0 and -1/2 at
+every other difference, so the R + 1 symbols (the digits and the null anchor R) form a simplex at every code. "8x2" is the form above
+bit for bit (two levels of four pairs at 2 pi k / 9); "4x4" four levels of two pairs at 2 pi k / 5 (the split before the anchors
+unchanged)."""
 from __future__ import annotations
 
 import math
@@ -33,6 +39,16 @@ SHARED = REL_PAIRS + CONTENT_PAIRS                      # the pairs the relative
 PAIRS = SHARED + LEVELS * ANCHOR_FREQS
 NTK_SCALE, BASE = 4.0, 10000.0
 NULL = 8
+CODES = {"8x2": (8, 2), "4x4": (4, 4)}                  # 0.1.91: the address codes (radix, levels), grid_rows.CODES
+CODE = "8x2"                                            # the default: LEVELS levels of ANCHOR_FREQS pairs, the null anchor NULL
+
+
+def code_shape(code: str = CODE) -> tuple:
+    """0.1.91: a code's (radix, levels, pairs a level); its anchor pairs fill the eight after the shared ones at every code."""
+    assert code in CODES, f"the address code {code!r}: one of {sorted(CODES)}"
+    r, n = CODES[code]
+    assert r % 2 == 0 and n * (r // 2) == PAIRS - SHARED, (code, r, n)
+    return r, n, r // 2
 
 
 def _check(content_pairs: int) -> int:
@@ -41,17 +57,19 @@ def _check(content_pairs: int) -> int:
     return c
 
 
-def frequencies(content_pairs: int = CONTENT_PAIRS) -> tuple:
-    """-> (w (16,) float64, kind (16,) long): kind 0 = the sequence index, 1 = content (w 0), 2 + l = anchor level l."""
+def frequencies(content_pairs: int = CONTENT_PAIRS, code: str = CODE) -> tuple:
+    """-> (w (16,) float64, kind (16,) long): kind 0 = the sequence index, 1 = content (w 0), 2 + l = anchor level l. 0.1.91: the anchor
+    levels at the code (level l's R / 2 pairs at 2 pi k / (R + 1))."""
     c = _check(content_pairs)
+    r, n, f = code_shape(code)
     rel = SHARED - c
     dim = 2 * rel
     base = BASE * NTK_SCALE ** (dim / (dim - 2))
     w = [base ** (-j / rel) for j in range(rel)] + [0.0] * c
     kind = [0] * rel + [1] * c
-    for lev in range(LEVELS):
-        w += [2 * math.pi * k / 9 for k in range(1, ANCHOR_FREQS + 1)]
-        kind += [2 + lev] * ANCHOR_FREQS
+    for lev in range(n):
+        w += [2 * math.pi * k / (r + 1) for k in range(1, f + 1)]
+        kind += [2 + lev] * f
     return torch.tensor(w, dtype=torch.float64), torch.tensor(kind, dtype=torch.long)
 
 
@@ -60,17 +78,20 @@ class AnchorStreams:
     the null anchor). The angles are formed in fp32 and cast once per block, as the house rotary forms its tables. content_pairs: the
     split (0.1.73; default 2 = ALHENA)."""
 
-    def __init__(self, content_pairs: int = CONTENT_PAIRS) -> None:
+    def __init__(self, content_pairs: int = CONTENT_PAIRS, code: str = CODE) -> None:
         self.content_pairs = _check(content_pairs)
-        w, kind = frequencies(self.content_pairs)
+        self.code = code                                  # 0.1.91: the address code (its radix is the null anchor, its levels the streams)
+        self.radix, self.levels, _ = code_shape(code)
+        w, kind = frequencies(self.content_pairs, code)
         self.w, self.kind = w.float(), kind
         self.dk = self.dq = None
 
     def set(self, dk=None, dq=None) -> None:
-        """dk, dq: (B, n, 2) integer tensors of digits 0-8 on the craft's device, or both None."""
+        """dk, dq: (B, n, 2) integer tensors of digits 0-8 on the craft's device, or both None. 0.1.91: (B, n, levels) of digits 0 .. radix
+        at the streams' code."""
         assert (dk is None) == (dq is None), "the key and the query streams come together"
         if dk is not None:
-            assert dk.shape == dq.shape and dk.dim() == 3 and dk.shape[-1] == LEVELS, (tuple(dk.shape), tuple(dq.shape))
+            assert dk.shape == dq.shape and dk.dim() == 3 and dk.shape[-1] == self.levels, (tuple(dk.shape), tuple(dq.shape))
         self.dk, self.dq = dk, dq
 
     def clear(self) -> None:
@@ -86,10 +107,10 @@ class AnchorStreams:
         assert tuple(self.dk.shape[:2]) == (B, n), f"the streams are {tuple(self.dk.shape[:2])}, the forward is {(B, n)}"
         aq = base.expand(B, n, PAIRS).clone()
         ak = aq.clone()
-        for lev in range(LEVELS):
+        for lev in range(self.levels):
             sel = kind == 2 + lev
-            aq[..., sel] = (self.dq[..., lev:lev + 1].float() - NULL) * w[sel]
-            ak[..., sel] = (self.dk[..., lev:lev + 1].float() - NULL) * w[sel]
+            aq[..., sel] = (self.dq[..., lev:lev + 1].float() - self.radix) * w[sel]
+            ak[..., sel] = (self.dk[..., lev:lev + 1].float() - self.radix) * w[sel]
         return aq[:, None], ak[:, None]
 
 
@@ -118,20 +139,30 @@ def patch(model: torch.nn.Module, streams: AnchorStreams) -> int:
     return n
 
 
-def spec(content_pairs: int = CONTENT_PAIRS) -> dict:
+def spec(content_pairs: int = CONTENT_PAIRS, code: str = CODE) -> dict:
     """The rotation as a record field (the weights folder's scale.json and the run's record). The default split's field is 0.1.72's, key
-    for key."""
+    for key. 0.1.91: a code other than 8x2 names itself (the field's levels, anchor_freqs and null are the code's)."""
     c = _check(content_pairs)
-    w, kind = frequencies(c)
-    return dict(form="anchored", pairs=PAIRS, rel_pairs=SHARED - c, content_pairs=c, anchor_freqs=ANCHOR_FREQS, levels=LEVELS,
-                ntk_scale=NTK_SCALE, base=BASE, null=NULL, w=[float(x) for x in w], kind=[int(x) for x in kind])
+    r, n, f = code_shape(code)
+    w, kind = frequencies(c, code)
+    out = dict(form="anchored", pairs=PAIRS, rel_pairs=SHARED - c, content_pairs=c, anchor_freqs=f, levels=n,
+               ntk_scale=NTK_SCALE, base=BASE, null=r, w=[float(x) for x in w], kind=[int(x) for x in kind])
+    if code != CODE:
+        out["code"] = code
+    return out
+
+
+def code_of(rotary_field) -> str:
+    """0.1.91: the address code a recorded rotation field carries (a field without one is the 8x2 code's)."""
+    return rotary_field.get("code", CODE)
 
 
 def content_of(rotary_field) -> int:
-    """The content pair count a recorded rotation field carries (0.1.73; a field without one is ALHENA's 2), checked against spec()."""
+    """The content pair count a recorded rotation field carries (0.1.73; a field without one is ALHENA's 2), checked against spec()
+    (0.1.91: at the field's code)."""
     assert isinstance(rotary_field, dict) and rotary_field.get("form") == "anchored", rotary_field
     c = int(rotary_field.get("content_pairs", CONTENT_PAIRS))
-    assert rotary_field == spec(c), "the recorded rotation is not this module's anchored rotation at its split"
+    assert rotary_field == spec(c, code_of(rotary_field)), "the recorded rotation is not this module's anchored rotation at its split"
     return c
 
 
@@ -142,11 +173,12 @@ class ValueAddress(torch.nn.Module):
     The anchor pairs put a record's address in the attention scores only; with the tables a head whose look lands on any token of the
     record's compartment returns the address in its value too. On the grid rows the key stream carries an address only inside the
     compartments (the index entries, the questions' answer spans and the plain rows are null there), so the tables never see an answer.
-    Born zero, the patched forward equals the unpatched one until the first step moves them."""
+    Born zero, the patched forward equals the unpatched one until the first step moves them. 0.1.91: at the streams' code (levels x
+    radix rows: 2 x 8 at 8x2, 4 x 4 at 4x4)."""
 
     def __init__(self, d_model: int, streams: AnchorStreams) -> None:
         super().__init__()
-        self.table = torch.nn.Parameter(torch.zeros(LEVELS, NULL, d_model))
+        self.table = torch.nn.Parameter(torch.zeros(streams.levels, streams.radix, d_model))
         self.streams = streams                            # the rotation's streams (a plain attribute: not a submodule, not in the state dict)
 
     def add(self, x: torch.Tensor) -> torch.Tensor:
@@ -160,10 +192,11 @@ class ValueAddress(torch.nn.Module):
         assert tuple(dk.shape[:2]) == tuple(x.shape[:2]), f"the streams are {tuple(dk.shape[:2])}, the embedding is {tuple(x.shape[:2])}"
         dk = dk.long()
         null_row = self.table.new_zeros(1, self.table.shape[-1])
-        for lev in range(LEVELS):
+        nl, rx = self.table.shape[0], self.table.shape[1]
+        for lev in range(nl):
             d = dk[..., lev]
-            d = torch.where((d >= 0) & (d < NULL), d, torch.full_like(d, NULL))        # any digit outside 0-7 reads the null row
-            x = x + F.embedding(d, torch.cat([self.table[lev], null_row]), padding_idx=NULL).to(x.dtype)
+            d = torch.where((d >= 0) & (d < rx), d, torch.full_like(d, rx))            # any digit outside 0-7 reads the null row
+            x = x + F.embedding(d, torch.cat([self.table[lev], null_row]), padding_idx=rx).to(x.dtype)
         return x
 
 

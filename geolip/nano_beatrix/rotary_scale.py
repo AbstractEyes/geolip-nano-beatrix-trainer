@@ -465,9 +465,12 @@ class Core:
         self.layout = self.scale.get("grid_layout", "AG")         # 0.1.83: the grid layout and the keys' form it was trained on (the same)
         self.key_form = self.scale.get("grid_keys", "std")
         assert self.layout in gr.LAYOUTS and self.key_form in gr.KEY_FORMS, (self.layout, self.key_form)
+        self.code = self.scale.get("grid_code", gr.CODE)          # 0.1.91: the address code it was trained on (its rows, streams and head)
+        self.radix, self.levels = gr.radix_levels(self.code)
         self.anchor = None
         if isinstance(self.scale.get("rotary"), dict):            # 0.1.73: at the split the core was trained with (ALHENA's 2 or ALHENA-W's 4)
-            self.anchor = ar.AnchorStreams(ar.content_of(self.scale["rotary"]))
+            assert ar.code_of(self.scale["rotary"]) == self.code, "scale.json's rotation and grid code disagree"
+            self.anchor = ar.AnchorStreams(ar.content_of(self.scale["rotary"]), self.code)
             ar.patch(self.model, self.anchor)
         self.value_addr = None
         vp = os.path.join(folder, "value_addr.safetensors")
@@ -501,7 +504,8 @@ class Core:
             assert kf.get("norm", 0) in krm.NORMS, kf                                       # 0.1.88: 2 = the records' coded SEPs only
             assert self.anchor is not None, "the key rotation turns pairs of the anchored rotation"
             self.key_rot = krm.KeyRotary(int(kf["block"]), int(kf["head"]), k=int(kf["k"]), pairs=int(kf["pairs"]),   # 0.1.87: the
-                                         norm=int(kf.get("norm", 0)), rho=float(kf.get("rho", krm.RHO))).to(self.dev)   # binding's forms
+                                         norm=int(kf.get("norm", 0)), rho=float(kf.get("rho", krm.RHO)),           # binding's forms
+                                         code=self.code).to(self.dev)                                               # 0.1.91: its code
             t = load_file(rp)["table"]
             assert tuple(t.shape) == tuple(self.key_rot.table.shape), (tuple(t.shape), tuple(self.key_rot.table.shape))
             with torch.no_grad():
@@ -510,7 +514,7 @@ class Core:
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")
         if os.path.exists(hp):
-            self.head = nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(self.dev)
+            self.head = nn.Linear(self.cfg.d_model, self.levels * self.radix).to(self.dev)
             self.head.load_state_dict({k: v.to(self.dev) for k, v in load_file(hp).items()})
             self.head.eval()
             for p in self.head.parameters():
@@ -546,7 +550,7 @@ class Core:
             return
         dk, dq = [], []
         for j, m in enumerate(metas):
-            req = None if request is None else ([(gr.NULL, gr.NULL)] * len(m["questions"]) if request == "null" else request[j])
+            req = None if request is None else ([(self.radix,) * self.levels] * len(m["questions"]) if request == "null" else request[j])
             k_, q_ = gr.streams(m, gr.CTX, req)
             dk.append(k_)
             dq.append(q_)
@@ -578,7 +582,7 @@ class Core:
         """The address head on the final norm's state at the questions' SEPs (0.1.72: or at the index entries' SEPs) -> (Q, 2, 8) sigmoid
         scores (fp32)."""
         z = self.head(self.model.nf(h_sep).float())
-        return torch.sigmoid(z.float().view(-1, gr.LEVELS, gr.RADIX))
+        return torch.sigmoid(z.float().view(-1, self.levels, self.radix))
 
 
 # ------------------------------------------------------------------ the rows
@@ -601,17 +605,19 @@ def load_heldout(path: str, ctx: int = gr.CTX) -> list:
 
 
 def gauge_rows(seed: int, name: str, n: int, docs: list, abytes: int = 2, hard: bool = False, layout: str = "AG",
-               key_form: str = "std") -> list:
+               key_form: str = "std", code: str = gr.CODE) -> list:
     """bed_train's gauge rows (ag_set): n grid rows from the generator [seed, crc("SCALE|<name>")], the filler the documents `docs` in
     turn behind a DOC byte. The members' read uses the cores' own read rows ("read", the held-out documents) and calibration rows
     ("calib", the held-out documents reversed). abytes (0.1.74): the core's address form. hard (0.1.75): key-hard rows (grid_rows.hard_keys
     drawn from the generator before each row, as bed_train's ag_rows; "hard" with the held-out documents = the trainer's hard-row read).
-    layout and key_form (0.1.83): the core's grid layout and keys' form (scale.json; AG and std = 0.1.82's rows)."""
+    layout and key_form (0.1.83): the core's grid layout and keys' form (scale.json; AG and std = 0.1.82's rows). code (0.1.91): the core's
+    address code (scale.json's grid_code; 8x2 = the rows above)."""
     rng = np.random.default_rng([seed, gr.crc(f"SCALE|{name}")])
     out = []
     for j in range(n):
         keys = gr.hard_keys(rng, layout, key_form) if hard else None
-        out.append(gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes, keys=keys, layout=layout, key_form=key_form))
+        out.append(gr.compose_ag(rng, bytes([DOC]) + docs[j % len(docs)], gr.CTX, abytes=abytes, keys=keys, layout=layout, key_form=key_form,
+                                 code=code))
     return out
 
 
@@ -674,8 +680,11 @@ def question_table(metas: list, owned: list) -> dict:
             own.append(rank.get(a, -1))
             ipos.append(e)
     addr = np.array(addr)
-    return dict(row=np.array(row), pos=np.array(pos), addr=addr, own=np.array(own), dig=np.stack([addr // gr.RADIX, addr % gr.RADIX], 1),
-                ipos=np.array(ipos))
+    code = gr.code_of(metas[0]) if metas else gr.CODE              # 0.1.91: the rows' address code (one per read)
+    assert all(gr.code_of(m) == code for m in metas), "one address code a read"
+    dig = (np.stack([addr // gr.RADIX, addr % gr.RADIX], 1) if code == gr.CODE
+           else np.array([gr.digits(int(a), code) for a in addr], dtype=np.int64).reshape(len(addr), gr.radix_levels(code)[1]))
+    return dict(row=np.array(row), pos=np.array(pos), addr=addr, own=np.array(own), dig=dig, ipos=np.array(ipos))
 
 
 # ------------------------------------------------------------------ the trainers
@@ -714,6 +723,7 @@ def train_last(core: Core, stacks: dict, steps: int, seed: int, packed: np.ndarr
                ckpt: str | None = None, ckpt_every: int = 2000, trace_every: int = 2000) -> dict:
     """The last-site paired trainer: every stack in `stacks` (name -> StackedArms / StackedToys over the same N_OWN owners) trains on the
     same member-mode rows, each member alone (its own mean CE on its own answer positions, its own Adam). -> the training record."""
+    assert getattr(core, "code", gr.CODE) == gr.CODE, "the members' rows and gates are written for the 8x2 address code"
     dev = core.dev
     codes = code_tables(N_OWN).to(dev)
     opts = {k: StackedAdam(list(s.parameters()), s.M) for k, s in stacks.items()}
@@ -808,6 +818,7 @@ def train_mid(core: Core, arms: StackedArms, steps: int, seed: int, packed: np.n
     """The mid-site row-owned trainer: `arms` over the first M_MID owners after block MID_SITE; each batch of ROWS_MID rows holds one row a
     member (half the members a step, every member once in each pair of steps), only that member writes, at its question's answer
     positions; blocks MID_SITE.. recomputed in full; each member's own mean CE at those positions, its own Adam. steps = batch steps."""
+    assert getattr(core, "code", gr.CODE) == gr.CODE, "the members' rows and gates are written for the 8x2 address code"
     dev = core.dev
     M = arms.M
     assert M == 2 * ROWS_MID, (M, ROWS_MID)
@@ -1017,6 +1028,7 @@ def _mean_over(acc: _Acc, key: str, cnt: torch.Tensor, addrs: list) -> float:
 def read_last(core: Core, stacks: dict, rows: list, cal: dict, owned: list, never: list, seed: int, mb: int = ROWS_LAST, log=print) -> dict:
     """The last-site read on the read rows: every cell of every stack, the solo reads, the owner-weight scan, the request sources'
     diagnostics. stacks: name -> a stack over the N_OWN owners. -> the record."""
+    assert getattr(core, "code", gr.CODE) == gr.CODE, "the members' rows and gates are written for the 8x2 address code"
     dev = core.dev
     L9 = level_code(dev)
     owned_t = torch.tensor(owned, device=dev)
@@ -1181,6 +1193,7 @@ def read_mid(core: Core, arms: StackedArms, rows: list, cal: dict, owned: list, 
     """The mid-site read (m = M_MID) on the read rows: every source x U x Z cell and G2 / G0 (the merged writes after block MID_SITE at
     every question's answer positions, blocks MID_SITE.. recomputed), and the solo reads with each owned question's owner ALONE in its
     row (one forward a question, chunked). quick: U 5 only (the CPU shape check). -> the record."""
+    assert getattr(core, "code", gr.CODE) == gr.CODE, "the members' rows and gates are written for the 8x2 address code"
     dev = core.dev
     L9 = level_code(dev)
     m = arms.M
@@ -1356,7 +1369,9 @@ def look_of(cap, metas: list, rows_idx, pos, asked, thr: float = LOOK_THR) -> di
     rows_idx, pos, asked = (np.asarray(x, dtype=np.int64) for x in (rows_idx, pos, asked))
     Q = len(rows_idx)
     hd = q.shape[-1]
-    o = dict(dig=np.full((Q, gr.LEVELS), gr.NULL, dtype=np.int64), rec=np.full(Q, -1, dtype=np.int64), mass=np.zeros(Q),
+    code = gr.code_of(metas[0]) if metas else gr.CODE              # 0.1.91: the rows' address code (its levels; its radix the null anchor)
+    rx, nl = gr.radix_levels(code)
+    o = dict(dig=np.full((Q, nl), rx, dtype=np.int64), rec=np.full(Q, -1, dtype=np.int64), mass=np.zeros(Q),
              top=np.zeros(Q, dtype=np.int64), top_mass=np.zeros(Q), second=np.zeros(Q), true_mass=np.zeros(Q))
     for r in np.unique(rows_idx):
         js = np.nonzero(rows_idx == r)[0]
@@ -1381,7 +1396,7 @@ def look_of(cap, metas: list, rows_idx, pos, asked, thr: float = LOOK_THR) -> di
         o["top"][js], o["top_mass"][js], o["second"][js] = order[:, 0], fm[ix, order[:, 0]], fm[ix, order[:, 1]]
         for jj, j in enumerate(js):
             if rec[jj] >= 0:
-                o["dig"][j] = gr.digits(int(recs[int(rec[jj])]["addr"]))
+                o["dig"][j] = gr.digits(int(recs[int(rec[jj])]["addr"]), code)
     return o
 
 
@@ -1451,12 +1466,13 @@ def batch_views(core: Core, rows: list, owned: list, swap_rng, srcs, site: int |
                 out["look"][sn] = look_of(core.look_cap, metas, qt["row"], at, asked)
             core.look_cap.clear()
         pred = torch.stack([core.readout(h[rq, ip[:, i]]).argmax(-1) for i in range(ip.shape[1])], 1)  # the entry's address bytes
-        out["p1"][rk] = dict(written=gr.decode_written(pred.cpu().numpy(), ip.shape[1]),
+        out["p1"][rk] = dict(written=gr.decode_written(pred.cpu().numpy(), ip.shape[1], getattr(core, "code", gr.CODE)),
                              s_e=core.head_scores(h[rq, ip[:, 0]]) if core.head is not None else None)  # the head at the SEP
     st = out["stream"]
     st["true"], st["written"], st["swapped"] = qt["dig"], out["p1"]["T"]["written"], out["swapped"]
     if "F" in xs:
-        st["indexf"] = np.array([d for r, m in out["free"] for d in gr.row_request(r, m)], dtype=np.int64).reshape(-1, gr.LEVELS)
+        st["indexf"] = np.array([d for r, m in out["free"] for d in gr.row_request(r, m)], dtype=np.int64).reshape(
+            -1, gr.radix_levels(getattr(core, "code", gr.CODE))[1])
     if core.head is not None:
         for rk in xs:
             st["dec_i" if rk == "T" else "dec_if"] = np.array(gr.decode_scores(out["p1"][rk]["s_e"].cpu().numpy()), dtype=np.int64)
@@ -1664,6 +1680,7 @@ def read_last_find(core: Core, stacks: dict, rows: list, cal: dict, owned: list,
     """The last-site read in the two-pass form: every source x U x Z x m and G2 / G0 for every stack, each source in its own view (its
     own address in the streams and the gate; the bare core and the solo reads in that same view), the owner-weight scan on the T row with
     the true address, the sources' diagnostics. cal: calibrate_find's record. -> the record (read_last's fields, plus each cell's view)."""
+    assert getattr(core, "code", gr.CODE) == gr.CODE, "the members' rows and gates are written for the 8x2 address code"
     dev = core.dev
     srcs = list(srcs or find_sources(core, "last"))
     L9 = level_code(dev)
@@ -1796,6 +1813,7 @@ def read_mid_find(core: Core, arms: StackedArms, rows: list, cal: dict, owned: l
     """The mid-site read (m = M_MID) in the two-pass form: every source x U x Z cell and G2 / G0, each source in its own view (the merged
     writes after block MID_SITE at every question's answer positions, blocks MID_SITE.. recomputed with the view's streams), and the
     solo reads with each owned question's owner ALONE in its row in the same view. quick: U 5 only. -> the record."""
+    assert getattr(core, "code", gr.CODE) == gr.CODE, "the members' rows and gates are written for the 8x2 address code"
     dev = core.dev
     srcs = list(srcs or find_sources(core, "mid"))
     L9 = level_code(dev)
@@ -2264,9 +2282,11 @@ def look_read(core_folder: str, out_path: str, seed: int, heldout_path: str, loo
     assert core.anchor is not None, "the look sources put their address in the anchored core's streams"
     owned, _ = owned_sets()
     held = load_heldout(heldout_path)
-    sets = {"read": gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form)}
+    sets = {"read": gauge_rows(seed, "read", read_batches * ROWS_LAST, held, abytes=core.abytes, layout=core.layout, key_form=core.key_form,
+                               code=core.code)}
     if hard_batches:
-        sets["hard"] = gauge_rows(seed, "hard", hard_batches * ROWS_LAST, held, abytes=core.abytes, hard=True, layout=core.layout, key_form=core.key_form)
+        sets["hard"] = gauge_rows(seed, "hard", hard_batches * ROWS_LAST, held, abytes=core.abytes, hard=True, layout=core.layout,
+                                  key_form=core.key_form, code=core.code)
     rec = dict(core=core.tag, seed=seed, version=_PKG_VERSION, look=dict(block=core.look[0], head=core.look[1], thr=LOOK_THR,
                from_ptr=look == "ptr"), sets={k: len(v) for k, v in sets.items()}, views=list(LOOK_VIEWS), requests=list(LOOK_REQS))
     n_all = sum(len(v) for v in sets.values())
@@ -2286,7 +2306,7 @@ def look_read(core_folder: str, out_path: str, seed: int, heldout_path: str, loo
             for s in LOOK_REQS:
                 sd = st[FIND_SOURCES[s][1]]
                 req[s]["right"] += int((sd == dig).all(-1).sum())
-                req[s]["null"] += int((sd == gr.NULL).any(-1).sum())
+                req[s]["null"] += int((sd == core.radix).any(-1).sum())
             for s in LOOK_VIEWS:
                 v = ctx["views"][ctx["view_of"][s]]
                 ans[s] += int((v["lb"].argmax(-1) == v["raw"]).all(-1).sum())

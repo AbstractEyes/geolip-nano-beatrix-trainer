@@ -57,12 +57,14 @@ ADDR_DIGITS = (ord("0"), ord("7"))      # the two-digit address bytes (grid_rows
 ADDR_BYTE = (0x80, 0xBF)
 
 
-def records(idx: torch.Tensor, off: torch.Tensor) -> torch.Tensor:
+def records(idx: torch.Tensor, off: torch.Tensor, code: str = ar.CODE) -> torch.Tensor:
     """0.1.88: idx (B, n) bytes, off its key offsets (key_code.key_offsets) -> (B, n) bool: the coded SEPs that end a record, from the
     bytes at or before each SEP only. The key's CUE stands at c = t - n(t) - 1. A grid row (task byte 'g' at position 4): x[c - 3] = DATA
     and x[c - 2], x[c - 1] address digits, or the one-byte form x[c - 2] = DATA and x[c - 1] in 0x80-0xBF. Any other row: the CUE inside
     an open frame - the DATA and THINK bytes before c outnumber the END bytes before c. The row's kind is read at position 4, so a SEP
-    before it is never held (every row's head is six bytes; no row codes a SEP there)."""
+    before it is never held (every row's head is six bytes; no row codes a SEP there). 0.1.91: at the address code (anchored_rope.CODES)
+    a grid record is x[c - L - 1] = DATA and x[c - L] .. x[c - 1] digit bytes '0' .. '0' + R - 1 (4x4: DATA and four digits '0'-'3');
+    the one-byte form is the 8x2 code's only."""
     B, n = idx.shape
     x = idx.long()
     pos = torch.arange(n, device=idx.device)
@@ -73,8 +75,15 @@ def records(idx: torch.Tensor, off: torch.Tensor) -> torch.Tensor:
     def at(back: int) -> torch.Tensor:                                                                # x[c - back], -1 before the row
         p = c - back
         return torch.where(p >= 0, torch.gather(x, 1, p.clamp_min(0)), torch.full_like(p, -1))
-    digit = lambda v: (v >= ADDR_DIGITS[0]) & (v <= ADDR_DIGITS[1])                                  # noqa: E731
-    grid_rec = ((at(3) == DATA) & digit(at(2)) & digit(at(1))) | ((at(2) == DATA) & (at(1) >= ADDR_BYTE[0]) & (at(1) <= ADDR_BYTE[1]))
+    if code == ar.CODE:                                                                              # 0.1.88's rule, bit for bit
+        digit = lambda v: (v >= ADDR_DIGITS[0]) & (v <= ADDR_DIGITS[1])                              # noqa: E731
+        grid_rec = ((at(3) == DATA) & digit(at(2)) & digit(at(1))) | ((at(2) == DATA) & (at(1) >= ADDR_BYTE[0]) & (at(1) <= ADDR_BYTE[1]))
+    else:                                                                                            # 0.1.91: DATA and the code's L digits
+        rx, nl, _ = ar.code_shape(code)
+        grid_rec = at(nl + 1) == DATA
+        for i in range(1, nl + 1):
+            v = at(i)
+            grid_rec = grid_rec & (v >= ADDR_DIGITS[0]) & (v <= ADDR_DIGITS[0] + rx - 1)
     depth = torch.cumsum(((x == DATA) | (x == THINK)).long() - (x == END).long(), dim=1)               # through each position
     before = torch.where(c >= 1, torch.gather(depth, 1, (c - 1).clamp_min(0)), torch.zeros_like(c))   # the bytes before the CUE
     grid = (x[:, 4] == GRID_TASK)[:, None] if n > 4 else torch.zeros(B, 1, dtype=torch.bool, device=idx.device)
@@ -107,13 +116,16 @@ class KeyRotary(torch.nn.Module):
     told block's rotation. block is numbered from 1, as scale.json's ptr. k (0.1.83): the reach - a SEP is coded when its CUE lies in the
     k + 1 positions before it (9: 0.1.82's; 12: the long keys of the larger grid row). pairs (0.1.87): the bound pairs, 8 or 16; norm
     (0.1.87): the key's bound pairs held at length rho at the coded SEPs; 0.1.88: norm 0 (none), 1 (every coded SEP, 0.1.87's True), 2 (the
-    records' coded SEPs only; records()). hold: the current forward's held positions (None without a norm)."""
+    records' coded SEPs only; records()). hold: the current forward's held positions (None without a norm). code (0.1.91): the grid rows'
+    address code, which the records' rule reads (the hold at norm 2)."""
 
-    def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: int = 0, rho: float = RHO) -> None:
+    def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: int = 0, rho: float = RHO,
+                 code: str = ar.CODE) -> None:
         super().__init__()
         assert int(pairs) in PAIR_FORMS, f"pairs {pairs!r}: one of {PAIR_FORMS}"
         assert int(norm) in NORMS and int(norm) == norm, f"norm {norm!r}: one of {NORMS}"
-        self.block, self.head, self.k, self.pairs = int(block), int(head), int(k), int(pairs)
+        ar.code_shape(code)
+        self.block, self.head, self.k, self.pairs, self.code = int(block), int(head), int(k), int(pairs), code
         self.norm, self.rho = int(norm), float(rho)
         assert self.rho > 0, rho
         self.register_buffer("table", phase_table(self.k, self.pairs), persistent=False)
@@ -134,7 +146,7 @@ class KeyRotary(torch.nn.Module):
     def set(self, idx: torch.Tensor) -> None:
         off = kcm.key_offsets(idx, self.k)
         self.phi, self.on = self.phases(idx, off)
-        self.hold = {0: None, 1: self.on, 2: records(idx, off) if self.norm == 2 else None}[self.norm]   # 0.1.88: where the norm holds
+        self.hold = {0: None, 1: self.on, 2: records(idx, off, self.code) if self.norm == 2 else None}[self.norm]   # 0.1.88: where the norm holds
 
     def clear(self) -> None:
         self.phi = self.on = self.hold = None

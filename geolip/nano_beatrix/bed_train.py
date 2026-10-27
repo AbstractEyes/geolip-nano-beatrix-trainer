@@ -267,12 +267,22 @@ assert KEY_RHO > 0 and ("key_rho" not in ARGS or KEY_NORM), f"--key_rho={ARGS.ge
 # (a SEP is coded when its CUE lies in the 13 positions before it: the key rotation's phases are then 8 x 12 x 256, seeded
 # crc32("KEYROT|v1|k12")). The defaults (24, std) = 0.1.82 bit for bit; the run's name carries _gc48 and _kl.
 GRID_COMPS = int(ARGS.get("grid_comps", "24"))
-GRID_LAYOUT = {24: "AG", 48: "AG48"}.get(GRID_COMPS)
+GRID_LAYOUT = {24: "AG", 48: "AG48", 96: "AG96"}.get(GRID_COMPS)
 assert GRID_LAYOUT is not None and (GRID_COMPS == 24 or GRID == "ag"), \
-    f"--grid_comps={GRID_COMPS}: 24 or 48, a layout of the addressed grid rows (--grid=ag)"
+    f"--grid_comps={GRID_COMPS}: 24, 48 or 96, a layout of the addressed grid rows (--grid=ag)"
 GRID_KEYS = ARGS.get("grid_keys", "std")
 assert GRID_KEYS in gr.KEY_FORMS and (GRID_KEYS == "std" or GRID == "ag"), f"--grid_keys={GRID_KEYS!r}: std or long (--grid=ag)"
-assert gr.fits(GRID_LAYOUT, GRID_KEYS, GRID_ABYTES), f"the {GRID_LAYOUT} layout does not hold {GRID_KEYS} keys (the long keys need 48)"
+# 0.1.91: THE ADDRESS CODE. --grid_code=4x4 writes and streams every grid row's address as four digits of four (256 addresses; grid_rows.CODES)
+# and turns the anchored rotation's eight anchor pairs as four levels of two pairs at 2 pi k / 5 (anchored_rope.CODES); the address head
+# reads four levels of four digits, the value-path tables are 4 x 4 x d, the hold's record rule reads DATA and four digits. --grid_comps=96
+# (the AG96 layout: 128 slots of 32 bytes, 96 compartments, 24 asked) needs it. The default (8x2) = 0.1.90 bit for bit; the run's name
+# carries _ac44.
+GRID_CODE = ARGS.get("grid_code", gr.CODE)
+assert GRID_CODE in gr.CODES and (GRID_CODE == gr.CODE or GRID == "ag"), f"--grid_code={GRID_CODE!r}: one of {sorted(gr.CODES)} (--grid=ag)"
+assert GRID_CODE == gr.CODE or GRID_ABYTES == 2, "--grid_abytes=1 is the 8x2 code's one-byte form"
+assert gr.n_addr(GRID_CODE) >= gr.lay(GRID_LAYOUT)["comps"], f"--grid_comps={GRID_COMPS} needs more than the {GRID_CODE} code's addresses (--grid_code=4x4)"
+GR_RADIX, GR_LEVELS = gr.radix_levels(GRID_CODE)                # the address head's and the streams' shape (8 x 2 at the default)
+assert gr.fits(GRID_LAYOUT, GRID_KEYS, GRID_ABYTES, GRID_CODE), f"the {GRID_LAYOUT} layout does not hold {GRID_KEYS} keys (the long keys need 48)"
 KEY_K = gr.KEY_MAX[GRID_KEYS]                                   # the key's reach: 9 (0.1.81's K) or 12
 assert not KEY_CODE or KEY_K == kcm.K, "--key_code's tables reach 9 bytes: the long keys are built for the key rotation"
 HEAD_FORM = ARGS.get("head", "")
@@ -603,7 +613,7 @@ def ag_rows(rng, n, docs=None, n_hard=0):
         else:
             src = bytes([DOC]) + docs[j % len(docs)]
         keys = gr.hard_keys(rng, GRID_LAYOUT, GRID_KEYS) if j >= n - n_hard else None
-        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES, keys=keys, layout=GRID_LAYOUT, key_form=GRID_KEYS))
+        out.append(gr.compose_ag(rng, src, CTX, abytes=GRID_ABYTES, keys=keys, layout=GRID_LAYOUT, key_form=GRID_KEYS, code=GRID_CODE))
     return out
 
 
@@ -613,7 +623,7 @@ def grid_aux(metas, first, request=None):
     ihead_row, ihead_pos, ihead_dig, the same at each index entry's SEP (grid_rows.index_head_targets; read only with --head_at=both).
     request: per grid row, the address each question asks for (None = the true address; grid_rows.streams)."""
     B = first + len(metas)
-    dk = np.full((B, CTX, gr.LEVELS), gr.NULL, dtype=np.int64)
+    dk = np.full((B, CTX, GR_LEVELS), GR_RADIX, dtype=np.int64)        # 0.1.91: the code's levels, its null anchor (8 x 2: 2 and 8)
     dq = dk.copy()
     hr, hp, hd = [], [], []
     ir, ip, id_ = [], [], []
@@ -716,10 +726,12 @@ class Craft:
         self.head_curve, self.trace, self.novelty = [], [], None
         self.ihead_curve = []                    # 0.1.72: the index entries' term (--head_at=both)
         if ROTARY == "anchored":                 # no parameter: the state dict stays the house body's
-            self.anchor = ar.AnchorStreams(ROT_CONTENT)
+            self.anchor = ar.AnchorStreams(ROT_CONTENT, GRID_CODE)
             _rel = ar.SHARED - ROT_CONTENT
             log(f"the anchored rotation on {ar.patch(self.model, self.anchor)} softmax blocks (pairs 0-{_rel - 1} relative, NTK x{ar.NTK_SCALE:g}; "
-                f"{_rel}-{ar.SHARED - 1} content; 8-15 two anchor levels at 2 pi k / 9)")
+                f"{_rel}-{ar.SHARED - 1} content; 8-15 "
+                + ("two anchor levels at 2 pi k / 9)" if GRID_CODE == gr.CODE else
+                   f"{GR_LEVELS} anchor levels of {GR_RADIX // 2} pairs at 2 pi k / {GR_RADIX + 1}: the {GRID_CODE} address code)"))
         if GRID_ABYTES == 1:                     # 0.1.74
             log("the grid rows' addresses as one byte 0x80 + a (unique in the row), in the frames and the index; the streams keep the digits")
         if GRID_LAYOUT != "AG" or GRID_KEYS != "std":   # 0.1.83
@@ -731,12 +743,12 @@ class Craft:
                 f"their parts: a partial key match fails on them); the hard-row read beside the end read")
         if HEAD_FORM == "digit":                 # the per-digit address head: torch's default weight, the bias at the uniform prior 1/8
             torch.manual_seed(gr.crc(f"SCALE|head|s{SEED}"))
-            self.addr_head = torch.nn.Linear(self.cfg.d_model, gr.LEVELS * gr.RADIX).to(DEV)
+            self.addr_head = torch.nn.Linear(self.cfg.d_model, GR_LEVELS * GR_RADIX).to(DEV)
             with torch.no_grad():
-                self.addr_head.bias.fill_(math.log(1.0 / (gr.RADIX - 1)))
+                self.addr_head.bias.fill_(math.log(1.0 / (GR_RADIX - 1)))
             self.model.nf.register_forward_hook(lambda mod, inp, out: setattr(self, "h_nf", out))
             self.params = self.params + list(self.addr_head.parameters())
-            log(f"the address head: {gr.LEVELS} levels x {gr.RADIX} digits on the final norm's state at each question's SEP, "
+            log(f"the address head: {GR_LEVELS} levels x {GR_RADIX} digits on the final norm's state at each question's SEP, "
                 f"{sum(p.numel() for p in self.addr_head.parameters()):,} parameters, lambda {HEAD_LAM:g}"
                 + (f"; the same head at each index entry's SEP, lambda {HEAD_LAM_I:g}" if HEAD_AT == "both" else ""))
         self.value_addr = None                   # 0.1.76: the value-path address (--value_addr=1)
@@ -744,7 +756,8 @@ class Craft:
             self.value_addr = ar.ValueAddress(self.cfg.d_model, self.anchor).to(DEV)
             ar.patch_value(self.model, self.value_addr)
             self.params = self.params + [self.value_addr.table]
-            log(f"the address on the value path: {ar.LEVELS} level tables x {ar.NULL} digits x {self.cfg.d_model} added to the input of every "
+            log(f"the address on the value path: {self.value_addr.table.shape[0]} level tables x {self.value_addr.table.shape[1]} digits x "
+                f"{self.cfg.d_model} added to the input of every "
                 f"token inside the grid rows' compartments (key stream; null digits add nothing), born zero, "
                 f"{self.value_addr.table.numel():,} parameters under the same Adam and clip")
         self.key_code = None                     # 0.1.81: the key code at the end-marker (--key_code=fixed|learned)
@@ -760,7 +773,7 @@ class Craft:
         self.key_rot = None                      # 0.1.82: the key in the told head's rotation (--key_rot=1)
         if KEY_ROT:                              # no parameter, no draw from the run's generators: the phases come from their own seeded generator
             self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K, pairs=KEY_PAIRS, norm=KEY_NORM,   # 0.1.83: the reach 12;
-                                         rho=KEY_RHO).to(DEV)                                         # 0.1.88: the hold's form
+                                         rho=KEY_RHO, code=GRID_CODE).to(DEV)                         # 0.1.88: the hold's form (0.1.91: its code)
             krm.patch(self.model, self.key_rot)  # before the pointer term's capture of the same block: it keeps the rotated q and k
             log(f"the key in the told head's rotation: block {PTR_BLOCK} head {PTR_HEAD}, pairs 0-{KEY_PAIRS - 1} at each SEP whose CUE lies "
                 f"in the {KEY_K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {KEY_PAIRS} x "
@@ -843,9 +856,9 @@ def value_addr_record(c) -> dict:
     """0.1.76: the value-path tables as a record field: the form, and how far they grew (the Frobenius norm by level, the norm of each
     digit's row by level)."""
     t = c.value_addr.table.detach().float().cpu()
-    return dict(form="levels", levels=ar.LEVELS, digits=ar.NULL, d=int(t.shape[-1]), params=int(t.numel()),
-                norm=[float(t[lev].norm()) for lev in range(ar.LEVELS)],
-                row_norm=[[float(x) for x in t[lev].norm(dim=-1)] for lev in range(ar.LEVELS)])
+    return dict(form="levels", levels=int(t.shape[0]), digits=int(t.shape[1]), d=int(t.shape[-1]), params=int(t.numel()),
+                norm=[float(t[lev].norm()) for lev in range(t.shape[0])],
+                row_norm=[[float(x) for x in t[lev].norm(dim=-1)] for lev in range(t.shape[0])])
 
 
 def head_logits(c, aux, at="question"):
@@ -853,14 +866,14 @@ def head_logits(c, aux, at="question"):
     final-norm state -> (Q, 2, 8) fp32 logits."""
     k = "" if at == "question" else "i"
     h = c.h_nf[aux[k + "head_row"].to(DEV), aux[k + "head_pos"].to(DEV)]
-    return c.addr_head(h.float()).float().view(-1, gr.LEVELS, gr.RADIX)
+    return c.addr_head(h.float()).float().view(-1, GR_LEVELS, GR_RADIX)
 
 
 def head_term(c, aux, at="question"):
     """The head's binary cross-entropy summed over its 2 x 8 outputs, averaged over its positions (the joint head term's form): the
     questions' SEPs, or (at="index", 0.1.72) the index entries' SEPs."""
     z = head_logits(c, aux, at)
-    tgt = F.one_hot(aux[("" if at == "question" else "i") + "head_dig"].to(DEV), gr.RADIX).float()
+    tgt = F.one_hot(aux[("" if at == "question" else "i") + "head_dig"].to(DEV), GR_RADIX).float()
     return F.binary_cross_entropy_with_logits(z, tgt, reduction="sum") / max(1, z.shape[0])
 
 
@@ -999,7 +1012,7 @@ def ag_forward(c, ag, request=None, disable_bank=False, index_heads=False) -> tu
         chunk = ag[i0:i0 + MB]
         metas = [m for _, m in chunk]
         x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r, _ in chunk]).astype(np.int64), device=DEV)
-        req = None if request is None else ([[(gr.NULL, gr.NULL)] * len(m["questions"]) for m in metas] if request == "null"
+        req = None if request is None else ([[(GR_RADIX,) * GR_LEVELS] * len(m["questions"]) for m in metas] if request == "null"
                                             else request[i0:i0 + MB])
         aux = grid_aux(metas, 0, req)
         set_streams(c, aux)
@@ -1108,7 +1121,7 @@ def ag_gauges(c) -> dict:
     out["bits_by_segment"] = {name: float(tot[k] / cnt[k] / LN2) for k, name in enumerate(gr.SEGMENTS) if cnt[k]}
     if c.anchor is not None:
         req = [gr.written_request(pred[i], m) for i, (_, m) in enumerate(ag)]
-        truth = [[gr.digits(m["recs"][q["rec"]]["addr"]) for q in m["questions"]] for _, m in ag]
+        truth = [[gr.digits(m["recs"][q["rec"]]["addr"], GRID_CODE) for q in m["questions"]] for _, m in ag]
         out["own_index"] = ag_scores(ag, ag_forward(c, ag, req)[0])[0]
         out["own_index"]["request_right"] = float(np.mean([tuple(a) == tuple(b) for r, t in zip(req, truth) for a, b in zip(r, t)]))
         out["null_request"] = ag_scores(ag, ag_forward(c, ag, "null")[0])[0]
@@ -1122,7 +1135,7 @@ def ag_gauges(c) -> dict:
             lw.append(torch.sigmoid(z).scatter(-1, dig[..., None], -1.0).amax(-1))      # (Q, 2): the largest wrong digit score a level
         lw = torch.cat(lw).numpy()
         out["calib"] = dict(rows=len(cal), questions=int(lw.shape[0]),
-                            tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(gr.LEVELS)] for q in ("0.9", "0.99", "0.999")})
+                            tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(GR_LEVELS)] for q in ("0.9", "0.99", "0.999")})
     out["free_running"] = fr_gauges(c)          # 0.1.72: the craft's own index bytes in the row
     if HARD_READ:                               # 0.1.75: the key-hard rows, where only a whole-key match is right
         out["hard"] = hard_gauges(c)
@@ -1149,7 +1162,7 @@ def hard_gauges(c) -> dict:
     pred, _, heads = ag_forward(c, ag)
     sc = ag_scores(ag, pred, heads)[0]
     fr, passes, conv = ag_free(c, ag)
-    truth = [[gr.digits(m["recs"][e["rec"]]["addr"]) for e in m["index"]] for _, m in ag]
+    truth = [[gr.digits(m["recs"][e["rec"]]["addr"], GRID_CODE) for e in m["index"]] for _, m in ag]
     req_f = [gr.row_request(r, m) for r, m in fr]
     ok = [tuple(a) == tuple(b) for r, t in zip(req_f, truth) for a, b in zip(r, t)]
     return dict(rows=len(ag), index_right=sc["index_right"], whole=sc["whole"], indexf_right=float(np.mean(ok)), n_entries=len(ok),
@@ -1166,7 +1179,7 @@ def fr_gauges(c) -> dict:
     percentiles, the absolute floor's tau)."""
     ag = ag_set("read")
     fr, passes, conv = ag_free(c, ag)
-    truth = [[gr.digits(m["recs"][e["rec"]]["addr"]) for e in m["index"]] for _, m in ag]
+    truth = [[gr.digits(m["recs"][e["rec"]]["addr"], GRID_CODE) for e in m["index"]] for _, m in ag]
     req_f = [gr.row_request(r, m) for r, m in fr]
     ok = [tuple(a) == tuple(b) for r, t in zip(req_f, truth) for a, b in zip(r, t)]
     out = dict(rows=len(fr), passes=dict(mean=float(np.mean(passes)), max=int(max(passes)), by_batch=passes),
@@ -1186,7 +1199,7 @@ def fr_gauges(c) -> dict:
             lw.append(torch.sigmoid(z.float()).scatter(-1, dig[..., None], -1.0).amax(-1))      # (E, 2): the largest wrong digit score a level
         lw = torch.cat(lw).numpy()
         out["calib"] = dict(rows=len(frc), entries=int(lw.shape[0]),
-                            tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(gr.LEVELS)] for q in ("0.9", "0.99", "0.999")})
+                            tau={q: [float(np.quantile(lw[:, lev], float(q))) for lev in range(GR_LEVELS)] for q in ("0.9", "0.99", "0.999")})
     return out
 
 
@@ -1791,10 +1804,12 @@ def finish(c: Craft) -> tuple:
                 head.update(at="both", lam_i=HEAD_LAM_I, index=dict(
                     term_step1=i0_, term_last50=ilast, descended=(bool(ilast < 0.1 * i0_) if ic else None),
                     curve=[[i + 1, ic[i]] for i in range(0, len(ic), LOG_EVERY)] + ([[len(ic), ic[-1]]] if ic else [])))
-        grid_block = dict(layout=GRID_LAYOUT, p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=head, trace=c.trace,
-                          read=read, series=ARGS.get("series", ""))
+        grid_block = dict(layout=GRID_LAYOUT, p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT, GRID_CODE) if ROTARY else "house"), head=head,
+                          trace=c.trace, read=read, series=ARGS.get("series", ""))
         if GRID_KEYS != "std":                  # 0.1.83: the long keys (the default record is 0.1.82's; the layout is its "layout")
             grid_block["keys"] = GRID_KEYS
+        if GRID_CODE != gr.CODE:                # 0.1.91: the address code (the default record is 0.1.90's)
+            grid_block["code"] = GRID_CODE
         if GRID_ABYTES != 2:                    # 0.1.74: the one-byte address form (the default record is 0.1.73's)
             grid_block["abytes"] = GRID_ABYTES
         if GRID_HARD > 0:                       # 0.1.75: the key-hard share of the training grid rows (the default record is 0.1.74's)
@@ -1802,8 +1817,8 @@ def finish(c: Craft) -> tuple:
         if c.value_addr is not None:            # 0.1.76: the value-path tables and how far they grew (the default record is 0.1.75's)
             grid_block["value_addr"] = value_addr_record(c)
             _v = grid_block["value_addr"]
-            log(f"the value-path tables: norm by level {' / '.join(f'{x:.4f}' for x in _v['norm'])}; by digit (level 1) "
-                + " ".join(f"{x:.3f}" for x in _v["row_norm"][0]) + "; (level 2) " + " ".join(f"{x:.3f}" for x in _v["row_norm"][1]))
+            log(f"the value-path tables: norm by level {' / '.join(f'{x:.4f}' for x in _v['norm'])}; by digit "
+                + "; ".join(f"(level {lv + 1}) " + " ".join(f"{x:.3f}" for x in rn) for lv, rn in enumerate(_v["row_norm"])))
         if c.key_code is not None:              # 0.1.81: the key code: its form, its tables' reach by offset, its share of the SEPs' input
             _rd = ag_set("read")[:MB]            # the end read's first batch of grid rows (records, index entries, questions)
             _x = torch.tensor(np.stack([np.frombuffer(r, dtype=np.uint8) for r, _ in _rd]).astype(np.int64), device=DEV)[:, :-1]
@@ -1868,8 +1883,11 @@ def finish(c: Craft) -> tuple:
         if N_AG:                                # 0.1.70: the scale test's pieces beside the craft (the house body's state dict is unchanged)
             if c.addr_head is not None:
                 save_file({k: v.detach().cpu().contiguous() for k, v in c.addr_head.state_dict().items()}, os.path.join(wdir, "addr_head.safetensors"))
-            _sj = dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT) if ROTARY else "house"), head=HEAD_FORM or None, head_lam=HEAD_LAM,
-                       layout=dict(slot=gr.lay(GRID_LAYOUT)["slot"], comps=gr.lay(GRID_LAYOUT)["comps"], radix=gr.RADIX, levels=gr.LEVELS))
+            _sj = dict(grid=GRID, grid_p=GRID_P, n_ag=N_AG, rotary=(ar.spec(ROT_CONTENT, GRID_CODE) if ROTARY else "house"), head=HEAD_FORM or None,
+                       head_lam=HEAD_LAM, layout=dict(slot=gr.lay(GRID_LAYOUT)["slot"], comps=gr.lay(GRID_LAYOUT)["comps"], radix=GR_RADIX,
+                                                      levels=GR_LEVELS))
+            if GRID_CODE != gr.CODE:             # 0.1.91: the address code the core was trained on (rotary_scale reads its rows, streams and head so)
+                _sj["grid_code"] = GRID_CODE
             if HEAD_AT == "both":                # 0.1.72: the head's positions (the stored cores' files carry none: the questions)
                 _sj.update(head_at=HEAD_AT, head_lam_i=HEAD_LAM_I)
             if GRID_LAYOUT != "AG":              # 0.1.83: the layout and the keys' form the core was trained on (rotary_scale composes its rows so)
@@ -1882,7 +1900,7 @@ def finish(c: Craft) -> tuple:
                 _sj["grid_hard"] = GRID_HARD
             if c.value_addr is not None:         # 0.1.76: the value-path tables beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.value_addr.table.detach().cpu().contiguous()}, os.path.join(wdir, "value_addr.safetensors"))
-                _sj["value_addr"] = dict(levels=ar.LEVELS, digits=ar.NULL, d=c.cfg.d_model)
+                _sj["value_addr"] = dict(levels=GR_LEVELS, digits=GR_RADIX, d=c.cfg.d_model)
             if c.key_code is not None:           # 0.1.81: the key code's tables beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.key_code.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_code.safetensors"))
                 _sj["key_code"] = dict(form=KEY_CODE, k=kcm.K, vocab=kcm.VOCAB, d=c.cfg.d_model)

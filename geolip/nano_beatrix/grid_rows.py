@@ -22,7 +22,14 @@ questions ask. "AG" is the row above byte for byte (the module's constants); "AG
 48 compartments (48 of the 64 addresses, sorted), slots 49-55 the index of the asked records, slots 56-63 the questions, 24 of the 48
 records asked (a draw). Two key forms: "std" (bed_frames.key_name, a cue word + three digits, 6-9 bytes) and "long"
 (bed_frames.key_long, a cue word + six digits, 9-12 bytes). A row of either layout or form names them in its meta (the default meta is
-0.1.82's). Self-test (pure numpy): python grid_rows.py --selftest"""
+0.1.82's).
+
+THE ADDRESS CODE (0.1.91): an address is L digits of radix R, the most significant first, written as L bytes '0' + d and carried as L
+streams (the null anchor R). "8x2" (R 8, L 2: 64 addresses) is every row above, byte for byte; "4x4" (R 4, L 4: 256 addresses) writes
+four digits '0'-'3'. The layout "AG96" (128 slots of 32 bytes: slot 0 the head, slots 1-96 96 compartments, slots 97-110 the index of
+the 24 asked records, slots 111-126 the questions) needs the 4x4 code (96 of its 256 addresses a row). A row at another code than 8x2
+names it in its meta ("code"); every reader of a row's digits takes its code from there. Self-test (pure numpy):
+python grid_rows.py --selftest"""
 from __future__ import annotations
 
 import sys
@@ -54,7 +61,11 @@ HEAD = bytes([DOC, MODE]) + b"c" + bytes([SEP]) + b"g" + bytes([SEP])
 SEGMENTS = ("head", "frame", "comp_text", "index_entry", "index_text", "q_answer", "q_other", "q_text")
 # 0.1.83: the layouts (slot bytes, compartments, the index's slots [lo, hi), the questions' slots [lo, hi), the records a row asks)
 LAYOUTS = {"AG": dict(slot=SLOT, comps=N_COMP, index=(25, 28), quest=(28, 32), ask=N_COMP),
-           "AG48": dict(slot=64, comps=48, index=(49, 56), quest=(56, 64), ask=24)}
+           "AG48": dict(slot=64, comps=48, index=(49, 56), quest=(56, 64), ask=24),
+           "AG96": dict(slot=32, comps=96, index=(97, 111), quest=(111, 127), ask=24)}       # 0.1.91 (the 4x4 code's 256 addresses)
+# 0.1.91: the address codes (radix, levels); the default is the module's constants above (RADIX 8, LEVELS 2, N_ADDR 64, NULL 8)
+CODES = {"8x2": (8, 2), "4x4": (4, 4)}
+CODE = "8x2"
 KEY_FORMS = ("std", "long")
 N_KEYS = {"std": 16 * 1000, "long": 16 * 1000 * 1000}       # bed_frames.key_name / key_long: the cue words x the numbers
 KEY_MAX = {"std": 9, "long": 12}                            # the longest key of each form (the longest cue word, 6 letters, + the digits)
@@ -74,12 +85,34 @@ def lay(layout: str = "AG") -> dict:
 assert (lay("AG")["index_lo"], lay("AG")["index_hi"], lay("AG")["quest_lo"], lay("AG")["quest_hi"]) == (INDEX_LO, INDEX_HI, QUEST_LO, QUEST_HI)
 
 
-def fits(layout: str, key_form: str, abytes: int = 2) -> bool:
+def radix_levels(code: str = CODE) -> tuple:
+    """0.1.91: an address code's (radix, levels)."""
+    assert code in CODES, f"the address code {code!r}: one of {sorted(CODES)}"
+    return CODES[code]
+
+
+def n_addr(code: str = CODE) -> int:
+    """0.1.91: the code's address count (64 at 8x2, 256 at 4x4)."""
+    r, n = radix_levels(code)
+    return r ** n
+
+
+def code_of(meta: dict) -> str:
+    """0.1.91: a row's address code (its meta's "code"; a row without one is at the 8x2 code)."""
+    return meta.get("code", CODE)
+
+
+def addr_nbytes(abytes: int = 2, code: str = CODE) -> int:
+    """0.1.91: how many bytes the row writes an address in: 1 in the one-byte form, else the code's digits (2 at 8x2, 4 at 4x4)."""
+    return 1 if abytes == 1 else radix_levels(code)[1]
+
+
+def fits(layout: str, key_form: str, abytes: int = 2, code: str = CODE) -> bool:
     """0.1.83: the layout holds a row of the form's longest keys: a compartment's frame in its slot, the index's DATA, `ask` entries
     CUE key SEP address and END in the index's slots, `ask` questions CUE key SEP value END in the questions' slots (AG at the long keys
-    does not: 24 entries of 16 bytes overrun its 384)."""
-    L, k = lay(layout), KEY_MAX[key_form]
-    return (1 + abytes + 1 + k + 1 + VLEN + 1 <= L["slot"] and 2 + L["ask"] * (k + 2 + abytes) <= L["index_hi"] - L["index_lo"]
+    does not: 24 entries of 16 bytes overrun its 384). 0.1.91: the address at the code's byte count."""
+    L, k, nb = lay(layout), KEY_MAX[key_form], addr_nbytes(abytes, code)
+    return (1 + nb + 1 + k + 1 + VLEN + 1 <= L["slot"] and 2 + L["ask"] * (k + 2 + nb) <= L["index_hi"] - L["index_lo"]
             and L["ask"] * (k + 3 + VLEN) <= L["quest_hi"] - L["quest_lo"])
 
 
@@ -96,33 +129,40 @@ def crc(tag: str) -> int:
     return zlib.crc32(tag.encode())
 
 
-def digits(a: int) -> tuple:
-    """An address 0..63 as its two digits (first, second)."""
-    return (a // RADIX, a % RADIX)
+def digits(a: int, code: str = CODE) -> tuple:
+    """An address 0..63 as its two digits (first, second); 0.1.91: at another code its levels' digits, the most significant first
+    (4x4: 0..255 as four digits of four)."""
+    r, n = radix_levels(code)
+    return tuple((int(a) // r ** (n - 1 - i)) % r for i in range(n))
 
 
 ONE_BYTE0 = 0x80                                  # 0.1.74: the one-byte address form writes address a as the byte 0x80 + a (0x80-0xBF)
 
 
-def addr_bytes(a: int, abytes: int = 2) -> bytes:
+def addr_bytes(a: int, abytes: int = 2, code: str = CODE) -> bytes:
     """An address as the row writes it: two digit bytes '0'-'7' (the default), or (abytes=1, 0.1.74) ONE byte 0x80 + a, unique in its
-    row and carried by the grid rows otherwise only inside the filler's multi-byte UTF-8 characters."""
+    row and carried by the grid rows otherwise only inside the filler's multi-byte UTF-8 characters. 0.1.91: at another code, one digit
+    byte '0' + d a level (4x4: four bytes '0'-'3'); the one-byte form is the 8x2 code's only."""
     if abytes == 1:
+        assert code == CODE, "the one-byte address form is the 8x2 code's"
         return bytes([ONE_BYTE0 + a])
-    d1, d2 = digits(a)
-    return bytes([48 + d1, 48 + d2])
+    return bytes(48 + d for d in digits(a, code))
 
 
-def decode_written(b, abytes: int = 2) -> np.ndarray:
+def decode_written(b, abytes: int = 2, code: str = CODE) -> np.ndarray:
     """0.1.74: written address bytes (..., abytes) -> digits (..., 2): a digit byte outside '0'-'7' is the null anchor at its level (the
-    two-byte form); a byte outside 0x80-0xBF is the null anchor at both levels (the one-byte form)."""
+    two-byte form); a byte outside 0x80-0xBF is the null anchor at both levels (the one-byte form). 0.1.91: at another code the digit
+    form (..., levels) -> (..., levels), a byte outside '0' .. '0' + radix - 1 the null anchor (the radix) at its level."""
     b = np.asarray(b, dtype=np.int64)
     if abytes == 1:
+        assert code == CODE, "the one-byte address form is the 8x2 code's"
         a = b[..., 0] - ONE_BYTE0
         ok = (a >= 0) & (a < N_ADDR)
         return np.stack([np.where(ok, a // RADIX, NULL), np.where(ok, a % RADIX, NULL)], -1)
+    r, n = radix_levels(code)
+    assert b.shape[-1] == n, f"{b.shape[-1]} address bytes at the {code} code ({n} digits)"
     w = b - 48
-    return np.where((w >= 0) & (w < RADIX), w, NULL)
+    return np.where((w >= 0) & (w < r), w, r)
 
 
 def owned_order(n_owned: int = 48) -> tuple:
@@ -138,17 +178,19 @@ def hard_keys(rng, layout: str = "AG", key_form: str = "std") -> list:
     match on any part of the key is right on at most half of such a row's entries; only the whole key on all), in a drawn order.
     0.1.83: the layout's count - the units digits are comps / 8 (3 at AG, 6 at AG48), so each ending (the tens and units digits, the last
     two bytes) still falls on 4 records; the long form (key_form "long") draws its first three digits once for the row and varies the
-    word and the 4th, 5th and 6th digits the same way. AG and "std" are 0.1.75's draw byte for byte.
+    word and the 4th, 5th and 6th digits the same way. AG and "std" are 0.1.75's draw byte for byte. 0.1.91: AG96 draws three tens digits
+    and eight units digits (2 x 2 x 3 x 8 = 96; each ending still on 4 records); AG and AG48 keep their draw.
     -> [key bytes] (the layout's comps)."""
     L = lay(layout)
     assert key_form in KEY_FORMS, key_form
     nw = len(bf.WORDS)
-    nu = L["comps"] // 8
-    assert nu * 8 == L["comps"] and nu <= 10, L
+    nt = 2 if L["comps"] <= 80 else L["comps"] // 32                          # 0.1.91: the tens digits (3 at AG96)
+    nu = L["comps"] // (4 * nt)
+    assert 4 * nt * nu == L["comps"] and nu <= 10, L
     w = rng.choice(nw, size=2, replace=False)
     pre = int(rng.integers(0, 1000)) if key_form == "long" else 0            # the long form's fixed first three digits
     h = rng.choice(10, size=2, replace=False)
-    t = rng.choice(10, size=2, replace=False)
+    t = rng.choice(10, size=nt, replace=False)
     u = rng.choice(10, size=nu, replace=False)
     num = [(1000 * pre if key_form == "long" else 0) + 100 * int(b) + 10 * int(c) + int(d) for b in h for c in t for d in u]
     idx = [int(a) + nw * n for a in w for n in num]                             # key_name's / key_long's index
@@ -158,7 +200,7 @@ def hard_keys(rng, layout: str = "AG", key_form: str = "std") -> list:
 
 
 def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_index: bool = False, abytes: int = 2, keys=None,
-               layout: str = "AG", key_form: str = "std") -> tuple:
+               layout: str = "AG", key_form: str = "std", code: str = CODE) -> tuple:
     """One addressed grid row. rng: the row's numpy Generator; src: corpus text (at least ctx + 1 bytes; specials become newlines).
     addrs: the row's 24 addresses (None = 24 distinct draws of the 64); they are sorted onto slots 1-24. asked: the records the questions
     ask, as indices into the sorted compartments, in question order (None = all 24 in a drawn order). swap_index: one pair of index
@@ -168,17 +210,20 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     (hard_keys: the key-hard row); None = the standard draw. The standard draw is made either way, so every other draw of the row is the
     same; a row with given keys says so in its meta ("hard"). layout and key_form (0.1.83): the row's layout (LAYOUTS; "AG" = the row
     above, "AG48" = 48 compartments of 64 bytes, 24 asked) and its keys' form ("std" or "long"); asked None asks the layout's first `ask`
-    of a drawn order (AG: all 24, 0.1.70's draw). addrs, asked and keys count the layout's compartments.
+    of a drawn order (AG: all 24, 0.1.70's draw). addrs, asked and keys count the layout's compartments. code (0.1.91): the address code
+    ("8x2" the rows above byte for byte; "4x4" four digits of four, drawn from its 256 addresses), named in the meta when not 8x2.
     -> (row bytes of ctx + 1, meta)."""
     assert abytes in (1, 2), abytes
+    assert abytes == 2 or code == CODE, "the one-byte address form is the 8x2 code's"
     assert ctx == CTX, f"the addressed grid is laid out for a {CTX}-byte window, got {ctx}"
     L = lay(layout)
-    assert fits(layout, key_form, abytes), f"the {layout} layout does not hold a row of {key_form} keys"
-    nc = L["comps"]
+    assert fits(layout, key_form, abytes, code), f"the {layout} layout does not hold a row of {key_form} keys at the {code} code"
+    nc, na, nb = L["comps"], n_addr(code), addr_nbytes(abytes, code)
+    assert na >= nc, f"the {code} code's {na} addresses cannot address the {layout} layout's {nc} compartments"
     if addrs is None:
-        addrs = rng.choice(N_ADDR, size=nc, replace=False)
+        addrs = rng.choice(na, size=nc, replace=False)
     addrs = sorted(int(a) for a in addrs)
-    assert len(addrs) == nc and len(set(addrs)) == nc and all(0 <= a < N_ADDR for a in addrs), addrs
+    assert len(addrs) == nc and len(set(addrs)) == nc and all(0 <= a < na for a in addrs), addrs
     std = std_keys(rng, nc, key_form)
     hard = keys is not None
     keys = std if not hard else [bytes(k) for k in keys]
@@ -190,12 +235,12 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     row[0:len(HEAD)] = HEAD
     recs = []
     for j, (a, s) in enumerate(zip(addrs, L["comp_slots"])):
-        frame = bytes([DATA]) + addr_bytes(a, abytes) + bytes([CUE]) + keys[j] + bytes([SEP]) + vals[j] + bytes([END])
+        frame = bytes([DATA]) + addr_bytes(a, abytes, code) + bytes([CUE]) + keys[j] + bytes([SEP]) + vals[j] + bytes([END])
         lo = s * L["slot"]
         assert len(frame) <= L["slot"]
         row[lo:lo + len(frame)] = frame
         recs.append(dict(addr=a, slot=s, lo=lo, hi=lo + L["slot"], key=keys[j].decode(), value=vals[j].decode(),
-                         frame_end=lo + len(frame), v0=lo + 2 + abytes + len(keys[j]) + 1))
+                         frame_end=lo + len(frame), v0=lo + 2 + nb + len(keys[j]) + 1))
     shown = list(order)
     if swap_index:                                      # a corrupted index: two entries trade their addresses
         assert len(order) >= 2
@@ -205,8 +250,8 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
     entries, p = [], ilo + 1
     ix = bytearray([DATA])
     for qi, o in enumerate(order):
-        e = bytes([CUE]) + keys[o] + bytes([SEP]) + addr_bytes(recs[shown[qi]]["addr"], abytes)
-        entries.append(dict(rec=o, lo=p, a_pos=p + len(e) - abytes, shown=shown[qi]))
+        e = bytes([CUE]) + keys[o] + bytes([SEP]) + addr_bytes(recs[shown[qi]]["addr"], abytes, code)
+        entries.append(dict(rec=o, lo=p, a_pos=p + len(e) - nb, shown=shown[qi]))
         ix += e
         p += len(e)
     ix += bytes([END])
@@ -230,21 +275,27 @@ def compose_ag(rng, src: bytes, ctx: int = CTX, addrs=None, asked=None, swap_ind
         meta["hard"] = True
     if key_form != "std":                               # 0.1.83: the long keys name themselves (the layout is the meta's "layout")
         meta["keys"] = key_form
+    if code != CODE:                                    # 0.1.91: a row at another address code names it
+        meta["code"] = code
     return row, meta
 
 
 def streams(meta: dict, ctx: int = CTX, request=None) -> tuple:
     """The row's address streams for the input positions 0 .. ctx - 1: (dk, dq), each int8 (ctx, 2). request: the address each question
-    asks for, in question order (None = the true address; a digit outside 0-7 = the null anchor at that level)."""
-    dk = np.full((ctx, LEVELS), NULL, dtype=np.int8)
+    asks for, in question order (None = the true address; a digit outside 0-7 = the null anchor at that level). 0.1.91: at the row's code
+    (ctx, levels), the null anchor its radix."""
+    code = code_of(meta)
+    rx, nl = radix_levels(code)
+    dk = np.full((ctx, nl), rx, dtype=np.int8)
     for r in meta["recs"]:
-        dk[r["lo"]:r["hi"]] = digits(r["addr"])
+        dk[r["lo"]:r["hi"]] = digits(r["addr"], code)
     dq = dk.copy()
     for qi, q in enumerate(meta["questions"]):
-        req = digits(meta["recs"][q["rec"]]["addr"]) if request is None else tuple(request[qi])
-        req = tuple(int(d) if 0 <= int(d) < RADIX else NULL for d in req)
+        req = digits(meta["recs"][q["rec"]]["addr"], code) if request is None else tuple(request[qi])
+        assert len(req) == nl, f"a request of {len(req)} digits at the {code} code"
+        req = tuple(int(d) if 0 <= int(d) < rx else rx for d in req)
         span = slice(q["sep"], q["sep"] + VLEN + 1)              # the SEP and the six value bytes (they predict the value and the END)
-        dk[span] = NULL
+        dk[span] = rx
         dq[span] = req
     return dk, dq
 
@@ -255,8 +306,9 @@ def answer_positions(meta: dict) -> list:
 
 
 def abytes_of(meta: dict) -> int:
-    """0.1.74: the row's address form (2 = two digit bytes, the default; 1 = one byte)."""
-    return meta.get("abytes", 2)
+    """0.1.74: the row's address form (2 = two digit bytes, the default; 1 = one byte). 0.1.91: the bytes the row writes an address in
+    (the code's digits in the digit form: 4 at 4x4)."""
+    return addr_nbytes(meta.get("abytes", 2), code_of(meta))
 
 
 def index_positions(meta: dict) -> list:
@@ -269,7 +321,7 @@ def index_positions(meta: dict) -> list:
 def head_targets(meta: dict) -> tuple:
     """The address head's reads: each question's SEP (an input position) and the asked address's two digits. -> (positions, digits)."""
     pos = [q["sep"] for q in meta["questions"]]
-    dig = [digits(meta["recs"][q["rec"]]["addr"]) for q in meta["questions"]]
+    dig = [digits(meta["recs"][q["rec"]]["addr"], code_of(meta)) for q in meta["questions"]]
     return pos, dig
 
 
@@ -279,7 +331,7 @@ def index_head_targets(meta: dict) -> tuple:
     -> (positions, digits). At an entry's SEP both streams carry the null anchor (the index lies outside every compartment) and nothing
     earlier in the row names the key's address but its record."""
     pos = [e["a_pos"] - 1 for e in meta["index"]]
-    dig = [digits(meta["recs"][e["rec"]]["addr"]) for e in meta["index"]]
+    dig = [digits(meta["recs"][e["rec"]]["addr"], code_of(meta)) for e in meta["index"]]
     return pos, dig
 
 
@@ -292,15 +344,15 @@ def index_frame_spans(meta: dict) -> list:
 def written_request(pred_row: np.ndarray, meta: dict) -> list:
     """The address the craft wrote for each question: its greedy bytes at the index entry's address positions (pred_row: the argmax
     at every input position of the teacher-forced row), as digits (decode_written: a byte outside the form's range is the null anchor)."""
-    ab = abytes_of(meta)
-    return [tuple(int(d) for d in decode_written([int(pred_row[p]) for p in ps], ab)) for ps in index_positions(meta)]
+    ab, code = abytes_of(meta), code_of(meta)
+    return [tuple(int(d) for d in decode_written([int(pred_row[p]) for p in ps], ab, code)) for ps in index_positions(meta)]
 
 
 def row_request(row: bytes, meta: dict) -> list:
     """0.1.72: the address each index entry of `row` names, as digits (decode_written): on a free-running row (free_running) the craft's
     own index, in question order."""
-    ab = abytes_of(meta)
-    return [tuple(int(d) for d in decode_written([row[p + 1] for p in ps], ab)) for ps in index_positions(meta)]
+    ab, code = abytes_of(meta), code_of(meta)
+    return [tuple(int(d) for d in decode_written([row[p + 1] for p in ps], ab, code)) for ps in index_positions(meta)]
 
 
 def put_index_bytes(row: bytes, meta: dict, pred_row: np.ndarray) -> bytes:
@@ -342,11 +394,11 @@ def free_running(ag: list, greedy, max_passes: int | None = None) -> tuple:
 def decode_scores(s, thr: float = 0.5) -> list:
     """0.1.72: THE STREAM DECODE of per-digit scores s (Q, LEVELS, RADIX) in [0, 1]: a level's digit is d when s(d) > thr for exactly one
     digit d, else the null anchor (each digit judged by its own score against one fixed number; no digit is compared with another).
-    -> [(d1, d2)] per query."""
+    -> [(d1, d2)] per query. 0.1.91: (Q, levels, radix) at any code, the null anchor the radix (s's last axis)."""
     s = np.asarray(s, dtype=np.float64)
     above = s > thr
     one = above.sum(-1) == 1
-    dig = np.where(one, above.argmax(-1), NULL)
+    dig = np.where(one, above.argmax(-1), s.shape[-1])
     return [tuple(int(v) for v in row) for row in dig]
 
 
@@ -438,9 +490,74 @@ def selftest(n: int = 200) -> None:
                 sp = slice(q["sep"], q["sep"] + VLEN + 1)
                 assert (dq1[sp] == digits(m1["recs"][q["rec"]]["addr"])).all()
     larger = selftest_larger(src, n)
+    code = selftest_code(src, n)
     print(f"grid_rows self-test: {n} rows x 2 address forms OK (frames, index, questions, streams, segments; the forms share every draw "
           f"and stream; 1 in 5 with a swapped index; 1 in 3 asking 18); {n // 4} key-hard rows x 2 forms OK (24 distinct keys, a one-part "
-          f"neighbour for every part; the row's other draws the standard row's); {larger}")
+          f"neighbour for every part; the row's other draws the standard row's); {larger}; {code}")
+
+
+def selftest_code(src: bytes, n: int = 200) -> str:
+    """0.1.91: the 4x4 code at AG48 and AG96 in both key forms: every address in [0, 256) and written as four digit bytes '0'-'3' in the
+    frame and the index entry, decoded back to its digits; the streams four wide (the null anchor 4); the head targets four digits; the
+    answers, the index entries and the questions where the meta says and inside their slots; the key-hard keys at AG96 (2 x 2 x 3 x 8,
+    a one-part neighbour for every part, each ending on 4 records); the 8x2 code cannot address AG96."""
+    rows = 0
+    assert fits("AG96", "std", 2, "4x4") and fits("AG96", "long", 2, "4x4") and fits("AG48", "long", 2, "4x4")
+    assert n_addr("4x4") == 256 and digits(255, "4x4") == (3, 3, 3, 3) and digits(27, "4x4") == (0, 1, 2, 3)
+    assert all(digits(a) == (a // 8, a % 8) for a in range(64)) and addr_bytes(42) == b"52"
+    try:
+        compose_ag(np.random.default_rng(0), src, layout="AG96")
+        raise AssertionError("the 8x2 code addressed AG96")
+    except AssertionError as e:
+        assert "cannot address" in str(e), e
+    for layout, key_form in (("AG96", "std"), ("AG96", "long"), ("AG48", "std")):
+        L = lay(layout)
+        for t in range(n // 4):
+            r = np.random.default_rng([19, t])
+            row, m = compose_ag(r, src, swap_index=t % 5 == 4, layout=layout, key_form=key_form, code="4x4")
+            rows += 1
+            assert m["code"] == "4x4" and abytes_of(m) == 4 and len(row) == CTX + 1 and row[:len(HEAD)] == HEAD
+            assert [rec["slot"] for rec in m["recs"]] == list(L["comp_slots"]) and m["addrs"] == sorted(m["addrs"])
+            assert len(set(m["addrs"])) == L["comps"] and all(0 <= a < 256 for a in m["addrs"])
+            for rec in m["recs"]:
+                ab = row[rec["lo"] + 1:rec["lo"] + 5]
+                assert row[rec["lo"]] == DATA and ab == addr_bytes(rec["addr"], 2, "4x4") and all(48 <= b <= 51 for b in ab)
+                assert tuple(int(d) for d in decode_written(list(ab), 4, "4x4")) == digits(rec["addr"], "4x4")
+                assert row[rec["lo"] + 5] == CUE and row[rec["v0"] - 1] == SEP and row[rec["v0"]:rec["v0"] + VLEN].decode() == rec["value"]
+                assert rec["frame_end"] <= rec["hi"] and rec["hi"] - rec["lo"] == L["slot"]
+            y = row[1:]
+            for qi, (q, e) in enumerate(zip(m["questions"], m["index"])):
+                rec, shown = m["recs"][q["rec"]], m["recs"][e["shown"]]
+                assert bytes(y[p] for p in answer_positions(m)[qi]) == rec["value"].encode() + bytes([END])
+                ps = index_positions(m)[qi]
+                assert len(ps) == 4 and bytes(y[p] for p in ps) == addr_bytes(shown["addr"], 2, "4x4") and row[e["a_pos"] - 1] == SEP
+            assert written_request(np.frombuffer(row[1:], dtype=np.uint8), m) == [digits(m["recs"][e["shown"]]["addr"], "4x4") for e in m["index"]]
+            assert m["index_end"] <= L["index_hi"] and m["quest_end"] <= L["quest_hi"]
+            dk, dq = streams(m)
+            assert dk.shape == (CTX, 4) and (dk[:L["slot"]] == 4).all() and (dk[L["index_lo"]:L["index_hi"]] == 4).all()
+            for rec in m["recs"]:
+                assert (dk[rec["lo"]:rec["hi"]] == digits(rec["addr"], "4x4")).all()
+            for q in m["questions"]:
+                sp = slice(q["sep"], q["sep"] + VLEN + 1)
+                assert (dk[sp] == 4).all() and (dq[sp] == digits(m["recs"][q["rec"]]["addr"], "4x4")).all()
+            pos, dig = head_targets(m)
+            assert all(len(d) == 4 for d in dig) and pos == [q["sep"] for q in m["questions"]]
+            assert segments(m).shape == (CTX,)
+    for t in range(n // 4):                             # the key-hard keys at AG96 (the code does not draw them)
+        kh = hard_keys(np.random.default_rng([23, t]), "AG96", "std")
+        parts = [(k[:-3], k[-3:-2], k[-2:-1], k[-1:]) for k in kh]
+        assert len(set(kh)) == 96 and sorted(len({p[i] for p in parts}) for i in range(4)) == [2, 2, 3, 8]
+        for p in parts:
+            for i in range(4):
+                assert any(q[i] != p[i] and all(q[j] == p[j] for j in range(4) if j != i) for q in parts), (p, i)
+        ends = {}
+        for k in kh:
+            ends[k[-2:]] = ends.get(k[-2:], 0) + 1
+        assert set(ends.values()) == {4}, ends
+        _, m1 = compose_ag(np.random.default_rng([7, t]), src, keys=kh, layout="AG96", code="4x4")
+        assert m1["hard"] and [r_["key"].encode() for r_ in m1["recs"]] == kh
+    return (f"0.1.91: {rows} rows at the 4x4 code (AG96 both key forms, AG48) OK; {n // 4} key-hard key sets at AG96 OK (96 distinct, "
+            f"2 x 2 x 3 x 8, each ending on 4 records); the 8x2 code refuses AG96")
 
 
 def selftest_larger(src: bytes, n: int = 200) -> str:

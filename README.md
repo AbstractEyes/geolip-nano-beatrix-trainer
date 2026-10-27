@@ -431,6 +431,17 @@ document, on the G4, `colab/nano_plain16.ipynb`, and their capacity on two CPU r
 [![Capacity lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_p16_lane1.ipynb)
 [![Capacity lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_p16_lane2.ipynb)
 
+0.1.91: a larger address code. A grid row's address was two digits of eight (64 addresses), so no row could hold more than 64 records.
+`--grid_code=4x4` writes and streams each address as four digits of four (256 addresses) on the same eight rotation pairs: each level
+gets two pairs at angles 2 pi k / 5, so a level's five symbols (four digits and the null) stay equally far apart, as the two-digit code's
+nine do at four pairs a level. The head's other pairs, the address head's sixteen outputs and the value-path tables' size are unchanged.
+`--grid_comps=96` lays a row out as 128 slots of 32 bytes with 96 records, 24 of them asked, which needs the larger code. The default is
+0.1.90 bit for bit; the names carry `_ac44` and `_gc96`. Twelve models (the larger code at 48 records and at 96) on one or two G4
+runtimes, `colab/nano_code44_lane{1,2}.ipynb`, and their capacity on a CPU runtime, `colab/nano_capacity_c44.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_lane2.ipynb)
+[![Capacity](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_c44.ipynb)
+
 Then:
 
 ```bash
