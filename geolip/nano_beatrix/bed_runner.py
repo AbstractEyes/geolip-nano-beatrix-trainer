@@ -55,7 +55,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "key_code",                                                        # 0.1.81: the key code at the end-marker
              "key_rot",                                                         # 0.1.82: the key in the told head's rotation
              "grid_comps", "grid_keys",                                         # 0.1.83: the larger grid row and the long keys
-             "key_pairs", "key_norm")                                           # 0.1.87: the binding's forms
+             "key_pairs", "key_norm",                                           # 0.1.87: the binding's forms
+             "key_rho")                                                         # 0.1.88: the hold's length
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -143,7 +144,9 @@ def run_label(run: list) -> str:
         parts.append(f"key code {kv['key_code']}")
     if kv.get("key_rot") == "1":                                  # 0.1.82: the key in the told head's rotation
         parts.append("key rotation" + (f" over {kv['key_pairs']} pairs" if kv.get("key_pairs") not in (None, "8") else "")
-                     + (" with the key's norm" if kv.get("key_norm") == "1" else ""))      # 0.1.87: the binding's forms
+                     + (" with the key's norm" if kv.get("key_norm") == "1" else "")       # 0.1.87: the binding's forms
+                     + (" with the records' keys held" if kv.get("key_norm") == "2" else "")   # 0.1.88: the records' hold
+                     + (f" at length {kv['key_rho']}" if kv.get("key_rho") not in (None, "4.16") else ""))
     if kv.get("grid_comps") not in (None, "24"):                  # 0.1.83: the larger grid row
         parts.append(f"{kv['grid_comps']} records a row")
     if kv.get("grid_keys") not in (None, "std"):                  # 0.1.83: the long keys

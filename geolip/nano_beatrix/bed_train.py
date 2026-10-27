@@ -244,8 +244,14 @@ assert ARGS.get("key_rot", "0") in ("0", "1"), f"--key_rot={ARGS.get('key_rot')!
 # defaults (8, 0) = 0.1.86 bit for bit; the run's name carries _krt16 or _krtn.
 KEY_PAIRS = int(ARGS.get("key_pairs", "8"))
 assert KEY_PAIRS in krm.PAIR_FORMS and (KEY_PAIRS == krm.J or KEY_ROT), f"--key_pairs={KEY_PAIRS}: 8 or 16, with --key_rot=1"
-KEY_NORM = ARGS.get("key_norm", "0") == "1"
-assert ARGS.get("key_norm", "0") in ("0", "1") and (not KEY_NORM or KEY_ROT), f"--key_norm={ARGS.get('key_norm')!r}: 0 or 1, with --key_rot=1"
+# 0.1.88: --key_norm=2 holds the key's bound pairs at one length at the RECORDS' coded SEPs only (key_rotary.records: from the bytes at or
+# before each SEP; the index entries' and the questions' keys keep their lengths); --key_rho sets the length (default 4.16, 0.1.87's);
+# --key_norm=1 is 0.1.87's hold at every coded SEP exactly. The run's name carries _krt..r and the length's digits off 4.16.
+assert ARGS.get("key_norm", "0") in ("0", "1", "2"), f"--key_norm={ARGS.get('key_norm')!r}: 0, 1 or 2"
+KEY_NORM = int(ARGS.get("key_norm", "0"))
+assert not KEY_NORM or KEY_ROT, "--key_norm needs --key_rot=1"
+KEY_RHO = float(ARGS.get("key_rho", repr(krm.RHO)))
+assert KEY_RHO > 0 and ("key_rho" not in ARGS or KEY_NORM), f"--key_rho={ARGS.get('key_rho')!r}: a positive length, with --key_norm"
 # 0.1.83: THE LARGER ROW. --grid_comps=48 composes the grid rows in the AG48 layout (grid_rows.LAYOUTS: 64 slots of 64 bytes, 48
 # compartments - 48 of the 64 addresses - the index and the questions of 24 asked records); --grid_keys=long writes every grid row's keys as
 # a cue word + six digits (9-12 bytes; the key-hard rows' factorial over the word and the last three digits) and sets the key's reach to 12
@@ -736,12 +742,15 @@ class Craft:
                    f"born zero, {self.key_code.table.numel():,} parameters under the same Adam and clip"))
         self.key_rot = None                      # 0.1.82: the key in the told head's rotation (--key_rot=1)
         if KEY_ROT:                              # no parameter, no draw from the run's generators: the phases come from their own seeded generator
-            self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K, pairs=KEY_PAIRS, norm=KEY_NORM).to(DEV)   # 0.1.83: the reach 12
+            self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K, pairs=KEY_PAIRS, norm=KEY_NORM,   # 0.1.83: the reach 12;
+                                         rho=KEY_RHO).to(DEV)                                         # 0.1.88: the hold's form
             krm.patch(self.model, self.key_rot)  # before the pointer term's capture of the same block: it keeps the rotated q and k
             log(f"the key in the told head's rotation: block {PTR_BLOCK} head {PTR_HEAD}, pairs 0-{KEY_PAIRS - 1} at each SEP whose CUE lies "
                 f"in the {KEY_K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {KEY_PAIRS} x "
                 f"{KEY_K} x {kcm.VOCAB} phases seeded crc32({krm.seed_tag(KEY_K, KEY_PAIRS)!r})) in place of their anchored angles"
-                + (f"; the key's bound pairs there held at length {self.key_rot.rho:g} before the turn" if KEY_NORM else "")
+                + (f"; the key's bound pairs there held at length {self.key_rot.rho:g} before the turn" if KEY_NORM == 1 else "")
+                + (f"; the key's bound pairs held at length {self.key_rot.rho:g} before the turn at the records' SEPs only (the index "
+                   f"entries' and the questions' keys free)" if KEY_NORM == 2 else "")
                 + "; no parameter")
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
@@ -1864,8 +1873,8 @@ def finish(c: Craft) -> tuple:
                 save_file({"table": c.key_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_rot.safetensors"))
                 _sj["key_rot"] = dict(pairs=KEY_PAIRS, k=KEY_K, vocab=kcm.VOCAB, block=PTR_BLOCK, head=PTR_HEAD,
                                       seed_tag=krm.seed_tag(KEY_K, KEY_PAIRS))
-                if KEY_NORM:                     # 0.1.87: the norm and its length (absent: no norm, 0.1.86's file)
-                    _sj["key_rot"].update(norm=1, rho=c.key_rot.rho)
+                if KEY_NORM:                     # 0.1.87: the norm and its length (absent: no norm, 0.1.86's file); 0.1.88: 2 = the
+                    _sj["key_rot"].update(norm=KEY_NORM, rho=c.key_rot.rho)       # records' SEPs only
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
                 _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)

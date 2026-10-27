@@ -394,6 +394,19 @@ seeds of each form) on the G4, `colab/nano_norm16.ipynb`, and their capacity on 
 [![Capacity lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_ns_lane1.ipynb)
 [![Capacity lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_ns_lane2.ipynb)
 
+0.1.88: the hold at the records only. Sixteen bound pairs keep a million keys apart on most models; their few wrong looks there are
+other rows' records whose key pairs run longer than the true record's. The hold at every coded end-marker removes that kind of miss on
+eight pairs, but it also lengthens the index entries' keys, which trained models keep short. `--key_norm=2` holds the key's bound pairs
+at one length at the records' coded end-markers only, and `--key_rho` sets the length (default 4.16). A record's end-marker is found from
+the bytes at or before it (`key_rotary.records`): in a grid row a record's key follows DATA and its address, and in a framed row it lies
+inside an open frame. The hold never reads ahead, and the index entries' and the questions' keys keep their lengths. `--key_norm=1` is
+0.1.87's hold at every coded end-marker, and the defaults are 0.1.87 bit for bit. The names carry `_krt..r` and the length's digits when
+it is not 4.16 (`_krt16r218`). Six sixteen-pair models at 48 records a row with the records held at 2.18 on the G4,
+`colab/nano_rec16.ipynb`, and their capacity on two CPU runtimes beside it, `colab/nano_capacity_r16_lane{1,2}.ipynb`:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_rec16.ipynb)
+[![Capacity lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_r16_lane1.ipynb)
+[![Capacity lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_r16_lane2.ipynb)
+
 Then:
 
 ```bash

@@ -20,7 +20,13 @@ read K = 12 with phases drawn from crc32("KEYROT|v1|k12"); K = 9 is 0.1.82's rot
 (the anchor levels' pairs too: there they turn by the key's phases instead of the address digits'; everywhere else they keep the anchored
 angles), with phases (16, K, VOCAB) drawn from crc32("KEYROT|v1|j16"). norm = True holds the key's bound pairs at one length rho at the
 coded SEPs before the turn, k_j <- rho k_j / |k_j| (the query, the other pairs, positions, heads and blocks untouched): every competitor's
-pair lengths equal every true record's by construction. The defaults (pairs 8, no norm) are 0.1.86's rotation and draw exactly."""
+pair lengths equal every true record's by construction. The defaults (pairs 8, no norm) are 0.1.86's rotation and draw exactly.
+
+0.1.88: the hold at the records only (norm = 2). A record's coded SEP is found from the bytes at or before it, never after (the SEP's own
+position predicts the next byte): in a grid row (its head DOC MODE c SEP g SEP) a record is DATA a1 a2 CUE key SEP value END and an index
+entry CUE key SEP a1 a2, so a record's SEP is one whose CUE follows DATA and the address bytes; in any other row the records stand inside
+frames (DATA / THINK ... END) and the question after them, so a record's SEP is one whose CUE lies inside an open frame. The index
+entries' and the questions' keys keep the lengths training gives them. norm = 1 is 0.1.87's hold at every coded SEP exactly."""
 from __future__ import annotations
 
 import hashlib
@@ -36,7 +42,7 @@ try:
 except ImportError:                                      # run as a file: the folder on the path
     import anchored_rope as ar  # noqa: E402
     import key_code as kcm  # noqa: E402
-from geolip.alephllm.data.special_tokens import SEP  # noqa: E402
+from geolip.alephllm.data.special_tokens import CUE, DATA, END, SEP, THINK  # noqa: E402
 from geolip.alephllm.model.attention import rope_half  # noqa: E402
 
 J = ar.SHARED                           # the told head's key pairs: the eight pairs before the anchor levels (pairs 0 .. 7)
@@ -45,6 +51,34 @@ TWO_PI = 2 * math.pi
 assert J == 8, "the key rotation is written for the anchored split's eight shared pairs"
 PAIR_FORMS = (J, ar.PAIRS)              # 0.1.87: the bound pairs - the eight shared pairs (0.1.82), or all sixteen of the told head
 RHO = 4.16                              # 0.1.87: the norm's length (the 48-record models' median key-pair length at the true record)
+NORMS = (0, 1, 2)                       # 0.1.88: the hold - none, every coded SEP (0.1.87), the records' coded SEPs only
+GRID_TASK = ord("g")                    # a grid row's head: DOC MODE c SEP g SEP (grid_rows.HEAD); the task byte at position 4
+ADDR_DIGITS = (ord("0"), ord("7"))      # the two-digit address bytes (grid_rows.addr_bytes); the one-byte form 0x80-0xBF
+ADDR_BYTE = (0x80, 0xBF)
+
+
+def records(idx: torch.Tensor, off: torch.Tensor) -> torch.Tensor:
+    """0.1.88: idx (B, n) bytes, off its key offsets (key_code.key_offsets) -> (B, n) bool: the coded SEPs that end a record, from the
+    bytes at or before each SEP only. The key's CUE stands at c = t - n(t) - 1. A grid row (task byte 'g' at position 4): x[c - 3] = DATA
+    and x[c - 2], x[c - 1] address digits, or the one-byte form x[c - 2] = DATA and x[c - 1] in 0x80-0xBF. Any other row: the CUE inside
+    an open frame - the DATA and THINK bytes before c outnumber the END bytes before c. The row's kind is read at position 4, so a SEP
+    before it is never held (every row's head is six bytes; no row codes a SEP there)."""
+    B, n = idx.shape
+    x = idx.long()
+    pos = torch.arange(n, device=idx.device)
+    on = (off[..., 0] != kcm.VOCAB) & (pos >= 4)                                                       # the row's kind known from 4 on
+    c = pos - (off != kcm.VOCAB).sum(-1) - 1                                                           # (B, n): the key's CUE
+    c = torch.where(on, c, torch.zeros_like(c)).clamp_min(0)
+
+    def at(back: int) -> torch.Tensor:                                                                # x[c - back], -1 before the row
+        p = c - back
+        return torch.where(p >= 0, torch.gather(x, 1, p.clamp_min(0)), torch.full_like(p, -1))
+    digit = lambda v: (v >= ADDR_DIGITS[0]) & (v <= ADDR_DIGITS[1])                                  # noqa: E731
+    grid_rec = ((at(3) == DATA) & digit(at(2)) & digit(at(1))) | ((at(2) == DATA) & (at(1) >= ADDR_BYTE[0]) & (at(1) <= ADDR_BYTE[1]))
+    depth = torch.cumsum(((x == DATA) | (x == THINK)).long() - (x == END).long(), dim=1)               # through each position
+    before = torch.where(c >= 1, torch.gather(depth, 1, (c - 1).clamp_min(0)), torch.zeros_like(c))   # the bytes before the CUE
+    grid = (x[:, 4] == GRID_TASK)[:, None] if n > 4 else torch.zeros(B, 1, dtype=torch.bool, device=idx.device)
+    return on & torch.where(grid, grid_rec, before >= 1)                                             # (tests: x[c] is the CUE at every coded SEP)
 
 
 def seed_tag(k: int = kcm.K, pairs: int = J) -> str:
@@ -72,16 +106,18 @@ class KeyRotary(torch.nn.Module):
     """The phases P (a buffer, not in any state dict) and the current forward's key angles: set(idx) before the blocks run, read by the
     told block's rotation. block is numbered from 1, as scale.json's ptr. k (0.1.83): the reach - a SEP is coded when its CUE lies in the
     k + 1 positions before it (9: 0.1.82's; 12: the long keys of the larger grid row). pairs (0.1.87): the bound pairs, 8 or 16; norm
-    (0.1.87): the key's bound pairs held at length rho at the coded SEPs."""
+    (0.1.87): the key's bound pairs held at length rho at the coded SEPs; 0.1.88: norm 0 (none), 1 (every coded SEP, 0.1.87's True), 2 (the
+    records' coded SEPs only; records()). hold: the current forward's held positions (None without a norm)."""
 
-    def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: bool = False, rho: float = RHO) -> None:
+    def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: int = 0, rho: float = RHO) -> None:
         super().__init__()
         assert int(pairs) in PAIR_FORMS, f"pairs {pairs!r}: one of {PAIR_FORMS}"
+        assert int(norm) in NORMS and int(norm) == norm, f"norm {norm!r}: one of {NORMS}"
         self.block, self.head, self.k, self.pairs = int(block), int(head), int(k), int(pairs)
-        self.norm, self.rho = bool(norm), float(rho)
+        self.norm, self.rho = int(norm), float(rho)
         assert self.rho > 0, rho
         self.register_buffer("table", phase_table(self.k, self.pairs), persistent=False)
-        self.phi = self.on = None
+        self.phi = self.on = self.hold = None
 
     def phases(self, idx: torch.Tensor, off: torch.Tensor | None = None) -> tuple:
         """idx (B, n) bytes -> (phi (B, n, pairs) float32 in [0, 2 pi), on (B, n) bool: the coded SEPs). The phases of a key are the same
@@ -96,10 +132,12 @@ class KeyRotary(torch.nn.Module):
         return phi, off[..., 0] != kcm.VOCAB
 
     def set(self, idx: torch.Tensor) -> None:
-        self.phi, self.on = self.phases(idx)
+        off = kcm.key_offsets(idx, self.k)
+        self.phi, self.on = self.phases(idx, off)
+        self.hold = {0: None, 1: self.on, 2: records(idx, off) if self.norm == 2 else None}[self.norm]   # 0.1.88: where the norm holds
 
     def clear(self) -> None:
-        self.phi = self.on = None
+        self.phi = self.on = self.hold = None
 
 
 def norm_key(k: torch.Tensor, h: int, on: torch.Tensor, rho: float, pairs: int = J) -> torch.Tensor:
@@ -132,8 +170,8 @@ def _keyrot_rotate(self, q, k, offset: int = 0):
     h, P = kr.head, kr.pairs
     aq[:, h, :, :P] = torch.where(on, phi, aq[:, h, :, :P])
     ak[:, h, :, :P] = torch.where(on, phi, ak[:, h, :, :P])
-    if kr.norm:                                           # 0.1.87: the key's bound pairs at one length (the turn keeps lengths)
-        k = norm_key(k, h, kr.on.to(k.device), kr.rho, P)
+    if kr.norm:                                           # 0.1.87: the key's bound pairs at one length (the turn keeps lengths); 0.1.88: where
+        k = norm_key(k, h, kr.hold.to(k.device), kr.rho, P)   # the hold says (every coded SEP, or the records' only)
     return (rope_half(q, aq.cos().to(q.dtype), aq.sin().to(q.dtype)),
             rope_half(k, ak.cos().to(k.dtype), ak.sin().to(k.dtype)))
 
@@ -166,11 +204,11 @@ def table_digest(t: torch.Tensor) -> str:
 def record(kr: KeyRotary) -> dict:
     """The rotation as a record field: the form, the pairs, the table's size and digest, the told head (0.1.83: the reach and its seed
     tag; at K = 9 the field is 0.1.82's; 0.1.87: the bound pairs, and the norm and its length when on - off and at eight pairs the field
-    is 0.1.86's)."""
+    is 0.1.86's; 0.1.88: the norm's code, 1 every coded SEP as 0.1.87 wrote it, 2 the records' only)."""
     out = dict(form="phase", pairs=kr.pairs, k=kr.k, vocab=kcm.VOCAB, block=kr.block, head=kr.head, seed_tag=seed_tag(kr.k, kr.pairs),
                digest=table_digest(kr.table))
     if kr.norm:
-        out.update(norm=1, rho=kr.rho)
+        out.update(norm=kr.norm, rho=kr.rho)
     return out
 
 

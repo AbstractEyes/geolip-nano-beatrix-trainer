@@ -498,10 +498,10 @@ class Core:
             kf = self.scale["key_rot"]
             assert kf.get("pairs") in krm.PAIR_FORMS and kf.get("k") == gr.KEY_MAX[self.key_form] and kf.get("vocab") == kcm.VOCAB, kf
             assert kf.get("seed_tag", krm.SEED_TAG) == krm.seed_tag(int(kf["k"]), int(kf["pairs"])), kf   # 0.1.83 / 0.1.87: the draw
-            assert kf.get("norm", 0) in (0, 1), kf
+            assert kf.get("norm", 0) in krm.NORMS, kf                                       # 0.1.88: 2 = the records' coded SEPs only
             assert self.anchor is not None, "the key rotation turns pairs of the anchored rotation"
             self.key_rot = krm.KeyRotary(int(kf["block"]), int(kf["head"]), k=int(kf["k"]), pairs=int(kf["pairs"]),   # 0.1.87: the
-                                         norm=bool(kf.get("norm", 0)), rho=float(kf.get("rho", krm.RHO))).to(self.dev)  # binding's forms
+                                         norm=int(kf.get("norm", 0)), rho=float(kf.get("rho", krm.RHO))).to(self.dev)   # binding's forms
             t = load_file(rp)["table"]
             assert tuple(t.shape) == tuple(self.key_rot.table.shape), (tuple(t.shape), tuple(self.key_rot.table.shape))
             with torch.no_grad():
