@@ -462,6 +462,16 @@ or two G4 runtimes, `colab/nano_pillar1_lane{1,2}.ipynb`:
 [![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1_lane1.ipynb)
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1_lane2.ipynb)
 
+0.1.93: the room read (`room_read.py`; reads stored models, trains nothing). For a head and a set of its rotation pairs, it removes the
+pairs from the head's scores in every block (the head's query and key zeroed on those pairs after the block's own rotation, so they add
+nothing to the scores) or removes the head's output (its values zeroed), and measures the held-out text's cost - overall, at the
+positions whose unit path occurred earlier in the row and elsewhere, and by position in the row. The pair groups come from the model's
+own split (the relative band, the content pairs, the address anchors, all sixteen). The look reads every head's attention, at the
+positions whose path occurred earlier in the row, on the bytes that followed the earlier copies of that path, against the share a
+uniform attention would give, by the path's length. Nothing in training changes. The eighteen models of the path stage on one G4
+runtime, `colab/nano_pillar_room.ipynb`:
+[![Room read](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar_room.ipynb)
+
 Then:
 
 ```bash
