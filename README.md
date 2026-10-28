@@ -578,6 +578,14 @@ claimed on the Hub before it trains and read through its look as it lands, `cola
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_slow_anneal_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_slow_anneal_lane3.ipynb)
 
+The higher floor at 48 records a row: the four-digit address at 48 records a row (`--grid_code=4x4 --grid_comps=48` on the plain-rows
+recipe) at 24,000 steps under `--lr_floor=0.5`, on its six stored seeds (1, 2, 3 and 5 first, then 4 and 6) and so on the same rows at
+the same steps as the stored 24,000-step models of those seeds, on up to three G4 runtimes, each model claimed on the Hub before it
+trains and read through its look as it lands, `colab/nano_a48sa_lane{1,2,3}.ipynb` (no code change: 0.1.100):
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48sa_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48sa_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48sa_lane3.ipynb)
+
 Then:
 
 ```bash
