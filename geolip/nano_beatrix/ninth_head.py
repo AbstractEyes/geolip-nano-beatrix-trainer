@@ -27,6 +27,11 @@ every path block on the anchored rotation (the plain form's forward on the same 
 uniform on [0, 2 pi) for q and k (random_phases: each its own draw at every position) in place of the path's - no path match is left, and
 the head stays position-free as the path leaves it away from its matches; the other path blocks keep the path.
 
+0.1.98, a second read's control (never set in training): relabel_blocks names path blocks whose ninth heads take the path's phases from
+P16' (relabel_table: a fresh draw of P16's law from crc32("PATHROT|v1|j16|relabel"), one table for every named block) in place of P16 -
+equal paths still meet at equal phases, so every exact match is kept, and only the values P16 gave each path change. random_blocks wins
+over it, and off over both.
+
 The heads live outside the model's module tree (their forward is a closure over the block's attention): the model's state dict stays the
 house body's; the trainer adds their parameters to its optimizer and ships them beside the weights (extra_head.safetensors, scale.json's
 ninth_head); rotary_scale.Core installs them from there."""
@@ -52,6 +57,7 @@ HD = 2 * ar.PAIRS                       # the head's 32 dims
 PAIRS = ar.PAIRS                        # sixteen pairs, all bound in the path form
 ROTS = ("path", "plain")
 SEED_TAG = "PATHROT|v1|j16"
+RELABEL_TAG = "PATHROT|v1|j16|relabel"
 BIRTH_TAG = "NINTH|v1"
 
 
@@ -75,12 +81,20 @@ def random_phases(B: int, n: int, block: int, device) -> tuple:
     return a[0].expand(B, 1, n, PAIRS).to(device), a[1].expand(B, 1, n, PAIRS).to(device)
 
 
-class Path16(prm.PathRotary):
-    """path_rotary's phases at sixteen pairs (the ninth head's): the same units, reach and forms, the table P16."""
+def relabel_table(k: int = prm.K) -> torch.Tensor:
+    """0.1.98, a read's control: P16' (16, K, 256) float32, P16's law (uniform on [0, 2 pi)) from a CPU generator seeded
+    crc32("PATHROT|v1|j16|relabel") ("...|k<K>" at another reach): the same draw in every process, independent of P16."""
+    tag = RELABEL_TAG if int(k) == prm.K else f"{RELABEL_TAG}|k{int(k)}"
+    g = torch.Generator().manual_seed(zlib.crc32(tag.encode()))
+    return torch.rand(PAIRS, int(k), prm.VOCAB, generator=g, dtype=torch.float64).mul_(prm.TWO_PI).float()
 
-    def __init__(self, units: prm.Units, form: str, k: int = prm.K) -> None:
+
+class Path16(prm.PathRotary):
+    """path_rotary's phases at sixteen pairs (the ninth head's): the same units, reach and forms, the table P16 (0.1.98: relabel, P16')."""
+
+    def __init__(self, units: prm.Units, form: str, k: int = prm.K, relabel: bool = False) -> None:
         super().__init__(units, form, head=-1, k=k)
-        self.register_buffer("table", phase_table(self.k), persistent=False)
+        self.register_buffer("table", relabel_table(self.k) if relabel else phase_table(self.k), persistent=False)
 
 
 def birth(d: int, seed: int, block: int) -> tuple:
@@ -121,6 +135,8 @@ class NinthHeads(nn.Module):
         self.path = Path16(units, form, k=k) if rot == "path" else None
         self.off = False
         self.random_blocks = ()              # 0.1.97, a read's control (empty in training): these path blocks on fresh random phases
+        self.relabel_blocks = ()             # 0.1.98, a read's control (empty in training): these path blocks on P16' (relabel_table)
+        self._relabel = []                   # P16's Path16 twin on P16', built at its first use (a list: outside the module tree)
         self.capture = False                 # a read's capture of each block's rotated q9, k9 (room_read.look)
         self.caps = [None] * self.n_blocks
 
@@ -135,10 +151,16 @@ class NinthHeads(nn.Module):
     def set(self, x: torch.Tensor) -> None:
         if self.path is not None:
             self.path.set(x)
+            if self.relabel_blocks:                  # 0.1.98: P16' phases only when a read names blocks for them
+                if not self._relabel:
+                    self._relabel.append(Path16(self.path.units, self.path.form, k=self.path.k, relabel=True))
+                self._relabel[0].to(x.device).set(x)
 
     def clear(self) -> None:
         if self.path is not None:
             self.path.clear()
+        for r in self._relabel:
+            r.clear()
 
     def rotate(self, q: torch.Tensor, k: torch.Tensor, anchor: ar.AnchorStreams, i: int | None = None) -> tuple:
         """q, k (B, 1, n, 32) -> rotated: the path's phases on all sixteen pairs, or the block's anchored angles (plain; off; a block
@@ -151,7 +173,10 @@ class NinthHeads(nn.Module):
         if path and i is not None and i + 1 in self.random_blocks:
             aq, ak = random_phases(B, n, i + 1, q.device)                                           # 0.1.97: no path matches left
         elif path:
-            pq, pk = self.path.phi_q, self.path.phi_k
+            rel = i is not None and i + 1 in self.relabel_blocks                                     # 0.1.98: P16' in place of P16
+            assert not rel or self._relabel, "relabel blocks named after the rows were set: set the phases from the rows again"
+            src = self._relabel[0] if rel else self.path
+            pq, pk = src.phi_q, src.phi_k
             assert pq is not None and tuple(pq.shape[:2]) == (B, n), \
                 f"the path phases are {None if pq is None else tuple(pq.shape[:2])}, the forward is {(B, n)}: set them from the rows first"
             aq, ak = pq.to(q.device)[:, None], pk.to(k.device)[:, None]                              # (B, 1, n, 16)

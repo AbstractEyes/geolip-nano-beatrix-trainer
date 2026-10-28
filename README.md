@@ -524,6 +524,17 @@ One G4 runtime reads the same twelve models (the path in blocks 1-3: no block, e
 block at a time), `colab/nano_pillar1h.ipynb`:
 [![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1h.ipynb)
 
+0.1.98: the relabel read (`block_read(..., mode="relabel", depth=True)`, `ninth_head.relabel_table`, `NinthHeads.relabel_blocks`,
+`path_rotary.DepthSplit`). Random phases take away two things at once: that a path's phases are the same wherever it stands (the exact
+matches) and the particular values the phase table gave each path, which a model can learn. The relabel mode keeps the first and changes
+the second: the chosen path blocks' ninth heads take the path's phases from a fresh table of the same law (fixed, its own seed), so
+equal paths still meet at equal phases. The depth split adds each read's bits by the path's depth at the predicting position (1, 2, 3,
+4, 5 or more), crossed with the repeated-path split; it is off by default and changes no other number. The control is read-only and
+empty by default (the training forward unchanged); no block relabelled is the text read, bit for bit. One G4 runtime reads the same
+twelve models on the fresh table and again on random phases (those reads equal the random-phase read's records exactly),
+`colab/nano_pillar1j.ipynb`:
+[![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1j.ipynb)
+
 Then:
 
 ```bash

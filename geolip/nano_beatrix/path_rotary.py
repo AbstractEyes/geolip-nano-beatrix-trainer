@@ -269,3 +269,30 @@ class RepeatSplit:
         r, o = (self.s[i] / self.n[i] / ln2 if self.n[i] else None for i in (0, 1))
         return dict(repeat=r, other=o, n_repeat=self.n[0], n_other=self.n[1],
                     repeat_share=self.n[0] / max(1, self.n[0] + self.n[1]))
+
+
+class DepthSplit:
+    """0.1.98: the held-out bits split by the path's depth at the predicting position (Units.depth: 1, 2, 3, 4, then 5 and over in one
+    bin) crossed with repeat_mask: add(nll (B, n) nats, depth (B, n) int, rep (B, n) bool) per batch; out() -> {bin: bits a byte, count,
+    and the same at the repeat positions and at the others}. The cells sum to the whole."""
+
+    BINS = ("1", "2", "3", "4", "5+")
+
+    def __init__(self) -> None:
+        self.cells = {b: RepeatSplit() for b in self.BINS}
+
+    def add(self, nll: np.ndarray, depth: np.ndarray, rep: np.ndarray) -> None:
+        assert nll.shape == depth.shape == rep.shape, (nll.shape, depth.shape, rep.shape)
+        assert int(depth.min()) >= 1, "a path is at least one byte deep"
+        idx = np.minimum(depth, len(self.BINS)) - 1
+        for i, b in enumerate(self.BINS):
+            m = idx == i
+            self.cells[b].add(nll[m], rep[m])
+
+    def out(self) -> dict:
+        ln2 = math.log(2.0)
+        res = {}
+        for b, c in self.cells.items():
+            n = c.n[0] + c.n[1]
+            res[b] = dict(bits=(c.s[0] + c.s[1]) / n / ln2 if n else None, n=n, **c.out())
+        return res
