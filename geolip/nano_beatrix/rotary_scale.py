@@ -2391,10 +2391,24 @@ def text_name(core_tag: str) -> str:
     return f"{core_tag}_text"
 
 
-def group_name(core_tag: str, mode: str = "anchored", depth: bool = False) -> str:
+def slot_name(slots) -> str:
+    """0.1.99: a slot set's name - its runs of consecutive slots as "a-b" or "a", joined by "+" ((0,) -> "0", (1, .., 15) -> "1-15")."""
+    idx = sorted({int(s) for s in slots})
+    assert idx, "a slot set names at least one slot"
+    runs, lo = [], idx[0]
+    for a, b in zip(idx, idx[1:] + [None]):
+        if b != a + 1:
+            runs.append(str(lo) if lo == a else f"{lo}-{a}")
+            lo = b
+    return "+".join(runs)
+
+
+def group_name(core_tag: str, mode: str = "anchored", depth: bool = False, slots=None) -> str:
     """0.1.96: the block read's record name for a core (its run's tag + "_group"; 0.1.97: + "_<mode>" for a mode other than anchored;
-    0.1.98: + "_depth" for a record whose reads carry the depth split)."""
-    return f"{core_tag}_group" + ("" if mode == "anchored" else f"_{mode}") + ("_depth" if depth else "")
+    0.1.98: + "_depth" for a record whose reads carry the depth split; 0.1.99: + "_k<slots>" after the mode for a relabel of some
+    slots)."""
+    return (f"{core_tag}_group" + ("" if mode == "anchored" else f"_{mode}") + ("" if slots is None else f"_k{slot_name(slots)}")
+            + ("_depth" if depth else ""))
 
 
 def _held_bits(core: "Core", docs: list, units, mb: int, depth: bool = False) -> dict:
@@ -2465,7 +2479,7 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
 
 @torch.no_grad()
 def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_docs: int = 128, mb: int = 16, dev: str = "cuda",
-               log=print, mode: str = "anchored", depth: bool = False) -> dict:
+               log=print, mode: str = "anchored", depth: bool = False, slots=None) -> dict:
     """0.1.96, THE BLOCK READ: for a stored core whose ninth heads carry the path (ninth_head.NinthHeads, rot "path"), the text read's
     held-out bits and their split with the path switched off in a chosen set of its path blocks - those blocks' ninth heads on the
     block's anchored rotation, the other path blocks on the path, the trained weights unchanged. sets: the off sets, each a collection
@@ -2475,8 +2489,11 @@ def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_
     0.1.97, mode "random": the sets' ninth heads on fresh random phases instead (ninth_head.random_phases: no path match left, the head
     still position-free); the empty set still reads as the text read; the record names the mode.
     0.1.98, mode "relabel": the sets' ninth heads on the path's phases from P16' (ninth_head.relabel_table: every exact match kept, the
-    values changed); depth: each read's split by the path's depth as well (path_rotary.DepthSplit), every other number unchanged."""
+    values changed); depth: each read's split by the path's depth as well (path_rotary.DepthSplit), every other number unchanged.
+    0.1.99, slots (the relabel mode only): only those slots of the table from P16' (NinthHeads.relabel_slots); the record names them."""
     assert mode in ("anchored", "random", "relabel"), mode
+    assert slots is None or mode == "relabel", "slots name the relabelled part of the table"
+    slots = None if slots is None else tuple(sorted({int(s) for s in slots}))
     if os.path.exists(out_path):
         log(f"[group] {os.path.basename(out_path)}: done before")
         return json.load(open(out_path, encoding="utf-8"))
@@ -2495,6 +2512,7 @@ def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_
     keep = nh.path_blocks
     reads = []
     try:
+        nh.relabel_slots = slots                              # 0.1.99: the relabelled slots for the whole read (None = every slot)
         for o in sets:
             if mode == "random":
                 nh.random_blocks = o                          # 0.1.97: these path blocks on fresh random phases
@@ -2507,10 +2525,11 @@ def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_
             reads.append(dict(off=list(o), **_held_bits(core, docs, nh.units, mb, depth=depth)))
             nh.off, nh.path_blocks, nh.random_blocks, nh.relabel_blocks = False, keep, (), ()
     finally:
-        nh.off, nh.path_blocks, nh.random_blocks, nh.relabel_blocks = False, keep, (), ()
+        nh.off, nh.path_blocks, nh.random_blocks, nh.relabel_blocks, nh.relabel_slots = False, keep, (), (), None
     rec = dict(core=core.tag, version=_PKG_VERSION, docs=len(docs), ctx=gr.CTX, rule=dict(rule="entropy", theta=nh.units.theta,
                floor=nh.units.floor, table_sha256=prm.TABLE_SHA256), path=dict(form=nh.form, head="ninth", k=nh.path.k, blocks=list(base)),
-               **({} if mode == "anchored" else {"mode": mode}), reads=reads, wall_s=time.time() - t0)
+               **({} if mode == "anchored" else {"mode": mode}), **({} if slots is None else {"slots": list(slots)}), reads=reads,
+               wall_s=time.time() - t0)
     none = next((r["bits"] for r in reads if not r["off"]), None)
     log(f"[group] {core.tag}: " + "; ".join(f"off {r['off'] or '-'} {r['bits']:.4f}" + ("" if none is None or not r["off"] else f" ({r['bits'] - none:+.4f})")
                                            for r in reads) + f" ({rec['wall_s']:.0f} s)")

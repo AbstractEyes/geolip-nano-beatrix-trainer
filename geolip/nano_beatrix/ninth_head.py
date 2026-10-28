@@ -30,7 +30,8 @@ the head stays position-free as the path leaves it away from its matches; the ot
 0.1.98, a second read's control (never set in training): relabel_blocks names path blocks whose ninth heads take the path's phases from
 P16' (relabel_table: a fresh draw of P16's law from crc32("PATHROT|v1|j16|relabel"), one table for every named block) in place of P16 -
 equal paths still meet at equal phases, so every exact match is kept, and only the values P16 gave each path change. random_blocks wins
-over it, and off over both.
+over it, and off over both. 0.1.99: relabel_slots names the slots (the byte k back) whose values come from P16', the others from P16
+(None = every slot, 0.1.98's control bit for bit).
 
 The heads live outside the model's module tree (their forward is a closure over the block's attention): the model's state dict stays the
 house body's; the trainer adds their parameters to its optimizer and ships them beside the weights (extra_head.safetensors, scale.json's
@@ -81,20 +82,32 @@ def random_phases(B: int, n: int, block: int, device) -> tuple:
     return a[0].expand(B, 1, n, PAIRS).to(device), a[1].expand(B, 1, n, PAIRS).to(device)
 
 
-def relabel_table(k: int = prm.K) -> torch.Tensor:
+def relabel_table(k: int = prm.K, slots=None) -> torch.Tensor:
     """0.1.98, a read's control: P16' (16, K, 256) float32, P16's law (uniform on [0, 2 pi)) from a CPU generator seeded
-    crc32("PATHROT|v1|j16|relabel") ("...|k<K>" at another reach): the same draw in every process, independent of P16."""
+    crc32("PATHROT|v1|j16|relabel") ("...|k<K>" at another reach): the same draw in every process, independent of P16.
+    0.1.99, slots: P16 with only the named slots (the byte k back, k = 0 .. K - 1) taken from P16'; None = every slot (P16' itself)."""
     tag = RELABEL_TAG if int(k) == prm.K else f"{RELABEL_TAG}|k{int(k)}"
     g = torch.Generator().manual_seed(zlib.crc32(tag.encode()))
-    return torch.rand(PAIRS, int(k), prm.VOCAB, generator=g, dtype=torch.float64).mul_(prm.TWO_PI).float()
+    t = torch.rand(PAIRS, int(k), prm.VOCAB, generator=g, dtype=torch.float64).mul_(prm.TWO_PI).float()
+    if slots is None:
+        return t
+    idx = sorted({int(s) for s in slots})
+    assert all(0 <= s < int(k) for s in idx), f"slots {idx}: 0 .. {int(k) - 1}"
+    base = phase_table(k)
+    base[:, idx] = t[:, idx]
+    return base
 
 
 class Path16(prm.PathRotary):
-    """path_rotary's phases at sixteen pairs (the ninth head's): the same units, reach and forms, the table P16 (0.1.98: relabel, P16')."""
+    """path_rotary's phases at sixteen pairs (the ninth head's): the same units, reach and forms, the table P16 (0.1.98: relabel, P16';
+    0.1.99: slots, only those slots from P16')."""
 
-    def __init__(self, units: prm.Units, form: str, k: int = prm.K, relabel: bool = False) -> None:
+    def __init__(self, units: prm.Units, form: str, k: int = prm.K, relabel: bool = False, slots=None) -> None:
         super().__init__(units, form, head=-1, k=k)
-        self.register_buffer("table", relabel_table(self.k) if relabel else phase_table(self.k), persistent=False)
+        self.slots = None if slots is None else tuple(sorted({int(s) for s in slots}))
+        assert relabel or self.slots is None, "slots name the relabelled part of the table"
+        tab = (relabel_table(self.k) if self.slots is None else relabel_table(self.k, self.slots)) if relabel else phase_table(self.k)
+        self.register_buffer("table", tab, persistent=False)
 
 
 def birth(d: int, seed: int, block: int) -> tuple:
@@ -136,6 +149,7 @@ class NinthHeads(nn.Module):
         self.off = False
         self.random_blocks = ()              # 0.1.97, a read's control (empty in training): these path blocks on fresh random phases
         self.relabel_blocks = ()             # 0.1.98, a read's control (empty in training): these path blocks on P16' (relabel_table)
+        self.relabel_slots = None            # 0.1.99: only these slots from P16' (None = every slot)
         self._relabel = []                   # P16's Path16 twin on P16', built at its first use (a list: outside the module tree)
         self.capture = False                 # a read's capture of each block's rotated q9, k9 (room_read.look)
         self.caps = [None] * self.n_blocks
@@ -152,8 +166,9 @@ class NinthHeads(nn.Module):
         if self.path is not None:
             self.path.set(x)
             if self.relabel_blocks:                  # 0.1.98: P16' phases only when a read names blocks for them
-                if not self._relabel:
-                    self._relabel.append(Path16(self.path.units, self.path.form, k=self.path.k, relabel=True))
+                slots = None if self.relabel_slots is None else tuple(sorted({int(s) for s in self.relabel_slots}))
+                if not self._relabel or self._relabel[0].slots != slots:   # 0.1.99: the twin's table follows the named slots
+                    self._relabel[:] = [Path16(self.path.units, self.path.form, k=self.path.k, relabel=True, slots=slots)]
                 self._relabel[0].to(x.device).set(x)
 
     def clear(self) -> None:

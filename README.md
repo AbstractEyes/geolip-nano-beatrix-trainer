@@ -535,6 +535,14 @@ twelve models on the fresh table and again on random phases (those reads equal t
 `colab/nano_pillar1j.ipynb`:
 [![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1j.ipynb)
 
+0.1.99: the slot read (`block_read(..., mode="relabel", slots=...)`, `ninth_head.relabel_table(k, slots)`, `NinthHeads.relabel_slots`).
+A byte's phase is a sum of one table term per byte of its path, the term in slot k belonging to the byte k back. The relabel control can
+now change only chosen slots: the table is the original with the named slots taken from the fresh one (no slot named = the original,
+every slot = 0.1.98's fresh table, bit for bit). Every exact match is kept whatever the slots. The record names its slots and the record's
+name carries them (`_k0`, `_k1-15`). One G4 runtime reads the same twelve models with every slot, the current byte's slot, the deeper
+slots and the previous byte's slot changed (every slot reproduces the relabel read's records exactly), `colab/nano_pillar1k.ipynb`:
+[![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1k.ipynb)
+
 Then:
 
 ```bash
