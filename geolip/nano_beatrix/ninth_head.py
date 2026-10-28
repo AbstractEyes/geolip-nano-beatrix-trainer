@@ -18,6 +18,11 @@ The rotation (rot):
     "plain" the block's anchored rotation (AnchorStreams.angles: the angles every head of the block gets) - the capacity control.
 off (a read's toggle, the path rotation only): the anchored rotation instead, the weights unchanged.
 
+0.1.95, THE PATH IN THE EARLY BLOCKS: path_blocks (the path rotation only) names the blocks, numbered from 1, whose ninth head carries the
+path; the others' ninth heads take the block's anchored rotation (the plain form's). None (the default) = every block, 0.1.94's form; the
+full set gives the same forward, the empty set the plain form's. The heads' birth and capacity are the same whatever the set; off puts
+every path block on the anchored rotation (the plain form's forward on the same weights).
+
 The heads live outside the model's module tree (their forward is a closure over the block's attention): the model's state dict stays the
 house body's; the trainer adds their parameters to its optimizer and ships them beside the weights (extra_head.safetensors, scale.json's
 ninth_head); rotary_scale.Core installs them from there."""
@@ -78,14 +83,20 @@ def birth(d: int, seed: int, block: int) -> tuple:
 
 class NinthHeads(nn.Module):
     """The ninth heads of a craft's anchored blocks: qkv[i] (Linear d -> 96) and o[i] (Linear 32 -> d), born by birth(); rot "path" or
-    "plain"; the path's phases set from the rows before the blocks run (set()); off: the path head on the anchored rotation (a read)."""
+    "plain"; the path's phases set from the rows before the blocks run (set()); off: the path head on the anchored rotation (a read);
+    path_blocks (0.1.95, the path only): the blocks (from 1) whose head carries the path, None = every block."""
 
     def __init__(self, d: int, n_blocks: int, rot: str, seed: int, units: prm.Units | None = None, form: str = "next",
-                 k: int = prm.K) -> None:
+                 k: int = prm.K, path_blocks=None) -> None:
         super().__init__()
         assert rot in ROTS, f"rot {rot!r}: one of {ROTS}"
         assert rot == "plain" or units is not None, "the path rotation reads the unit rule"
         self.d, self.n_blocks, self.rot, self.seed = int(d), int(n_blocks), rot, int(seed)
+        if path_blocks is not None:              # sorted, each once; the full and the empty set allowed (the laws' ends)
+            assert rot == "path", "a path block set names where the path rotation goes: --ninth_head=path"
+            path_blocks = tuple(sorted({int(b) for b in path_blocks}))
+            assert all(1 <= b <= self.n_blocks for b in path_blocks), f"path blocks {path_blocks}: 1 .. {self.n_blocks}"
+        self.path_blocks = path_blocks
         # skip_init: the layers' default init would draw from the run's generator; their weights come from birth() alone
         self.qkv = nn.ModuleList(nn.utils.skip_init(nn.Linear, self.d, 3 * HD, bias=False) for _ in range(self.n_blocks))
         self.o = nn.ModuleList(nn.utils.skip_init(nn.Linear, HD, self.d, bias=False) for _ in range(self.n_blocks))
@@ -115,10 +126,15 @@ class NinthHeads(nn.Module):
         if self.path is not None:
             self.path.clear()
 
-    def rotate(self, q: torch.Tensor, k: torch.Tensor, anchor: ar.AnchorStreams) -> tuple:
-        """q, k (B, 1, n, 32) -> rotated: the path's phases on all sixteen pairs, or the block's anchored angles (plain; off)."""
+    def rotate(self, q: torch.Tensor, k: torch.Tensor, anchor: ar.AnchorStreams, i: int | None = None) -> tuple:
+        """q, k (B, 1, n, 32) -> rotated: the path's phases on all sixteen pairs, or the block's anchored angles (plain; off; a block
+        outside path_blocks). i: the block (from 0), needed when path_blocks names a set."""
         B, n = q.shape[0], q.shape[-2]
-        if self.path is not None and not self.off:
+        path = self.path is not None and not self.off
+        if path and self.path_blocks is not None:   # 0.1.95: the path on the named blocks only
+            assert i is not None, "a path block set: the block's index decides its rotation"
+            path = i + 1 in self.path_blocks
+        if path:
             pq, pk = self.path.phi_q, self.path.phi_k
             assert pq is not None and tuple(pq.shape[:2]) == (B, n), \
                 f"the path phases are {None if pq is None else tuple(pq.shape[:2])}, the forward is {(B, n)}: set them from the rows first"
@@ -132,7 +148,7 @@ class NinthHeads(nn.Module):
         """Block i's ninth head on its attention input x (B, n, d) -> its output (B, n, d), to be added to the block's."""
         B, n, _ = x.shape
         q, k, v = self.qkv[i](x).view(B, n, 3, 1, HD).permute(2, 0, 3, 1, 4)                      # each (B, 1, n, 32)
-        q, k = self.rotate(q, k, anchor)
+        q, k = self.rotate(q, k, anchor, i)
         if self.capture:
             self.caps[i] = (q, k)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
@@ -194,16 +210,23 @@ def scale_field(nh: NinthHeads) -> dict:
     if nh.path is not None:
         f.update(form=nh.form, k=nh.path.k, pairs=PAIRS, vocab=prm.VOCAB, seed_tag=seed_tag(nh.path.k), rule="entropy",
                  theta=nh.units.theta, floor=nh.units.floor, table=prm.TABLE_FILE, table_sha256=prm.TABLE_SHA256)
+        if nh.path_blocks is not None:           # 0.1.95: the path's blocks (absent = every block, 0.1.94's field)
+            f["path_blocks"] = list(nh.path_blocks)
     return f
 
 
 def check_field(f: dict) -> None:
-    """A stored ninth_head field is this module's head (the rotation, the birth and, for the path, the draw, the rule and the table)."""
+    """A stored ninth_head field is this module's head (the rotation, the birth and, for the path, the draw, the rule, the table and the
+    path's blocks when named)."""
     assert f.get("rot") in ROTS and f.get("hd") == HD and f.get("birth_tag") == BIRTH_TAG and int(f.get("blocks", 0)) >= 1, f
     if f["rot"] == "path":
         assert f.get("form") in prm.FORMS and f.get("pairs") == PAIRS and f.get("vocab") == prm.VOCAB, f
         assert f.get("seed_tag") == seed_tag(int(f["k"])) and f.get("rule") == "entropy", f
         assert float(f.get("theta")) == prm.THETA and float(f.get("floor")) == prm.FLOOR and f.get("table_sha256") == prm.TABLE_SHA256, f
+    if "path_blocks" in f:
+        pb = f["path_blocks"]
+        assert f["rot"] == "path" and isinstance(pb, list) and pb == sorted(set(pb)), f
+        assert all(isinstance(b, int) and 1 <= b <= int(f["blocks"]) for b in pb), f
 
 
 def digest(nh: NinthHeads) -> str:

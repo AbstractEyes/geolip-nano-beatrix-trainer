@@ -546,7 +546,7 @@ class Core:
             assert self.anchor is not None and int(nf["d"]) == self.cfg.d_model, "the ninth heads join the anchored blocks of their craft"
             self.ninth = nhm.NinthHeads(self.cfg.d_model, int(nf["blocks"]), nf["rot"], int(nf["seed"]),
                                         units=(prm.Units() if nf["rot"] == "path" else None), form=nf.get("form", "next"),
-                                        k=int(nf.get("k", prm.K))).to(self.dev)
+                                        k=int(nf.get("k", prm.K)), path_blocks=nf.get("path_blocks")).to(self.dev)   # 0.1.95: the path's blocks
             nhm.load(self.ninth, load_file(xp))                  # the trained weights; the stored phases = the seeded draw
             self.ninth.eval()
             for p in self.ninth.parameters():
@@ -2431,7 +2431,7 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
                 pr.off = False
     rec = dict(core=core.tag, version=_PKG_VERSION, docs=len(docs), ctx=gr.CTX, rule=dict(rule="entropy", theta=units.theta,
                floor=units.floor, table_sha256=prm.TABLE_SHA256), path=(None if pr is None else dict(form=pr.form, head=pr.head, k=pr.k) if pr is core.path_rot
-               else dict(form=pr.form, head="ninth", k=pr.path.k)))
+               else dict(form=pr.form, head="ninth", k=pr.path.k, **({} if pr.path_blocks is None else {"blocks": list(pr.path_blocks)}))))
     rec.update(one(False))
     if pr is not None:
         rec["path_off"] = one(True)

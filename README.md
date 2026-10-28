@@ -489,6 +489,17 @@ names carry `_nhpn16` or `_nhpl`. Twelve models (each form on six seeds, the pla
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1b_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1b_lane3.ipynb)
 
+0.1.95: the path in the early blocks. `--path_blocks=1,2,3` (with `--ninth_head=path`) puts the path in the ninth heads of the named
+blocks only (numbered from 1); the other blocks' ninth heads sit on the block's own rotation, as in `--ninth_head=plain`. The heads are
+born the same whatever the set, so the model has the same size and the same start as both 0.1.94 forms, and differs from the plain
+form only in the named blocks' rotation. The end read's path-off puts every named block on the block's rotation (the plain form's
+forward on the same weights). Unset, every block carries the path (0.1.94 bit for bit); scale.json's `ninth_head` names the set as
+`path_blocks` when it is given, and the names carry it after `_nhpn16` (`_nhpn16b123`). Six models (six seeds) on one to three G4
+runtimes, `colab/nano_pillar1c_lane{1,2,3}.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1c_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1c_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1c_lane3.ipynb)
+
 Then:
 
 ```bash

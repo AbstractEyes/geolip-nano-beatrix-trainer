@@ -343,6 +343,12 @@ NINTH_HEAD = ARGS.get("ninth_head", "")
 assert NINTH_HEAD in ("",) + nhm.ROTS, f"--ninth_head={NINTH_HEAD!r}: path or plain (or off)"
 assert not NINTH_HEAD or (GRID == "ag" and ROTARY == "anchored" and not PATH_BIND), \
     "--ninth_head joins the anchored blocks (--grid=ag), apart from the path in head 7 (--path_bind)"
+# 0.1.95: THE PATH IN THE EARLY BLOCKS. --path_blocks=1,2,3 (with --ninth_head=path) puts the path in the named blocks' ninth heads only
+# (numbered from 1); the other blocks' ninth heads take the block's anchored rotation (the plain form's), born the same. The end read's
+# path-off puts every path block on the anchored rotation. Unset = every block (0.1.94 bit for bit); the set is a proper subset of the
+# anchored blocks; the run's name carries it after _nhpn16 ("b123").
+PATH_BLOCKS = tuple(sorted({int(b) for b in ARGS["path_blocks"].split(",")})) if ARGS.get("path_blocks") else None
+assert PATH_BLOCKS is None or NINTH_HEAD == "path", "--path_blocks names the ninth heads that carry the path (--ninth_head=path)"
 assert (PATH_FORM in prm.FORMS) == bool(PATH_BIND or NINTH_HEAD == "path"), \
     f"--path_form={PATH_FORM!r}: same or next, exactly with --path_bind={prm.PAIRS} or --ninth_head=path"
 assert PATH_BIND or "path_head" not in ARGS, "--path_head is the head the path takes (--path_bind)"
@@ -844,14 +850,18 @@ class Craft:
         self.ninth, self.ninth_blocks = None, 0  # 0.1.94: the ninth head (--ninth_head=path|plain)
         if NINTH_HEAD:                           # its own generator: the run's draws, the eight heads and the data order stay the plain run's
             _nb = sum(1 for b in self.model.blocks if getattr(b.attn, "_anchor", None) is not None)
+            assert PATH_BLOCKS is None or (PATH_BLOCKS and set(PATH_BLOCKS) < set(range(1, _nb + 1))), \
+                f"--path_blocks={','.join(map(str, PATH_BLOCKS))}: a proper subset of the {_nb} anchored blocks (unset = every block)"
             self.ninth = nhm.NinthHeads(self.cfg.d_model, _nb, NINTH_HEAD, SEED, units=self.units, form=PATH_FORM or "next",
-                                        k=PATH_K).to(DEV)
+                                        k=PATH_K, path_blocks=PATH_BLOCKS).to(DEV)
             self.ninth_blocks = nhm.patch(self.model, self.ninth)
             self.params = self.params + list(self.ninth.parameters())
             log(f"a ninth head in {self.ninth_blocks} anchored blocks (32 dims, its own query, key, value and output rows born from "
                 f"crc32({nhm.BIRTH_TAG}|s{SEED}|b<block>); {nhm.params(self.ninth):,} parameters under the same Adam and clip): "
                 + (f"all sixteen pairs turned by the unit path's phases ({PATH_FORM}; the entropy rule at {self.units.theta:g} bits; the "
                    f"path's last {PATH_K} bytes; 16 x {PATH_K} x {prm.VOCAB} phases seeded crc32({nhm.seed_tag(PATH_K)!r}))"
+                   + ("" if PATH_BLOCKS is None else f" in blocks {', '.join(map(str, PATH_BLOCKS))} only, the others on the block's "
+                      "anchored rotation")
                    if NINTH_HEAD == "path" else "on the block's anchored rotation (the capacity control)"))
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's

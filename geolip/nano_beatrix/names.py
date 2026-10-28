@@ -82,6 +82,7 @@ def run_tag(args: dict) -> str:
     # byte after it; the reach when not 16, "k12"; off names nothing; the repeat read names nothing: it trains nothing)
     # 0.1.94: the ninth head after it ("_nhpn16": the path in it, the byte-after form, sixteen pairs; "_nhps16" the same path;
     # "_nhpl": the head on the block's anchored rotation, the capacity control; the reach when not 16, "k12"; off names nothing)
+    # 0.1.95: the path's blocks after the path head's piece when named ("_nhpn16b123": blocks 1, 2 and 3; every block names nothing)
     scale =((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
              + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
              + (f"_cp{int(args['rotary_content'])}" if int(args.get("rotary_content", "2")) != 2 else "")
@@ -103,7 +104,8 @@ def run_tag(args: dict) -> str:
                 + (f"k{int(args['path_k'])}" if int(args.get("path_k", "16")) != 16 else "")
                 if int(args.get("path_bind", "0")) else "")
              + (("_nhpl" if args["ninth_head"] == "plain" else f"_nhp{args.get('path_form', 'next')[0]}16"
-                 + (f"k{int(args['path_k'])}" if int(args.get("path_k", "16")) != 16 else ""))
+                 + (f"k{int(args['path_k'])}" if int(args.get("path_k", "16")) != 16 else "")
+                 + ("b" + "".join(str(b) for b in sorted({int(x) for x in args["path_blocks"].split(",")})) if args.get("path_blocks") else ""))
                 if args.get("ninth_head") else "")
              + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
              + (f"i{float(args.get('head_lam_i', '1.0')):g}" if args.get("head") and args.get("head_at", "question") == "both" else "")
