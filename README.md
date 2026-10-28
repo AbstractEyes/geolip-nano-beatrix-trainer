@@ -472,6 +472,23 @@ uniform attention would give, by the path's length. Nothing in training changes.
 runtime, `colab/nano_pillar_room.ipynb`:
 [![Room read](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar_room.ipynb)
 
+0.1.94: the path in a head of its own (`ninth_head.py`). `--ninth_head=path --path_form=next` adds a ninth softmax head to every
+anchored block, beside the eight: 32 dims (sixteen rotation pairs) with its own query, key and value rows read from the block's attention
+input and its own output rows added to the block's attention output (196,608 parameters over six blocks, under the same optimizer and
+clip). Its weights are born as the block's heads are born (rows of fresh orthogonal draws), from a generator seeded by the head's own tag,
+so nothing is drawn from the run's generators: the eight heads, the rest of the model and the data order start as the run without it.
+With the path, its sixteen pairs are turned by the unit path's phases (0.1.92's, at sixteen pairs): the query by the path at its own
+position, the key by the path that ended one byte before it. `--ninth_head=plain` puts the same head on the block's own rotation (the
+angles every head of the block gets): the added head's capacity without the path. The ninth heads ship beside the weights
+(`extra_head.safetensors`, scale.json's `ninth_head`) and `rotary_scale.Core` installs them; the end read adds `heldout_bpb_path_off` for
+the path form (its ninth head on the block's rotation instead) and the repeat split for both; the room read's look reads the ninth head
+as each block's last head, and its kind `look` takes the model's own bits and the look alone. The default is 0.1.93 bit for bit; the
+names carry `_nhpn16` or `_nhpl`. Twelve models (each form on six seeds, the plain-rows recipe otherwise) on one to three G4 runtimes,
+`colab/nano_pillar1b_lane{1,2,3}.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1b_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1b_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1b_lane3.ipynb)
+
 Then:
 
 ```bash

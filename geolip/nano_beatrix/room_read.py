@@ -57,8 +57,10 @@ def groups(core) -> dict:
 def plan(core, kind: str, path_head: int = 7) -> list:
     """The removals of the registered read (history/plans/2026-10-27_pillar_room_read_plan.md section 1), as (name, head, pairs, out):
     kind "plain" - every head's anchor pairs, the path head's relative band, content pairs, scores and output; kind "path" - the path
-    head's anchor pairs and output."""
+    head's anchor pairs and output; kind "look" (0.1.94) - none (the model's own bits and the look alone)."""
     g = groups(core)
+    if kind == "look":
+        return []
     H = core.model.blocks[0].attn.h
     if kind == "plain":
         out = [(f"h{h}_anchors", h, g["anchors"], False) for h in range(H)]
@@ -174,7 +176,8 @@ def attention(q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
 @torch.no_grad()
 def look(core, docs: list, units, rows: int = 16, mb: int = 4) -> dict:
     """THE LOOK on the first `rows` documents: for every block and head, m (the mean mass on C(t) at the repeated positions), the uniform
-    share, the lift, the share of repeated positions whose largest weight lands in C(t), and m by path length."""
+    share, the lift, the share of repeated positions whose largest weight lands in C(t), and m by path length. 0.1.94: a core with the
+    ninth head (ninth_head.py) reads it too, as each block's last head (index 8)."""
     attns = [b.attn for b in core.model.blocks if hasattr(b.attn, "_rotate")]
     caps, saved = [None] * len(attns), []
     for i, a in enumerate(attns):
@@ -186,7 +189,10 @@ def look(core, docs: list, units, rows: int = 16, mb: int = 4) -> dict:
             caps[_i] = (qo, ko)
             return qo, ko
         a._rotate = _rotate
-    H = attns[0].h
+    nin = getattr(core, "ninth", None)                     # 0.1.94: the ninth head's own rotated q and k, read as head 8
+    if nin is not None:
+        nin.capture = True
+    H = attns[0].h + (0 if nin is None else 1)
     acc = np.zeros((len(attns), H, 2))                     # [block, head]: sum of m, sum of the argmax-in-C indicator
     acc_len = np.zeros((len(attns), H, len(LENGTHS)))
     n_len = np.zeros(len(LENGTHS))
@@ -217,6 +223,8 @@ def look(core, docs: list, units, rows: int = 16, mb: int = 4) -> dict:
                 n_len += np.array([int(s.sum()) for s in lsel])
                 Mr = M[rep]                                                   # (R, n)
                 for bi, (qo, ko) in enumerate(caps):
+                    if nin is not None:
+                        qo, ko = torch.cat([qo, nin.caps[bi][0].to(qo.dtype)], dim=1), torch.cat([ko, nin.caps[bi][1].to(ko.dtype)], dim=1)
                     A = attention(qo[r], ko[r])                               # (H, n, n)
                     Ar = A[:, rep]                                            # (H, R, n)
                     mass = (Ar * Mr[None]).sum(-1)                            # (H, R)
@@ -230,6 +238,8 @@ def look(core, docs: list, units, rows: int = 16, mb: int = 4) -> dict:
     finally:
         for a, inner in zip(attns, saved):
             a._rotate = inner
+        if nin is not None:
+            nin.capture, nin.caps = False, [None] * nin.n_blocks
     base = base_sum / max(n_rep, 1)
     blocks = []
     for bi in range(len(attns)):
@@ -261,6 +271,9 @@ def read(core_folder: str, out_path: str, heldout_path: str, kind: str, look_row
     rec = dict(core=core.tag, version=_PKG_VERSION, kind=kind, docs=n_docs, ctx=gr.CTX, groups=groups(core),
                rule=dict(rule="entropy", theta=units.theta, floor=units.floor, table_sha256=prm.TABLE_SHA256),
                path=(None if pr is None else dict(form=pr.form, head=pr.head, k=pr.k)), base=base, removed={})
+    nin = getattr(core, "ninth", None)
+    if nin is not None:                              # 0.1.94: the ninth heads (the look reads each as its block's head 8)
+        rec["ninth"] = dict(rot=nin.rot, form=nin.form)
     for name, h, pairs, out in plan(core, kind):
         rm.set(h, pairs, out)
         try:

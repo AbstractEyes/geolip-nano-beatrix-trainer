@@ -138,19 +138,20 @@ class PathRotary(torch.nn.Module):
         self.off = False
 
     def phases(self, x: torch.Tensor) -> torch.Tensor:
-        """x (B, n) bytes -> phi (B, n, 8) float32 in [0, 2 pi). A path's phases are the same float values wherever it stands (the same
-        gathers summed in the same order; past the path's length the null column adds 0)."""
+        """x (B, n) bytes -> phi (B, n, pairs) float32 in [0, 2 pi): eight pairs here (0.1.94: sixteen in the ninth head, ninth_head.Path16).
+        A path's phases are the same float values wherever it stands (the same gathers summed in the same order; past the path's length
+        the null column adds 0)."""
         x = x.long()
         B, n = x.shape
         d = self.units.depth(x)
-        t = torch.cat([self.table, self.table.new_zeros(PAIRS, self.k, 1)], dim=-1)             # (8, K, VOCAB + 1)
+        t = torch.cat([self.table, self.table.new_zeros(self.table.shape[0], self.k, 1)], dim=-1)   # (pairs, K, VOCAB + 1)
         phi = None
         for k in range(self.k):
             xs = torch.full_like(x, VOCAB)
             if k < n:
                 xs[:, k:] = x[:, :n - k]                                                         # x_(t-k)
             off = torch.where(d > k, xs, torch.full_like(xs, VOCAB))
-            p = t[:, k][:, off]                                                                  # (8, B, n)
+            p = t[:, k][:, off]                                                                  # (pairs, B, n)
             phi = p if phi is None else phi + p
         return torch.remainder(phi, TWO_PI).permute(1, 2, 0).contiguous()
 

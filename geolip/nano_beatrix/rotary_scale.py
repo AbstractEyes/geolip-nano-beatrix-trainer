@@ -71,6 +71,7 @@ try:
     from . import key_code as kcm
     from . import key_rotary as krm
     from . import path_rotary as prm
+    from . import ninth_head as nhm
     from . import __version__ as _PKG_VERSION
 except ImportError:                                      # run as a file: the folder on the path
     import sys
@@ -81,6 +82,7 @@ except ImportError:                                      # run as a file: the fo
     import key_code as kcm  # noqa: E402
     import key_rotary as krm  # noqa: E402
     import path_rotary as prm  # noqa: E402
+    import ninth_head as nhm  # noqa: E402
     _PKG_VERSION = "file"
 from geolip.alephllm.data.special_tokens import DOC  # noqa: E402
 
@@ -419,7 +421,7 @@ class StackedAdam:
 
 # ------------------------------------------------------------------ the core
 def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch.Tensor | None = None,
-            key_rot: torch.Tensor | None = None, path_rot: torch.Tensor | None = None) -> str:
+            key_rot: torch.Tensor | None = None, path_rot: torch.Tensor | None = None, ninth: dict | None = None) -> str:
     """The core's state as one hash; extra (0.1.76: the value-path tables), key_code (0.1.81: the key code's tables), key_rot (0.1.82:
     the key rotation's phases) and path_rot (0.1.92: the path rotation's phases) join it when the core carries them (a core without any
     hashes as before)."""
@@ -439,6 +441,11 @@ def _digest(model: nn.Module, extra: torch.Tensor | None = None, key_code: torch
     if path_rot is not None:
         h.update(b"path_rot")
         h.update(path_rot.detach().cpu().contiguous().numpy().tobytes())
+    if ninth is not None:                                   # 0.1.94: the ninth heads' weights (and the path's phases)
+        h.update(b"ninth_head")
+        for k, v in sorted(ninth.items()):
+            h.update(k.encode())
+            h.update(v.detach().cpu().contiguous().numpy().tobytes())
     return h.hexdigest()
 
 
@@ -530,6 +537,21 @@ class Core:
             with torch.no_grad():
                 self.path_rot.table.copy_(t.to(self.dev))         # the stored phases (the seeded draw, as trained)
             prm.patch(self.model, self.path_rot)
+        self.ninth = None
+        xp = os.path.join(folder, "extra_head.safetensors")
+        assert os.path.exists(xp) == ("ninth_head" in self.scale), "scale.json names the ninth heads exactly when their file is there"
+        if os.path.exists(xp):                                    # 0.1.94: the ninth head in every anchored block, after the path
+            nf = self.scale["ninth_head"]
+            nhm.check_field(nf)
+            assert self.anchor is not None and int(nf["d"]) == self.cfg.d_model, "the ninth heads join the anchored blocks of their craft"
+            self.ninth = nhm.NinthHeads(self.cfg.d_model, int(nf["blocks"]), nf["rot"], int(nf["seed"]),
+                                        units=(prm.Units() if nf["rot"] == "path" else None), form=nf.get("form", "next"),
+                                        k=int(nf.get("k", prm.K))).to(self.dev)
+            nhm.load(self.ninth, load_file(xp))                  # the trained weights; the stored phases = the seeded draw
+            self.ninth.eval()
+            for p in self.ninth.parameters():
+                p.requires_grad_(False)
+            nhm.patch(self.model, self.ninth)
         self.head = None
         hp = os.path.join(folder, "addr_head.safetensors")
         if os.path.exists(hp):
@@ -561,7 +583,8 @@ class Core:
         return _digest(self.model, None if self.value_addr is None else self.value_addr.table,
                        None if self.key_code is None else self.key_code.table,
                        None if self.key_rot is None else self.key_rot.table,
-                       None if self.path_rot is None else self.path_rot.table)
+                       None if self.path_rot is None else self.path_rot.table,
+                       None if self.ninth is None else nhm.state(self.ninth))
 
     def set_streams(self, metas: list, request=None) -> None:
         """The anchored core's streams for these rows: request None = the true address at the questions, "null" = the null anchor, else a
@@ -592,6 +615,8 @@ class Core:
                 self.key_rot.set(x)                       # 0.1.82: a forward from a given state reads the phases of the same rows
             if self.path_rot is not None:
                 self.path_rot.set(x)                      # 0.1.92: and the path's
+            if self.ninth is not None:
+                self.ninth.set(x)                         # 0.1.94: and the ninth head's
         cls = m._byte_cls_table[x] if getattr(m, "byte_table", False) else None
         for b in m.blocks[lo:hi]:
             h = b(h, byte_cls=cls)
@@ -2379,8 +2404,8 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
         return json.load(open(out_path, encoding="utf-8"))
     t0 = time.time()
     core = Core(core_folder, dev, look=None)
-    pr = core.path_rot
-    units = pr.units if pr is not None else prm.Units().to(core.dev)
+    pr = core.path_rot if core.path_rot is not None else (core.ninth if core.ninth is not None and core.ninth.rot == "path" else None)
+    units = pr.units if pr is not None else prm.Units().to(core.dev)                   # 0.1.94: the ninth head's path toggles the same way
     docs = load_heldout(heldout_path)[:n_docs]
     assert len(docs) == n_docs, f"the held-out file holds {len(docs)} documents of at least {gr.CTX + 64} bytes, the read asks {n_docs}"
 
@@ -2405,7 +2430,8 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
             if pr is not None:
                 pr.off = False
     rec = dict(core=core.tag, version=_PKG_VERSION, docs=len(docs), ctx=gr.CTX, rule=dict(rule="entropy", theta=units.theta,
-               floor=units.floor, table_sha256=prm.TABLE_SHA256), path=(None if pr is None else dict(form=pr.form, head=pr.head, k=pr.k)))
+               floor=units.floor, table_sha256=prm.TABLE_SHA256), path=(None if pr is None else dict(form=pr.form, head=pr.head, k=pr.k) if pr is core.path_rot
+               else dict(form=pr.form, head="ninth", k=pr.path.k)))
     rec.update(one(False))
     if pr is not None:
         rec["path_off"] = one(True)

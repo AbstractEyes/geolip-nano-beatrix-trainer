@@ -59,7 +59,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "key_rho",                                                         # 0.1.88: the hold's length
              "plain_doc",                                                       # 0.1.90: the plain rows opened by DOC
              "grid_code",                                                       # 0.1.91: the address code
-             "path_bind", "path_form", "path_head", "path_k", "repeat_read")   # 0.1.92: the path in one head's rotation, the repeat read
+             "path_bind", "path_form", "path_head", "path_k", "repeat_read",   # 0.1.92: the path in one head's rotation, the repeat read
+             "ninth_head")                                                     # 0.1.94: the ninth head (the path in it, or plain)
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -160,6 +161,9 @@ def run_label(run: list) -> str:
         parts.append(f"the address code {kv['grid_code']}")
     if kv.get("path_bind") not in (None, "0"):                    # 0.1.92: the path in one head's rotation
         parts.append(f"the path rotation ({kv.get('path_form')}) on head {kv.get('path_head', '7')}"
+                     + (f" over its last {kv['path_k']} bytes" if kv.get("path_k") not in (None, "16") else ""))
+    if kv.get("ninth_head"):                                       # 0.1.94: the ninth head
+        parts.append("a ninth head " + (f"with the path ({kv.get('path_form', 'next')})" if kv["ninth_head"] == "path" else "on the anchored rotation")
                      + (f" over its last {kv['path_k']} bytes" if kv.get("path_k") not in (None, "16") else ""))
     if kv.get("head"):
         parts.append(f"head {kv['head']} {kv.get('head_lam', '1')}")

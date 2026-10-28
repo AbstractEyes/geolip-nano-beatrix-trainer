@@ -79,6 +79,7 @@ try:
     from . import key_code as kcm  # noqa: E402  (the package; 0.1.81: the key code at the end-marker)
     from . import key_rotary as krm  # noqa: E402  (the package; 0.1.82: the key in the told head's rotation)
     from . import path_rotary as prm  # noqa: E402  (the package; 0.1.92: the path in one head's rotation)
+    from . import ninth_head as nhm  # noqa: E402  (the package; 0.1.94: the path in a head of its own)
 except ImportError:                                      # run as a file: the folder is on the path (above)
     import grid_rows as gr  # noqa: E402
     import anchored_rope as ar  # noqa: E402
@@ -86,6 +87,7 @@ except ImportError:                                      # run as a file: the fo
     import key_code as kcm  # noqa: E402
     import key_rotary as krm  # noqa: E402
     import path_rotary as prm  # noqa: E402
+    import ninth_head as nhm  # noqa: E402
 
 ARGS = {a.split("=")[0].lstrip("-"): a.split("=", 1)[1] for a in sys.argv[1:] if "=" in a}
 OUT, ARM, SEED = ARGS["out"], ARGS["arm"], int(ARGS.get("seed", "1"))
@@ -329,13 +331,27 @@ PATH_K = int(ARGS.get("path_k", str(prm.K)))
 PATH_TABLE = ARGS.get("path_table", "")
 assert ARGS.get("repeat_read", "0") in ("0", "1"), f"--repeat_read={ARGS.get('repeat_read')!r}: 0 or 1"
 REPEAT_READ = ARGS.get("repeat_read", "0") == "1"
-assert (PATH_FORM in prm.FORMS) == bool(PATH_BIND), f"--path_form={PATH_FORM!r}: same or next, exactly with --path_bind={prm.PAIRS}"
-assert PATH_BIND or not any(k in ARGS for k in ("path_head", "path_k")), "--path_head and --path_k are forms of the path (--path_bind)"
+# 0.1.94: THE PATH IN A HEAD OF ITS OWN (ninth_head.py). --ninth_head=path adds a ninth softmax head to every anchored block (its own query,
+# key, value and output rows, born as the block's heads from crc32("NINTH|v1|s<seed>|b<block>"), nothing drawn from the run's generators;
+# its output added to the block's attention output) with all sixteen of its pairs turned by the unit path's phases (--path_form=next: the
+# key at u by the path ending at u - 1; same: by its own; the phases' table 16 x --path_k x 256 from crc32("PATHROT|v1|j16")); plain puts
+# the same head on the block's anchored rotation (the capacity control). Its parameters train under the run's Adam and clip; they ship
+# beside the weights (extra_head.safetensors; scale.json's ninth_head) and rotary_scale.Core installs them. The end read adds the repeat
+# split for both and, for the path, heldout_bpb_path_off (the head on the anchored rotation instead). Off (the default) = 0.1.93 bit for
+# bit; the run's name carries _nhpn16 (or _nhps16) or _nhpl.
+NINTH_HEAD = ARGS.get("ninth_head", "")
+assert NINTH_HEAD in ("",) + nhm.ROTS, f"--ninth_head={NINTH_HEAD!r}: path or plain (or off)"
+assert not NINTH_HEAD or (GRID == "ag" and ROTARY == "anchored" and not PATH_BIND), \
+    "--ninth_head joins the anchored blocks (--grid=ag), apart from the path in head 7 (--path_bind)"
+assert (PATH_FORM in prm.FORMS) == bool(PATH_BIND or NINTH_HEAD == "path"), \
+    f"--path_form={PATH_FORM!r}: same or next, exactly with --path_bind={prm.PAIRS} or --ninth_head=path"
+assert PATH_BIND or "path_head" not in ARGS, "--path_head is the head the path takes (--path_bind)"
+assert PATH_BIND or NINTH_HEAD == "path" or "path_k" not in ARGS, "--path_k is the path's reach (--path_bind or --ninth_head=path)"
 assert not PATH_BIND or (GRID == "ag" and ROTARY == "anchored" and not PTR_STOP), \
     "--path_bind turns pairs of the anchored rotation (--grid=ag) in every block (not with the pointer's stopped capture, which forms one head)"
 assert not PATH_BIND or not KEY_ROT or PATH_HEAD != PTR_HEAD, "the told head keeps the key rotation: the path takes another head"
 assert 1 <= PATH_K <= 64, f"--path_k={PATH_K}: 1 .. 64"
-assert not PATH_TABLE or PATH_BIND or REPEAT_READ, "--path_table is the unit rule's table (--path_bind or --repeat_read)"
+assert not PATH_TABLE or PATH_BIND or REPEAT_READ or NINTH_HEAD, "--path_table is the unit rule's table (--path_bind, --repeat_read or --ninth_head)"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
 N_HARD = int(round(N_AG * GRID_HARD))                                        # 0.1.75: the batch's key-hard grid rows (its last ones)
 assert GRID_HARD == 0 or N_HARD > 0, f"--grid_hard={GRID_HARD} rounds to no key-hard row of the batch's {N_AG} grid rows"
@@ -811,7 +827,7 @@ class Craft:
                    f"entries' and the questions' keys free)" if KEY_NORM == 2 else "")
                 + "; no parameter")
         self.units, self.path_rot, self.path_blocks = None, None, 0     # 0.1.92: the unit rule (the path, the repeat read) and the path
-        if PATH_BIND or REPEAT_READ:             # buffers only, no draw from the run's generators: the state dict stays the house body's
+        if PATH_BIND or REPEAT_READ or NINTH_HEAD:   # buffers only, no draw from the run's generators: the state dict stays the house body's
             self.units = prm.Units(PATH_TABLE or None).to(DEV)
         if PATH_BIND:                            # after the key rotation, before the pointer term's capture: it keeps the rotated q and k
             self.path_rot = prm.PathRotary(self.units, PATH_FORM, head=PATH_HEAD, k=PATH_K).to(DEV)
@@ -825,6 +841,18 @@ class Craft:
         elif REPEAT_READ:
             log(f"the repeat read: the held-out bits split at the positions whose unit path (the entropy rule at {self.units.theta:g} bits) "
                 f"occurred earlier in the row")
+        self.ninth, self.ninth_blocks = None, 0  # 0.1.94: the ninth head (--ninth_head=path|plain)
+        if NINTH_HEAD:                           # its own generator: the run's draws, the eight heads and the data order stay the plain run's
+            _nb = sum(1 for b in self.model.blocks if getattr(b.attn, "_anchor", None) is not None)
+            self.ninth = nhm.NinthHeads(self.cfg.d_model, _nb, NINTH_HEAD, SEED, units=self.units, form=PATH_FORM or "next",
+                                        k=PATH_K).to(DEV)
+            self.ninth_blocks = nhm.patch(self.model, self.ninth)
+            self.params = self.params + list(self.ninth.parameters())
+            log(f"a ninth head in {self.ninth_blocks} anchored blocks (32 dims, its own query, key, value and output rows born from "
+                f"crc32({nhm.BIRTH_TAG}|s{SEED}|b<block>); {nhm.params(self.ninth):,} parameters under the same Adam and clip): "
+                + (f"all sixteen pairs turned by the unit path's phases ({PATH_FORM}; the entropy rule at {self.units.theta:g} bits; the "
+                   f"path's last {PATH_K} bytes; 16 x {PATH_K} x {prm.VOCAB} phases seeded crc32({nhm.seed_tag(PATH_K)!r}))"
+                   if NINTH_HEAD == "path" else "on the block's anchored rotation (the capacity control)"))
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
             assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
@@ -1788,13 +1816,14 @@ def finish(c: Craft) -> tuple:
     bits_off, by_cls_off = heldout_bits(disable_bank=True)
     log(f"held-out {bits:.4f} bits a byte (dispatch off {bits_off:.4f}); by class " + " ".join(f"{k} {v:.3f}" for k, v in by_cls.items() if v is not None))
     path_off = None                                     # 0.1.92: the same rows with the path off (the installed rotation in every block)
-    if c.path_rot is not None:
-        c.path_rot.off = True
+    _tg = c.path_rot if c.path_rot is not None else (c.ninth if c.ninth is not None and c.ninth.rot == "path" else None)   # 0.1.94
+    if _tg is not None:
+        _tg.off = True
         try:
             _b, _c = heldout_bits(units=c.units)
             path_off = dict(bits=_b, by_class=_c, by_position=heldout_bits.by_position, by_repeat=heldout_bits.by_repeat)
         finally:
-            c.path_rot.off = False
+            _tg.off = False
     if by_rep is not None:
         log(f"held-out bits at the positions whose unit path occurred earlier in the row {by_rep['repeat']:.4f} (share "
             f"{by_rep['repeat_share']:.3f}), at the others {by_rep['other']:.4f}"
@@ -1976,6 +2005,9 @@ def finish(c: Craft) -> tuple:
             if c.path_rot is not None:           # 0.1.92: the path rotation's phases beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.path_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "path_rot.safetensors"))
                 _sj["path_rot"] = prm.scale_field(c.path_rot)
+            if c.ninth is not None:              # 0.1.94: the ninth heads beside the craft (rotary_scale.Core installs them)
+                save_file(nhm.state(c.ninth), os.path.join(wdir, "extra_head.safetensors"))
+                _sj["ninth_head"] = nhm.scale_field(c.ninth)
             if c.ptr is not None:                # 0.1.78: provenance only (the term trained the core; nothing to load)
                 _sj["ptr"] = dict(lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, **PTR_FORM)
             json.dump(_sj, open(os.path.join(wdir, "scale.json"), "w", encoding="utf-8"), indent=1)
@@ -2009,8 +2041,11 @@ def finish(c: Craft) -> tuple:
         R["plain_doc"] = True                        # 0.1.90: the plain rows opened by DOC
     if by_rep is not None:
         R["heldout_bpb_by_repeat"] = by_rep          # 0.1.92: the held-out bits split at the repeated unit paths
-    if c.path_rot is not None:                       # 0.1.92: the path rotation and the same rows with it off
-        R["path_rot"] = prm.record(c.path_rot, c.path_blocks)
+    if c.ninth is not None:                          # 0.1.94: the ninth heads
+        R["ninth_head"] = nhm.record(c.ninth)
+    if path_off is not None:                         # 0.1.92 (0.1.94: or the ninth head's path): the same rows with it off
+        if c.path_rot is not None:
+            R["path_rot"] = prm.record(c.path_rot, c.path_blocks)
         R["heldout_bpb_path_off"] = path_off["bits"]
         R["heldout_bpb_path_off_by_class"] = path_off["by_class"]
         R["heldout_bpb_path_off_by_position"] = path_off["by_position"]
