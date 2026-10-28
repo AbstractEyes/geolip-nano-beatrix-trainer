@@ -514,6 +514,16 @@ runtime reads the six models with the path in blocks 1-3 (every subset of the th
 block at a time), `colab/nano_pillar1g.ipynb`:
 [![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1g.ipynb)
 
+0.1.97: the random-phase read (`block_read(..., mode="random")`, `ninth_head.random_phases`, `NinthHeads.random_blocks`). Switching a
+path head to the block's own rotation does two things: it removes the path's matches, and it gives the head a positional rotation it
+was never trained with (away from its matches a path head meets its keys at unrelated phases). The random mode separates them: the
+chosen path blocks' ninth heads turn by fresh uniform phases instead, the query and the key each by its own draw at every position
+(fixed by the block and the row length, the same draw in every read), so no match is left and the head stays position-free. The
+control is read-only and empty by default (the training forward unchanged); no block on random phases is the text read, bit for bit.
+One G4 runtime reads the same twelve models (the path in blocks 1-3: no block, each alone, all three; the path in every block: one
+block at a time), `colab/nano_pillar1h.ipynb`:
+[![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1h.ipynb)
+
 Then:
 
 ```bash

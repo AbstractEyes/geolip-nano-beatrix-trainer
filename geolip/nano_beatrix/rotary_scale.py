@@ -2391,9 +2391,9 @@ def text_name(core_tag: str) -> str:
     return f"{core_tag}_text"
 
 
-def group_name(core_tag: str) -> str:
-    """0.1.96: the block read's record name for a core (its run's tag + "_group")."""
-    return f"{core_tag}_group"
+def group_name(core_tag: str, mode: str = "anchored") -> str:
+    """0.1.96: the block read's record name for a core (its run's tag + "_group"; 0.1.97: + "_<mode>" for a mode other than anchored)."""
+    return f"{core_tag}_group" if mode == "anchored" else f"{core_tag}_group_{mode}"
 
 
 def _held_bits(core: "Core", docs: list, units, mb: int) -> dict:
@@ -2459,13 +2459,16 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
 
 @torch.no_grad()
 def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_docs: int = 128, mb: int = 16, dev: str = "cuda",
-               log=print) -> dict:
+               log=print, mode: str = "anchored") -> dict:
     """0.1.96, THE BLOCK READ: for a stored core whose ninth heads carry the path (ninth_head.NinthHeads, rot "path"), the text read's
     held-out bits and their split with the path switched off in a chosen set of its path blocks - those blocks' ninth heads on the
     block's anchored rotation, the other path blocks on the path, the trained weights unchanged. sets: the off sets, each a collection
     of path blocks numbered from 1 (by default the empty set, each path block alone and all of them); the empty set reads as the text
     read does and the full set as its path-off read, so both equal a text read of the same core exactly. The core's path blocks are
-    restored after every set. One record at out_path, resume-first (an existing record is returned)."""
+    restored after every set. One record at out_path, resume-first (an existing record is returned).
+    0.1.97, mode "random": the sets' ninth heads on fresh random phases instead (ninth_head.random_phases: no path match left, the head
+    still position-free); the empty set still reads as the text read; the record names the mode."""
+    assert mode in ("anchored", "random"), mode
     if os.path.exists(out_path):
         log(f"[group] {os.path.basename(out_path)}: done before")
         return json.load(open(out_path, encoding="utf-8"))
@@ -2485,17 +2488,19 @@ def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_
     reads = []
     try:
         for o in sets:
-            if len(o) == len(base):
+            if mode == "random":
+                nh.random_blocks = o                          # 0.1.97: these path blocks on fresh random phases
+            elif len(o) == len(base):
                 nh.off = True                                 # every path block off: the text read's path-off forward exactly
             elif o:
                 nh.path_blocks = tuple(b for b in base if b not in o)
             reads.append(dict(off=list(o), **_held_bits(core, docs, nh.units, mb)))
-            nh.off, nh.path_blocks = False, keep
+            nh.off, nh.path_blocks, nh.random_blocks = False, keep, ()
     finally:
-        nh.off, nh.path_blocks = False, keep
+        nh.off, nh.path_blocks, nh.random_blocks = False, keep, ()
     rec = dict(core=core.tag, version=_PKG_VERSION, docs=len(docs), ctx=gr.CTX, rule=dict(rule="entropy", theta=nh.units.theta,
                floor=nh.units.floor, table_sha256=prm.TABLE_SHA256), path=dict(form=nh.form, head="ninth", k=nh.path.k, blocks=list(base)),
-               reads=reads, wall_s=time.time() - t0)
+               **({} if mode == "anchored" else {"mode": mode}), reads=reads, wall_s=time.time() - t0)
     none = next((r["bits"] for r in reads if not r["off"]), None)
     log(f"[group] {core.tag}: " + "; ".join(f"off {r['off'] or '-'} {r['bits']:.4f}" + ("" if none is None or not r["off"] else f" ({r['bits'] - none:+.4f})")
                                            for r in reads) + f" ({rec['wall_s']:.0f} s)")

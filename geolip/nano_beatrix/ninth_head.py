@@ -23,6 +23,10 @@ path; the others' ninth heads take the block's anchored rotation (the plain form
 full set gives the same forward, the empty set the plain form's. The heads' birth and capacity are the same whatever the set; off puts
 every path block on the anchored rotation (the plain form's forward on the same weights).
 
+0.1.97, a read's control (never set in training): random_blocks names path blocks, numbered from 1, whose ninth heads take fresh phases
+uniform on [0, 2 pi) for q and k (random_phases: each its own draw at every position) in place of the path's - no path match is left, and
+the head stays position-free as the path leaves it away from its matches; the other path blocks keep the path.
+
 The heads live outside the model's module tree (their forward is a closure over the block's attention): the model's state dict stays the
 house body's; the trainer adds their parameters to its optimizer and ships them beside the weights (extra_head.safetensors, scale.json's
 ninth_head); rotary_scale.Core installs them from there."""
@@ -60,6 +64,15 @@ def phase_table(k: int = prm.K) -> torch.Tensor:
     """(16, K, 256) float32 phases uniform on [0, 2 pi) from a CPU generator seeded crc32(seed_tag(K)): the same draw in every process."""
     g = torch.Generator().manual_seed(zlib.crc32(seed_tag(k).encode()))
     return torch.rand(PAIRS, int(k), prm.VOCAB, generator=g, dtype=torch.float64).mul_(prm.TWO_PI).float()
+
+
+def random_phases(B: int, n: int, block: int, device) -> tuple:
+    """0.1.97, a read's control: fresh phases uniform on [0, 2 pi) for q and for k, each its own draw at every position and pair, from a
+    CPU generator seeded crc32("RANDPHASE|v1|b<block>|n<n>") (the same draw in every read of that block and length, every row alike).
+    -> (aq, ak), each (B, 1, n, 16) on device: no two positions share a phase by construction, so no path match is left."""
+    g = torch.Generator().manual_seed(zlib.crc32(f"RANDPHASE|v1|b{int(block)}|n{int(n)}".encode()))
+    a = torch.rand(2, n, PAIRS, generator=g, dtype=torch.float64).mul_(prm.TWO_PI).float()
+    return a[0].expand(B, 1, n, PAIRS).to(device), a[1].expand(B, 1, n, PAIRS).to(device)
 
 
 class Path16(prm.PathRotary):
@@ -107,6 +120,7 @@ class NinthHeads(nn.Module):
                 self.o[i].weight.copy_(o)
         self.path = Path16(units, form, k=k) if rot == "path" else None
         self.off = False
+        self.random_blocks = ()              # 0.1.97, a read's control (empty in training): these path blocks on fresh random phases
         self.capture = False                 # a read's capture of each block's rotated q9, k9 (room_read.look)
         self.caps = [None] * self.n_blocks
 
@@ -134,7 +148,9 @@ class NinthHeads(nn.Module):
         if path and self.path_blocks is not None:   # 0.1.95: the path on the named blocks only
             assert i is not None, "a path block set: the block's index decides its rotation"
             path = i + 1 in self.path_blocks
-        if path:
+        if path and i is not None and i + 1 in self.random_blocks:
+            aq, ak = random_phases(B, n, i + 1, q.device)                                           # 0.1.97: no path matches left
+        elif path:
             pq, pk = self.path.phi_q, self.path.phi_k
             assert pq is not None and tuple(pq.shape[:2]) == (B, n), \
                 f"the path phases are {None if pq is None else tuple(pq.shape[:2])}, the forward is {(B, n)}: set them from the rows first"
