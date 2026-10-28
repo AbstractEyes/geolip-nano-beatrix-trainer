@@ -586,6 +586,14 @@ trains and read through its look as it lands, `colab/nano_a48sa_lane{1,2,3}.ipyn
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48sa_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48sa_lane3.ipynb)
 
+The same address at 48 records a row trained twice as long: `--grid_code=4x4 --grid_comps=48` on the plain-rows recipe at
+`--steps=48000` under the default schedule (the cosine over the whole run), on its six stored seeds (1, 2, 3 and 5 first, then 4 and 6),
+each model set beside the stored 24,000-step model of its seed and the plain-rows model trained for 48,000 steps, on up to three G4
+runtimes, `colab/nano_a48long_lane{1,2,3}.ipynb` (no code change: 0.1.100):
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48long_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48long_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48long_lane3.ipynb)
+
 Then:
 
 ```bash
