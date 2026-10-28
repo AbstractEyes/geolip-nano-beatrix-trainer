@@ -506,6 +506,14 @@ The path in block 3 only (`--path_blocks=3`, the names `_nhpn16b3`; the same rel
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1d_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1d_lane3.ipynb)
 
+0.1.96: the block read (`rotary_scale.block_read`). For a stored model whose ninth heads carry the path, the held-out text read with
+the path switched off in chosen path blocks: those blocks' ninth heads on the block's own rotation, the other path blocks on the path,
+the trained weights unchanged; by default no block, each path block alone and all of them. No block off is the text read, and every
+path block off its path-off read, bit for bit (the text read's loop is shared and its numbers unchanged). Nothing trains: one G4
+runtime reads the six models with the path in blocks 1-3 (every subset of the three) and the six with the path in every block (one
+block at a time), `colab/nano_pillar1g.ipynb`:
+[![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1g.ipynb)
+
 Then:
 
 ```bash

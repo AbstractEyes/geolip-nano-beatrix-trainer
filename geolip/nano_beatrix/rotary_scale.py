@@ -2391,6 +2391,30 @@ def text_name(core_tag: str) -> str:
     return f"{core_tag}_text"
 
 
+def group_name(core_tag: str) -> str:
+    """0.1.96: the block read's record name for a core (its run's tag + "_group")."""
+    return f"{core_tag}_group"
+
+
+def _held_bits(core: "Core", docs: list, units, mb: int) -> dict:
+    """The held-out bits a byte of a core's forward as it stands (DOC + the first ctx bytes of each document, batches of mb rows, bf16
+    autocast on the card) and their split at the positions whose unit path occurred earlier in the row. The text read's and the block
+    read's one loop (0.1.96: shared, the text read's numbers unchanged)."""
+    tot, n, rep = 0.0, 0, prm.RepeatSplit()
+    for i in range(0, len(docs), mb):
+        rows = [bytes([DOC]) + d[:gr.CTX] for d in docs[i:i + mb]]
+        x = torch.from_numpy(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rows]).astype(np.int64)).to(core.dev)
+        core.clear()
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            lg = core.model(x[:, :-1])[0].float()
+        nll = F.cross_entropy(lg.reshape(-1, lg.shape[-1]), x[:, 1:].reshape(-1), reduction="none").view(x.shape[0], -1)
+        nl = nll.cpu().numpy()
+        tot += float(nl.sum())
+        n += nl.size
+        rep.add(nl, prm.repeat_mask(units, x[:, :-1]))
+    return dict(bits=tot / n / math.log(2.0), by_repeat=rep.out())
+
+
 @torch.no_grad()
 def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 128, mb: int = 16, dev: str = "cuda", log=print) -> dict:
     """0.1.92, THE TEXT READ (no members): the held-out text bits a byte as the trainer's end read forms them (DOC + the first ctx bytes of
@@ -2413,19 +2437,7 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
         if pr is not None:
             pr.off = off
         try:
-            tot, n, rep = 0.0, 0, prm.RepeatSplit()
-            for i in range(0, len(docs), mb):
-                rows = [bytes([DOC]) + d[:gr.CTX] for d in docs[i:i + mb]]
-                x = torch.from_numpy(np.stack([np.frombuffer(r, dtype=np.uint8) for r in rows]).astype(np.int64)).to(core.dev)
-                core.clear()
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    lg = core.model(x[:, :-1])[0].float()
-                nll = F.cross_entropy(lg.reshape(-1, lg.shape[-1]), x[:, 1:].reshape(-1), reduction="none").view(x.shape[0], -1)
-                nl = nll.cpu().numpy()
-                tot += float(nl.sum())
-                n += nl.size
-                rep.add(nl, prm.repeat_mask(units, x[:, :-1]))
-            return dict(bits=tot / n / math.log(2.0), by_repeat=rep.out())
+            return _held_bits(core, docs, units, mb)
         finally:
             if pr is not None:
                 pr.off = False
@@ -2440,6 +2452,53 @@ def text_read(core_folder: str, out_path: str, heldout_path: str, n_docs: int = 
     log(f"[text] {core.tag}: held-out {rec['bits']:.4f} bits a byte; at the repeated paths {r['repeat']:.4f} (share {r['repeat_share']:.3f}), "
         f"elsewhere {r['other']:.4f}" + (f"; the path off {rec['path_off']['bits']:.4f}" if pr is not None else "")
         + f" ({rec['wall_s']:.0f} s)")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
+    return rec
+
+
+@torch.no_grad()
+def block_read(core_folder: str, out_path: str, heldout_path: str, sets=None, n_docs: int = 128, mb: int = 16, dev: str = "cuda",
+               log=print) -> dict:
+    """0.1.96, THE BLOCK READ: for a stored core whose ninth heads carry the path (ninth_head.NinthHeads, rot "path"), the text read's
+    held-out bits and their split with the path switched off in a chosen set of its path blocks - those blocks' ninth heads on the
+    block's anchored rotation, the other path blocks on the path, the trained weights unchanged. sets: the off sets, each a collection
+    of path blocks numbered from 1 (by default the empty set, each path block alone and all of them); the empty set reads as the text
+    read does and the full set as its path-off read, so both equal a text read of the same core exactly. The core's path blocks are
+    restored after every set. One record at out_path, resume-first (an existing record is returned)."""
+    if os.path.exists(out_path):
+        log(f"[group] {os.path.basename(out_path)}: done before")
+        return json.load(open(out_path, encoding="utf-8"))
+    t0 = time.time()
+    core = Core(core_folder, dev, look=None)
+    nh = core.ninth
+    assert core.path_rot is None and nh is not None and nh.rot == "path", "the block read reads a core whose ninth heads carry the path"
+    base = tuple(range(1, nh.n_blocks + 1)) if nh.path_blocks is None else tuple(nh.path_blocks)
+    if sets is None:
+        sets = [()] + [(b,) for b in base] + [base]
+    sets = [tuple(sorted({int(b) for b in o})) for o in sets]
+    assert all(set(o) <= set(base) for o in sets), f"an off set outside the path blocks {list(base)}"
+    assert len(set(sets)) == len(sets), "each off set once"
+    docs = load_heldout(heldout_path)[:n_docs]
+    assert len(docs) == n_docs, f"the held-out file holds {len(docs)} documents of at least {gr.CTX + 64} bytes, the read asks {n_docs}"
+    keep = nh.path_blocks
+    reads = []
+    try:
+        for o in sets:
+            if len(o) == len(base):
+                nh.off = True                                 # every path block off: the text read's path-off forward exactly
+            elif o:
+                nh.path_blocks = tuple(b for b in base if b not in o)
+            reads.append(dict(off=list(o), **_held_bits(core, docs, nh.units, mb)))
+            nh.off, nh.path_blocks = False, keep
+    finally:
+        nh.off, nh.path_blocks = False, keep
+    rec = dict(core=core.tag, version=_PKG_VERSION, docs=len(docs), ctx=gr.CTX, rule=dict(rule="entropy", theta=nh.units.theta,
+               floor=nh.units.floor, table_sha256=prm.TABLE_SHA256), path=dict(form=nh.form, head="ninth", k=nh.path.k, blocks=list(base)),
+               reads=reads, wall_s=time.time() - t0)
+    none = next((r["bits"] for r in reads if not r["off"]), None)
+    log(f"[group] {core.tag}: " + "; ".join(f"off {r['off'] or '-'} {r['bits']:.4f}" + ("" if none is None or not r["off"] else f" ({r['bits'] - none:+.4f})")
+                                           for r in reads) + f" ({rec['wall_s']:.0f} s)")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     json.dump(rec, open(out_path, "w", encoding="utf-8"), indent=1)
     return rec
