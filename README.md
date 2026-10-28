@@ -560,6 +560,24 @@ stored million-key read of each layout. Three TPU runtimes' host machines, `cola
 [![Far lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far44_lane2.ipynb)
 [![Far lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far44_lane3.ipynb)
 
+0.1.100: the schedule's floor and a flat phase (`bed_optim.lr_schedule`). The rate warms up over the first W steps (100), then follows a
+cosine from its peak down to a tenth of it at the last step S. `--lr_floor=m` ends the cosine at m times the peak instead of a tenth;
+`--lr_flat=f` holds the peak for the share f of the run after the warm-up and runs the cosine over the rest:
+
+    lr(step) = lr x (step + 1) / W                                                   for step < W
+    lr(step) = lr                                                                    for W <= step < E,  E = W + f (S - W)
+    lr(step) = lr x (m + (1 - m) x (1/2)(1 + cos(pi (step - E) / (S - E))))          for step >= E
+
+The defaults (m = 0.1, f = 0) are every earlier run's schedule bit for bit (a default run's weights and record unchanged: three-step
+models at the defaults equal 0.1.91's byte for byte); when not the defaults the record names both and the run's name carries `_lf<m>` and
+`_fl<f>` after its length. Twelve models at 24,000 steps - the four-digit address at 96 records a row on seeds 4 and 1 and the plain-rows
+recipe on seeds 2, 3, 6 and 1, each under `--lr_floor=0.5` (the cosine ends at half the peak) and under `--lr_flat=0.8` (the peak held
+to step 19,220) - on the same rows at the same steps as the stored 24,000-step models of those seeds, on up to three G4 runtimes, each
+claimed on the Hub before it trains and read through its look as it lands, `colab/nano_slow_anneal_lane{1,2,3}.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_slow_anneal_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_slow_anneal_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_slow_anneal_lane3.ipynb)
+
 Then:
 
 ```bash

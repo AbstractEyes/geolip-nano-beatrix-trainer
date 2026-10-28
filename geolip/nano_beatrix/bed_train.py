@@ -101,6 +101,11 @@ WD = float(ARGS.get("wd", "0"))
 WD_SET = ARGS.get("wd_set", "mat")
 assert WD >= 0 and WD_SET in bed_optim.DECAY_SETS, f"--wd={WD} --wd_set={WD_SET!r}: a decay >= 0 on one of {bed_optim.DECAY_SETS}"
 WARM = int(ARGS.get("warmup", "5" if SMOKE else "100"))
+# 0.1.100: the schedule's floor (the cosine ends at this share of the rate; .1 = every earlier run) and flat share (the full rate held for
+# this share of the run after the warmup before the cosine starts; 0 = every earlier run): bed_optim.lr_schedule
+LR_FLOOR = float(ARGS.get("lr_floor", "0.1"))
+LR_FLAT = float(ARGS.get("lr_flat", "0"))
+assert 0.0 < LR_FLOOR <= 1.0 and 0.0 <= LR_FLAT < 1.0, f"--lr_floor={LR_FLOOR} in (0, 1], --lr_flat={LR_FLAT} in [0, 1)"
 P_PLANT = float(ARGS.get("plant", "0.25"))
 # 0.1.90: --plain_doc=1 opens every plain row (a non-grid place the share leaves unframed) at a DOC: the row starts at the first DOC at or
 # after its drawn place and runs on in the packed stream - the held-out gauge's row form (DOC, then a document from its first byte), from
@@ -903,10 +908,7 @@ model = crafts[0].model          # the gauges read the module's `model`; finish(
 
 
 def lr_at(step):
-    if step < WARM:
-        return LR * (step + 1) / WARM
-    t = (step - WARM) / max(1, STEPS - WARM)
-    return LR * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * t)))
+    return bed_optim.lr_schedule(step, LR, WARM, STEPS, LR_FLOOR, LR_FLAT)      # 0.1.100: the defaults are the stored schedule bit for bit
 
 
 def xc_kl(t_logits, s_logits, sel):
@@ -2028,6 +2030,8 @@ def finish(c: Craft) -> tuple:
              dispatch_off_by_class=by_cls_off, fetch=fetch_res, dispatch_census=census, curve=c.curve, wall_s=time.time() - T0,
              frames=FRAME_CFG, heldout_bits_by_frame=frame_bits, fetch_by_frame=frame_fetch, fetch_by_frame_bank_off=frame_fetch_bank_off, canary=canary, formation=formation, plain_collapse=collapse,
              weights=os.path.relpath(os.path.join(wdir, "model.safetensors"), OUT))
+    if LR_FLOOR != 0.1 or LR_FLAT:                           # 0.1.100: the schedule's floor and flat share, when not the stored schedule's
+        R.update(lr_floor=LR_FLOOR, lr_flat=LR_FLAT)
     if ARGS.get("stage"):
         R["stage"] = ARGS["stage"]           # 0.1.22: a curriculum block's stage name (its tag carries it in place of the starting craft's)
     if GAUGE_ASKS:

@@ -10,8 +10,14 @@ The decay sets:
         address books (*.codebook) or the byte-class amplitude tables (*.byte_amp): their size is part of their geometry, and none of them
         was ever trained under a decay.
   head  the output layer's two readout matrices only (head.w_h.weight, head.w_s.weight).
-Norm gains, biases, gates and every other one-dimensional parameter never decay."""
+Norm gains, biases, gates and every other one-dimensional parameter never decay.
+
+The schedule (lr_schedule, 0.1.100): a linear warmup, then a cosine to a floor; the floor (.1 of the rate) and the cosine over the whole
+run after the warmup are every earlier run's, bit for bit. A higher floor ends the run at that share of the rate; a flat share holds the
+full rate for that share of the run after the warmup before the cosine starts."""
 from __future__ import annotations
+
+import math
 
 import torch
 
@@ -61,3 +67,19 @@ def census(model: torch.nn.Module, wd_set: str = "mat") -> dict:
         part = out["by_part"].setdefault(n.split(".")[0], {"decay": 0, "other": 0})
         part[k] += p.numel()
     return out
+
+
+def lr_schedule(step: int, lr: float, warm: int, steps: int, floor: float = 0.1, flat: float = 0.0) -> float:
+    """The rate at a step: lr (step + 1) / warm through the warmup; then lr through E = warm + flat (steps - warm); then
+    lr (floor + (1 - floor) (1/2)(1 + cos(pi (step - E) / (steps - E)))). floor .1 and flat 0 are the stored schedule, computed by its
+    own expression (bit for bit)."""
+    assert 0.0 < floor <= 1.0 and 0.0 <= flat < 1.0, f"the schedule's floor in (0, 1] and flat share in [0, 1): {floor}, {flat}"
+    if step < warm:
+        return lr * (step + 1) / warm
+    end = warm + flat * (steps - warm) if flat else warm
+    if step < end:
+        return lr
+    t = (step - end) / max(1, steps - end)
+    if floor == 0.1:
+        return lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * t)))
+    return lr * (floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * t)))
