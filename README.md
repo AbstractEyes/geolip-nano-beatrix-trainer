@@ -552,6 +552,14 @@ runtimes, each claimed on the Hub before it trains and read through its look as 
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_long_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_long_lane3.ipynb)
 
+The far read at the four-digit code (0.1.91 as is). The four-digit address at 96 records a row and the two-digit address at 48, each
+trained for 48,000 and for 24,000 steps (six seeds each, 24 models), read to 10^8 competing keys by `capacity_far.far_core` at each
+model's own row and address. The models of one row layout share one bank, so a lane draws at most two; every lane first reproduces one
+stored million-key read of each layout. Three TPU runtimes' host machines, `colab/nano_capacity_far44_lane{1,2,3}.ipynb`:
+[![Far lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far44_lane1.ipynb)
+[![Far lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far44_lane2.ipynb)
+[![Far lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far44_lane3.ipynb)
+
 Then:
 
 ```bash
