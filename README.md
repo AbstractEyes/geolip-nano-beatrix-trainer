@@ -543,6 +543,15 @@ name carries them (`_k0`, `_k1-15`). One G4 runtime reads the same twelve models
 slots and the previous byte's slot changed (every slot reproduces the relabel read's records exactly), `colab/nano_pillar1k.ipynb`:
 [![G4](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_pillar1k.ipynb)
 
+The longer run at the four-digit code (0.1.91 as is). The four-digit address at 96 records a row and the plain-rows recipe at 48 records,
+each at `--steps=48000` (the cosine schedule over the longer run, nothing else changed) on the six seeds of their stored 24,000-step
+models: the batches are drawn from the seed and the step, so each long model trains on the same rows at the same steps as its stored one.
+Beside them the four-digit address at 96 records at 24,000 steps on six new seeds (the replication). Eighteen models on up to three G4
+runtimes, each claimed on the Hub before it trains and read through its look as it lands, `colab/nano_code44_long_lane{1,2,3}.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_long_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_long_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_code44_long_lane3.ipynb)
+
 Then:
 
 ```bash
