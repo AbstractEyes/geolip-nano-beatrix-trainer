@@ -634,6 +634,15 @@ lands and set beside the four-digit models of its seed, `colab/nano_a48c83_lane{
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48c83_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48c83_lane3.ipynb)
 
+The far read at 48 records with the last digit weighted (0.1.102 as is). The four-digit address at 48 records a row trained for 24,000
+steps with the index entries' last address byte weighted in at 0.1 and without it (six seeds each, 12 models), read to 10^8 competing
+keys by `capacity_far.far_core` at the models' own row and address. The twelve share one bank, and every lane first reproduces the first
+stored model's million-key read; a lane claims each model by a commit conditioned on the branch's own head (`list_repo_refs`). Three
+v5e-1 TPU runtimes' host machines, `colab/nano_capacity_far48_lane{1,2,3}.ipynb`:
+[![Far lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far48_lane1.ipynb)
+[![Far lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far48_lane2.ipynb)
+[![Far lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far48_lane3.ipynb)
+
 Then:
 
 ```bash
