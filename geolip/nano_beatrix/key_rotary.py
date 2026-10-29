@@ -26,7 +26,13 @@ pair lengths equal every true record's by construction. The defaults (pairs 8, n
 position predicts the next byte): in a grid row (its head DOC MODE c SEP g SEP) a record is DATA a1 a2 CUE key SEP value END and an index
 entry CUE key SEP a1 a2, so a record's SEP is one whose CUE follows DATA and the address bytes; in any other row the records stand inside
 frames (DATA / THINK ... END) and the question after them, so a record's SEP is one whose CUE lies inside an open frame. The index
-entries' and the questions' keys keep the lengths training gives them. norm = 1 is 0.1.87's hold at every coded SEP exactly."""
+entries' and the questions' keys keep the lengths training gives them. norm = 1 is 0.1.87's hold at every coded SEP exactly.
+
+0.1.103: THE ENTRY FORM (entry = True). Each index entry's address positions after its SEP - the positions that write its second .. last
+address digit (key_code.entry_offsets: a coded SEP followed by the code's digit bytes up to the position) - are coded as the SEP: the told
+head's bound pairs there turn by the entry key's phases, value for value the SEP's, for the query and the key alike. The told head can then
+look at the record from every address position, as from the SEP. The hold stays the records' SEPs' (norm 2) or every coded SEP's (norm 1);
+entry = False is 0.1.102's rotation exactly."""
 from __future__ import annotations
 
 import hashlib
@@ -118,10 +124,11 @@ class KeyRotary(torch.nn.Module):
     (0.1.87): the key's bound pairs held at length rho at the coded SEPs; 0.1.88: norm 0 (none), 1 (every coded SEP, 0.1.87's True), 2 (the
     records' coded SEPs only; records()). hold: the current forward's held positions (None without a norm). code (0.1.91): the grid rows'
     address code, which the records' rule reads (the hold at norm 2). 0.1.102: at a code whose shared pairs are not eight (8x3: four) the
-    eight-pair form would turn anchor pairs, so the rotation binds all sixteen there."""
+    eight-pair form would turn anchor pairs, so the rotation binds all sixteen there. 0.1.103: entry (the entry form above) codes each index
+    entry's address positions as its SEP."""
 
     def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: int = 0, rho: float = RHO,
-                 code: str = ar.CODE) -> None:
+                 code: str = ar.CODE, entry: bool = False) -> None:
         super().__init__()
         assert int(pairs) in PAIR_FORMS, f"pairs {pairs!r}: one of {PAIR_FORMS}"
         assert int(norm) in NORMS and int(norm) == norm, f"norm {norm!r}: one of {NORMS}"
@@ -129,6 +136,8 @@ class KeyRotary(torch.nn.Module):
         assert int(pairs) == ar.PAIRS or ar.shared(code) == J, \
             f"the {code} code shares {ar.shared(code)} pairs: the key rotation binds all {ar.PAIRS} there (pairs {ar.PAIRS})"
         self.block, self.head, self.k, self.pairs, self.code = int(block), int(head), int(k), int(pairs), code
+        self.entry = bool(entry)                          # 0.1.103: the entries' address positions coded as their SEPs
+        self.radix, self.levels, _ = ar.code_shape(code)
         self.norm, self.rho = int(norm), float(rho)
         assert self.rho > 0, rho
         self.register_buffer("table", phase_table(self.k, self.pairs), persistent=False)
@@ -148,8 +157,9 @@ class KeyRotary(torch.nn.Module):
 
     def set(self, idx: torch.Tensor) -> None:
         off = kcm.key_offsets(idx, self.k)
-        self.phi, self.on = self.phases(idx, off)
-        self.hold = {0: None, 1: self.on, 2: records(idx, off, self.code) if self.norm == 2 else None}[self.norm]   # 0.1.88: where the norm holds
+        self.phi, self.on = self.phases(idx, kcm.entry_offsets(idx, off, self.radix, self.levels) if self.entry else off)
+        sep_on = off[..., 0] != kcm.VOCAB                 # the coded SEPs (= self.on without the entry form)
+        self.hold = {0: None, 1: sep_on, 2: records(idx, off, self.code) if self.norm == 2 else None}[self.norm]   # 0.1.88: where the norm holds
 
     def clear(self) -> None:
         self.phi = self.on = self.hold = None
@@ -224,6 +234,8 @@ def record(kr: KeyRotary) -> dict:
                digest=table_digest(kr.table))
     if kr.norm:
         out.update(norm=kr.norm, rho=kr.rho)
+    if kr.entry:                                          # 0.1.103: the entries' address positions coded as their SEPs (off: 0.1.102's field)
+        out["entry"] = True
     return out
 
 

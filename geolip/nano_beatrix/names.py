@@ -87,6 +87,8 @@ def run_tag(args: dict) -> str:
     # "_nhpl": the head on the block's anchored rotation, the capacity control; the reach when not 16, "k12"; off names nothing)
     # 0.1.95: the path's blocks after the path head's piece when named ("_nhpn16b123": blocks 1, 2 and 3; every block names nothing)
     # 0.1.101: the index entries' dose after the address head's piece, in hundredths ("_id100" for lambda 1, "_id10" for .1; off names nothing)
+    # 0.1.103: the entry form "e" after its key form's piece ("_kcle": the learned key code at the entries' address positions too;
+    # "_krt16r218e": the key rotation there too; off names nothing) and the pointer term at every address position ("pa" after "_pt..")
     scale =((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
              + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
              + (f"_cp{int(args['rotary_content'])}" if int(args.get("rotary_content", "2")) != 2 else "")
@@ -97,12 +99,15 @@ def run_tag(args: dict) -> str:
              + (f"_kh{int(round(float(args['grid_hard']) * 100))}" if float(args.get("grid_hard", "0")) > 0 else "")
              + ("_va1" if args.get("value_addr", "0") == "1" else "")
              + (f"_pt{int(round(float(args['ptr_lam']) * 100))}b{int(args.get('ptr_block', '4'))}h{int(args.get('ptr_head', '0'))}"
-                + ("p2" if args.get("ptr_pos", "sep") == "both" else "") + ("sg" if args.get("ptr_stop", "0") == "1" else "")
+                + ("p2" if args.get("ptr_pos", "sep") == "both" else "") + ("pa" if args.get("ptr_pos", "sep") == "all" else "")
+                + ("sg" if args.get("ptr_stop", "0") == "1" else "")
                 if float(args.get("ptr_lam", "0")) > 0 else "")
-             + ({"fixed": "_kcf", "learned": "_kcl"}[args["key_code"]] if args.get("key_code") else "")
+             + ({"fixed": "_kcf", "learned": "_kcl"}[args["key_code"]] + ("e" if args.get("key_entry") == "code" else "")
+                if args.get("key_code") else "")
              + ("_krt" + ("16" if args.get("key_pairs", "8") == "16" else "") + ("n" if args.get("key_norm", "0") == "1" else "")
                 + ("r" if args.get("key_norm", "0") == "2" else "")
                 + (f"{int(round(float(args['key_rho']) * 100))}" if float(args.get("key_rho", "4.16")) != 4.16 else "")
+                + ("e" if args.get("key_entry") == "rot" else "")
                 if args.get("key_rot", "0") == "1" else "")
              + (f"_pb{args['path_form'][0]}{int(args['path_bind'])}h{int(args.get('path_head', '7'))}"
                 + (f"k{int(args['path_k'])}" if int(args.get("path_k", "16")) != 16 else "")

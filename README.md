@@ -643,6 +643,34 @@ v5e-1 TPU runtimes' host machines, `colab/nano_capacity_far48_lane{1,2,3}.ipynb`
 [![Far lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far48_lane2.ipynb)
 [![Far lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_capacity_far48_lane3.ipynb)
 
+0.1.103: the index entries' address positions (`--key_entry=rot|code`, `--ptr_pos=all`; grid rows in the digit form). An index entry
+writes its record's address as n digits after its SEP: the first digit is predicted at the SEP, digit l + 1 at the position SEP + l. The
+key rotation and the key code act at the SEPs only, so the positions SEP + 1 .. SEP + n - 1, where the later digits are predicted, carry
+neither, and the told head's look from them has no key to bind. The entry form carries the SEP's key to those positions: a position p is
+coded as the SEP at p - l (1 <= l <= n - 1) when that SEP is one the key code would code and the bytes at p - l + 1 .. p are all address
+digits (`key_code.entry_offsets`); in a grid row these are exactly the index entries' address positions, three an entry at the
+four-digit code.
+
+    --key_entry=rot   (with --key_rot=1):     phi_j(p) = phi_j(SEP)                   the told head's key pairs turned by the SEP's phases
+    --key_entry=code  (with --key_code):      e'(p) = e(p) + sum_k T_k[x_{SEP-k}]      the SEP's own key code added
+    --ptr_pos=all:                            L_ptr = -(1/(n|E|)) sum_e sum_{l=0}^{n-1} log m_e(i_e + l)
+
+the last the pointer term's mass on the asked record at the SEP and at every address position after it. Neither form adds a parameter
+(the code's tables are the `--key_code` form's). Off (the default) every run is 0.1.102's byte for byte (three-step models at the
+four-digit and the 8x2 codes equal 0.1.102's: the weights and every side file, and the record but for the clock and the version). On,
+the name carries `e` after the key rotation's piece (`_krt16r218e`) or the key code's (`_kcle`) and `pa` after the pointer term's;
+scale.json's `key_rot.entry`, or `key_code.entry` with the code's radix and digit count, and `rotary_scale.Core` applies the form; the
+record carries the form and, under `--ptr_pos=all`, the told head's mass on the record at each address position
+(`grid.ptr.mass_read_addr`). Twelve models at 24,000 steps - the four-digit address at 48 records a row (the plain-rows recipe with
+`--grid_code=4x4 --grid_comps=48`) on seeds 1-6 in each of two forms, the key rotation and the pointer term at the address positions
+(`--key_entry=rot --ptr_pos=all`) and the learned key code at the SEPs and the address positions (`--key_code=learned
+--key_entry=code`) - on the same rows at the same steps as the stored 24,000-step models of those seeds, on up to three G4 runtimes,
+each model claimed on the Hub before it trains and read through its look as it lands, `colab/nano_entry_lane{1,2,3}.ipynb` (tests:
+`tests/test_key_entry.py`):
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_entry_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_entry_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_entry_lane3.ipynb)
+
 Then:
 
 ```bash

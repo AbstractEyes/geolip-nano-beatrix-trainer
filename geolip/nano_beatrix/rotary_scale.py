@@ -500,7 +500,10 @@ class Core:
         if os.path.exists(kp):                                    # 0.1.81: the key code at the end-marker, after the value-path tables
             kf = self.scale["key_code"]
             assert kf.get("k") == kcm.K and kf.get("vocab") == kcm.VOCAB and kf.get("d") == self.cfg.d_model, kf
-            self.key_code = kcm.KeyCode(self.cfg.d_model, kf["form"]).to(self.dev)
+            _rx, _nl = gr.radix_levels(self.code)                 # 0.1.103: the entry form at the core's code
+            assert not kf.get("entry") or (kf.get("radix"), kf.get("levels")) == (_rx, _nl), (kf, self.code)
+            self.key_code = kcm.KeyCode(self.cfg.d_model, kf["form"], entry=bool(kf.get("entry", False)), radix=_rx,
+                                        levels=_nl).to(self.dev)
             t = load_file(kp)["table"]
             assert tuple(t.shape) == tuple(self.key_code.table.shape), (tuple(t.shape), tuple(self.key_code.table.shape))
             with torch.no_grad():
@@ -518,7 +521,8 @@ class Core:
             assert self.anchor is not None, "the key rotation turns pairs of the anchored rotation"
             self.key_rot = krm.KeyRotary(int(kf["block"]), int(kf["head"]), k=int(kf["k"]), pairs=int(kf["pairs"]),   # 0.1.87: the
                                          norm=int(kf.get("norm", 0)), rho=float(kf.get("rho", krm.RHO)),           # binding's forms
-                                         code=self.code).to(self.dev)                                               # 0.1.91: its code
+                                         code=self.code, entry=bool(kf.get("entry", False))).to(self.dev)          # 0.1.91: its code;
+                                                                                                                    # 0.1.103: the entry form
             t = load_file(rp)["table"]
             assert tuple(t.shape) == tuple(self.key_rot.table.shape), (tuple(t.shape), tuple(self.key_rot.table.shape))
             with torch.no_grad():

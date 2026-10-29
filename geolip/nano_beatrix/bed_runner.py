@@ -61,7 +61,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "grid_code",                                                       # 0.1.91: the address code
              "path_bind", "path_form", "path_head", "path_k", "repeat_read",   # 0.1.92: the path in one head's rotation, the repeat read
              "ninth_head",                                                     # 0.1.94: the ninth head (the path in it, or plain)
-             "idx_dose")                                                       # 0.1.101: the index entries' dose
+             "idx_dose",                                                       # 0.1.101: the index entries' dose
+             "key_entry")                                                      # 0.1.103: the entries' address positions coded as their SEPs
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")
@@ -144,14 +145,16 @@ def run_label(run: list) -> str:
     if kv.get("ptr_lam") is not None and float(kv["ptr_lam"]) > 0:   # 0.1.78: the pointer term
         parts.append(f"pointer term {kv['ptr_lam']} at block {kv.get('ptr_block', '4')} head {kv.get('ptr_head', '0')}"
                      + (" at both address positions" if kv.get("ptr_pos", "sep") == "both" else "")
+                     + (" at the SEP and every address position" if kv.get("ptr_pos", "sep") == "all" else "")
                      + (", its gradient kept in the head" if kv.get("ptr_stop", "0") == "1" else ""))
     if kv.get("key_code"):                                        # 0.1.81: the key code at the end-marker
-        parts.append(f"key code {kv['key_code']}")
+        parts.append(f"key code {kv['key_code']}" + (" at the entries' address positions too" if kv.get("key_entry") == "code" else ""))
     if kv.get("key_rot") == "1":                                  # 0.1.82: the key in the told head's rotation
         parts.append("key rotation" + (f" over {kv['key_pairs']} pairs" if kv.get("key_pairs") not in (None, "8") else "")
                      + (" with the key's norm" if kv.get("key_norm") == "1" else "")       # 0.1.87: the binding's forms
                      + (" with the records' keys held" if kv.get("key_norm") == "2" else "")   # 0.1.88: the records' hold
-                     + (f" at length {kv['key_rho']}" if kv.get("key_rho") not in (None, "4.16") else ""))
+                     + (f" at length {kv['key_rho']}" if kv.get("key_rho") not in (None, "4.16") else "")
+                     + (" at the entries' address positions too" if kv.get("key_entry") == "rot" else ""))   # 0.1.103: the entry form
     if kv.get("grid_comps") not in (None, "24"):                  # 0.1.83: the larger grid row
         parts.append(f"{kv['grid_comps']} records a row")
     if kv.get("grid_keys") not in (None, "std"):                  # 0.1.83: the long keys

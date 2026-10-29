@@ -5,7 +5,9 @@ record whose key ends the same way. The key code adds the whole key at the SEP, 
     e'_t = e_t + sum_{k=1}^{n(t)} T_k[x_{t-k}]     at a SEP whose last CUE c(t) lies in the K + 1 positions before it, with no SEP
                                                    between them; n(t) = t - c(t) - 1, the key's length
     e'_t = e_t                                     everywhere else (the text, the other specials, a SEP with no CUE in reach)
-so the inner product of two SEPs' codes adds over the offsets where their keys' bytes agree. Two forms:
+so the inner product of two SEPs' codes adds over the offsets where their keys' bytes agree. 0.1.103: the entry form (entry_offsets)
+gives each index entry's address positions after its SEP - the positions that write its second .. last address digit - the code of its
+SEP too, so every address position carries the whole key. Two forms:
     fixed    T_k[b] ~ N(0, I_d), drawn once from a generator seeded crc32("KEYCODE|v1") (the byte tables' own init scale); a buffer, no
              gradient, the same rows for every seed
     learned  T_k born zero (weight-zero: the patched forward equals the plain one until the first step moves them)
@@ -56,13 +58,46 @@ def key_offsets(idx: torch.Tensor, k: int = K) -> torch.Tensor:
     return torch.where(take, back[..., 1:K + 1], torch.full_like(back[..., 1:K + 1], VOCAB))
 
 
-class KeyCode(torch.nn.Module):
-    """The key code's K tables (K, VOCAB, d): the fixed form's seeded rows (a buffer) or the learned form's born-zero parameter."""
+DIGIT0 = ord("0")                       # the address digits' first byte (grid_rows.addr_bytes: '0' + d)
 
-    def __init__(self, d_model: int, form: str) -> None:
+
+def _shift(t: torch.Tensor, lag: int, fill) -> torch.Tensor:
+    """t (B, n, ...) moved lag positions later along dim 1: out[:, i] = t[:, i - lag], `fill` before the row."""
+    if lag == 0:
+        return t
+    return torch.cat([torch.full_like(t[:, :lag], fill), t[:, :-lag]], dim=1)
+
+
+def entry_offsets(idx: torch.Tensor, off: torch.Tensor, radix: int, levels: int) -> torch.Tensor:
+    """0.1.103: THE ENTRY'S ADDRESS POSITIONS CODED AS ITS SEP. idx (B, n) bytes and off = key_offsets(idx) -> the same offsets with each
+    index entry's address positions given the offsets of its SEP: position t takes the offsets of s = t - l (l = 1 .. levels - 1) when s
+    is a coded SEP and x_{s+1} .. x_t are the code's digit bytes '0' .. '0' + radix - 1 - the positions after an entry's SEP that write
+    its second .. last address digit. A record's or a question's SEP is followed by its value's letters, so no position after it
+    qualifies; the rule reads the bytes at or before t only (a written non-digit ends it). Every other position keeps its offsets, so a
+    key's code (and its phases, key_rotary) at those positions is its SEP's, value for value."""
+    assert idx.dim() == 2 and tuple(off.shape[:2]) == tuple(idx.shape), (tuple(idx.shape), tuple(off.shape))
+    assert int(radix) >= 2 and int(levels) >= 1, (radix, levels)
+    x = idx.long()
+    on = off[..., 0] != VOCAB                                              # the coded SEPs (a key of at least one byte)
+    dig = (x >= DIGIT0) & (x <= DIGIT0 + int(radix) - 1)
+    out = off.clone()
+    run = torch.ones_like(on)
+    for lag in range(1, int(levels)):
+        run = run & _shift(dig, lag - 1, False)                            # x_{t-lag+1} .. x_t digit bytes
+        src = _shift(on, lag, False) & run                                 # t - lag a coded SEP followed by lag digit bytes up to t
+        out = torch.where(src[..., None], _shift(off, lag, VOCAB), out)    # at most one lag holds at a position (a SEP is no digit)
+    return out
+
+
+class KeyCode(torch.nn.Module):
+    """The key code's K tables (K, VOCAB, d): the fixed form's seeded rows (a buffer) or the learned form's born-zero parameter. 0.1.103:
+    entry=True codes each index entry's address positions as its SEP (entry_offsets at the address code's radix and levels)."""
+
+    def __init__(self, d_model: int, form: str, entry: bool = False, radix: int = 8, levels: int = 2) -> None:
         super().__init__()
         assert form in FORMS, f"the key code's form {form!r}: one of {FORMS}"
         self.form = form
+        self.entry, self.radix, self.levels = bool(entry), int(radix), int(levels)
         if form == "fixed":
             self.register_buffer("table", fixed_table(d_model), persistent=False)
         else:
@@ -70,8 +105,11 @@ class KeyCode(torch.nn.Module):
 
     def code(self, idx: torch.Tensor, off: torch.Tensor | None = None) -> torch.Tensor:
         """The code at every position of idx (B, n) -> (B, n, d) in the table's dtype (zero wherever nothing is coded): one embedding
-        lookup an offset into that offset's rows and a zero null row."""
+        lookup an offset into that offset's rows and a zero null row. off: key_offsets(idx) (computed when None); 0.1.103: with the entry
+        form the entries' address positions take their SEP's offsets here."""
         off = key_offsets(idx) if off is None else off
+        if self.entry:
+            off = entry_offsets(idx, off, self.radix, self.levels)
         null_row = self.table.new_zeros(1, self.table.shape[-1])
         c = None
         for k in range(K):
@@ -108,6 +146,8 @@ def record(kc: KeyCode) -> dict:
                norm=[float(t[k].norm()) for k in range(K)], digest=table_digest(t))
     if kc.form == "fixed":
         out["seed_tag"] = SEED_TAG
+    if kc.entry:                                          # 0.1.103: the entries' address positions coded as their SEPs (off: 0.1.102's field)
+        out.update(entry=True, radix=kc.radix, levels=kc.levels)
     return out
 
 

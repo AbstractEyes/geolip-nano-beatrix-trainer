@@ -233,9 +233,11 @@ assert PTR_LAM >= 0.0, f"--ptr_lam={PTR_LAM}: >= 0"
 # the term's q and k from the block's attention input detached (pointer.HeadCapture(stop=True)), so its gradient reaches the supervised
 # head's query and key rows of the block's qkv projection and nothing else. The defaults (sep, 0) = 0.1.78 bit for bit; the name carries
 # p2 and sg.
+# 0.1.103: --ptr_pos=all asks the mass at the entry's SEP and at each address position after it (SEP + l, l = 1 .. levels - 1: the
+# positions that write the second .. last digit), the term the mean over the entry's levels positions; the name carries pa.
 PTR_POS = ARGS.get("ptr_pos", "sep")
 PTR_STOP = ARGS.get("ptr_stop", "0") == "1"
-assert PTR_POS in ("sep", "both") and ARGS.get("ptr_stop", "0") in ("0", "1"), (PTR_POS, ARGS.get("ptr_stop"))
+assert PTR_POS in ("sep", "both", "all") and ARGS.get("ptr_stop", "0") in ("0", "1"), (PTR_POS, ARGS.get("ptr_stop"))
 assert PTR_LAM > 0 or (PTR_POS == "sep" and not PTR_STOP), "--ptr_pos and --ptr_stop are forms of the pointer term (--ptr_lam > 0)"
 assert PTR_POS == "sep" or GRID_ABYTES == 2, "--ptr_pos=both reads the two-byte address (the second digit's position)"
 PTR_FORM = {**(dict(pos=PTR_POS) if PTR_POS != "sep" else {}), **(dict(stop=True) if PTR_STOP else {})}   # record fields: non-defaults only
@@ -270,6 +272,15 @@ KEY_NORM = int(ARGS.get("key_norm", "0"))
 assert not KEY_NORM or KEY_ROT, "--key_norm needs --key_rot=1"
 KEY_RHO = float(ARGS.get("key_rho", repr(krm.RHO)))
 assert KEY_RHO > 0 and ("key_rho" not in ARGS or KEY_NORM), f"--key_rho={ARGS.get('key_rho')!r}: a positive length, with --key_norm"
+# 0.1.103: THE ENTRY'S INPUT. --key_entry=rot codes each index entry's address positions after its SEP (the positions that write the
+# second .. last address digit; key_code.entry_offsets: a coded SEP followed by the code's digit bytes) as the SEP in the told head's
+# rotation: its bound pairs there turn by the entry key's phases, value for value the SEP's (key_rotary's entry form; no parameter).
+# --key_entry=code gives those positions the key code of their SEP (key_code's entry form; the tables the --key_code form's). Off (the
+# default) = 0.1.102 bit for bit; the run's name carries "e" after the form's piece (_krt16r218e, _kcle).
+KEY_ENTRY = ARGS.get("key_entry", "")
+assert KEY_ENTRY in ("", "rot", "code"), f"--key_entry={KEY_ENTRY!r}: rot or code (absent: off)"
+assert KEY_ENTRY != "rot" or KEY_ROT, "--key_entry=rot codes the address positions in the key rotation (--key_rot=1)"
+assert KEY_ENTRY != "code" or KEY_CODE, "--key_entry=code codes the address positions with the key code (--key_code=fixed|learned)"
 # 0.1.83: THE LARGER ROW. --grid_comps=48 composes the grid rows in the AG48 layout (grid_rows.LAYOUTS: 64 slots of 64 bytes, 48
 # compartments - 48 of the 64 addresses - the index and the questions of 24 asked records); --grid_keys=long writes every grid row's keys as
 # a cue word + six digits (9-12 bytes; the key-hard rows' factorial over the word and the last three digits) and sets the key's reach to 12
@@ -291,6 +302,8 @@ assert GRID_CODE in gr.CODES and (GRID_CODE == gr.CODE or GRID == "ag"), f"--gri
 assert GRID_CODE == gr.CODE or GRID_ABYTES == 2, "--grid_abytes=1 is the 8x2 code's one-byte form"
 assert gr.n_addr(GRID_CODE) >= gr.lay(GRID_LAYOUT)["comps"], f"--grid_comps={GRID_COMPS} needs more than the {GRID_CODE} code's addresses (--grid_code=4x4)"
 GR_RADIX, GR_LEVELS = gr.radix_levels(GRID_CODE)                # the address head's and the streams' shape (8 x 2 at the default)
+PTR_NPOS = {"sep": 1, "both": 2, "all": GR_LEVELS}[PTR_POS]       # 0.1.103: the pointer term's positions an entry (SEP, SEP + 1, ...)
+assert not KEY_ENTRY or (GRID == "ag" and GRID_ABYTES == 2), "--key_entry codes the grid rows' address digits (--grid=ag, the digit form)"
 assert gr.fits(GRID_LAYOUT, GRID_KEYS, GRID_ABYTES, GRID_CODE), f"the {GRID_LAYOUT} layout does not hold {GRID_KEYS} keys (the long keys need 48)"
 # 0.1.102: --grid_code=8x3 writes and streams every grid row's address as three digits of eight (512 addresses) and turns twelve anchor pairs
 # (pairs 4-15) as three levels of four pairs at 2 pi k / 9; the pairs before them fall to four (anchored_rope.shared), so --rotary_content=2
@@ -834,18 +847,22 @@ class Craft:
                 f"{self.value_addr.table.numel():,} parameters under the same Adam and clip")
         self.key_code = None                     # 0.1.81: the key code at the end-marker (--key_code=fixed|learned)
         if KEY_CODE:                             # no draw from the run's generators: the fixed rows come from their own seeded generator
-            self.key_code = kcm.KeyCode(self.cfg.d_model, KEY_CODE).to(DEV)
+            self.key_code = kcm.KeyCode(self.cfg.d_model, KEY_CODE, entry=KEY_ENTRY == "code",      # 0.1.103: the entry form
+                                        radix=GR_RADIX, levels=GR_LEVELS).to(DEV)
             kcm.patch_key(self.model, self.key_code)          # after the value-path tables: the embedding's output, then the code
             if KEY_CODE == "learned":            # born zero: step 0's forward is the code-off craft's
                 self.params = self.params + [self.key_code.table]
             log(f"the key code at the end-marker ({KEY_CODE}): {kcm.K} tables x {kcm.VOCAB} bytes x {self.cfg.d_model} added at each SEP "
                 f"whose CUE lies in the {kcm.K + 1} positions before it, the key's bytes one table an offset back; "
                 + (f"N(0, 1) rows seeded crc32({kcm.SEED_TAG!r}), no gradient" if KEY_CODE == "fixed" else
-                   f"born zero, {self.key_code.table.numel():,} parameters under the same Adam and clip"))
+                   f"born zero, {self.key_code.table.numel():,} parameters under the same Adam and clip")
+                + (f"; each index entry's address positions after its SEP (digits 2-{GR_LEVELS}) coded as the SEP"
+                   if KEY_ENTRY == "code" else ""))
         self.key_rot = None                      # 0.1.82: the key in the told head's rotation (--key_rot=1)
         if KEY_ROT:                              # no parameter, no draw from the run's generators: the phases come from their own seeded generator
             self.key_rot = krm.KeyRotary(PTR_BLOCK, PTR_HEAD, k=KEY_K, pairs=KEY_PAIRS, norm=KEY_NORM,   # 0.1.83: the reach 12;
-                                         rho=KEY_RHO, code=GRID_CODE).to(DEV)                         # 0.1.88: the hold's form (0.1.91: its code)
+                                         rho=KEY_RHO, code=GRID_CODE,                                  # 0.1.88: the hold's form (0.1.91: its code)
+                                         entry=KEY_ENTRY == "rot").to(DEV)                             # 0.1.103: the entry form
             krm.patch(self.model, self.key_rot)  # before the pointer term's capture of the same block: it keeps the rotated q and k
             log(f"the key in the told head's rotation: block {PTR_BLOCK} head {PTR_HEAD}, pairs 0-{KEY_PAIRS - 1} at each SEP whose CUE lies "
                 f"in the {KEY_K + 1} positions before it turned by the key's phases (sum over its bytes of P[j, offset, byte], {KEY_PAIRS} x "
@@ -853,6 +870,8 @@ class Craft:
                 + (f"; the key's bound pairs there held at length {self.key_rot.rho:g} before the turn" if KEY_NORM == 1 else "")
                 + (f"; the key's bound pairs held at length {self.key_rot.rho:g} before the turn at the records' SEPs only (the index "
                    f"entries' and the questions' keys free)" if KEY_NORM == 2 else "")
+                + (f"; each index entry's address positions after its SEP (digits 2-{GR_LEVELS}) turned by its SEP's phases"
+                   if KEY_ENTRY == "rot" else "")
                 + "; no parameter")
         self.units, self.path_rot, self.path_blocks = None, None, 0     # 0.1.92: the unit rule (the path, the repeat read) and the path
         if PATH_BIND or REPEAT_READ or NINTH_HEAD:   # buffers only, no draw from the run's generators: the state dict stays the house body's
@@ -897,7 +916,8 @@ class Craft:
             assert 0 <= PTR_HEAD < _attn.h, f"--ptr_head={PTR_HEAD}: 0 .. {_attn.h - 1}"
             self.ptr = pt.HeadCapture(_attn, stop=PTR_STOP, head=PTR_HEAD)
             log(f"the pointer term: block {PTR_BLOCK} head {PTR_HEAD} told, at each index entry's SEP"
-                + (" and its first address byte" if PTR_POS == "both" else "") + ", its mass on the frame of the "
+                + (" and its first address byte" if PTR_POS == "both" else "")
+                + (f" and each of its address positions after it (digits 2-{GR_LEVELS})" if PTR_POS == "all" else "") + ", its mass on the frame of the "
                 f"record whose key the entry carries; lambda {PTR_LAM:g}; no parameter"
                 + ("; its gradient kept in the head's own query and key rows (the block's input detached)" if PTR_STOP else ""))
         self.opt = bed_optim.build(self.model, self.params, LR, WD, WD_SET)     # wd 0: pure Adam, as every earlier run
@@ -998,6 +1018,13 @@ def ptr_log_mass(c, aux):
         assert torch.equal(a1, sep + 1), "the second position is the entry's first address byte"
         return pt.log_mass(q, k, h, aux["ihead_row"].repeat_interleave(2), torch.stack([sep, a1], 1).reshape(-1),
                            lo.repeat_interleave(2), hi.repeat_interleave(2))
+    if PTR_POS == "all":                         # 0.1.103: the SEP and every address position after it (SEP + l, l < levels), interleaved
+        a1 = torch.tensor([e["a_pos"] for m in aux["metas"] for e in m["index"]], dtype=torch.long)
+        sep = aux["ihead_pos"].long().cpu()
+        assert torch.equal(a1, sep + 1), "the entry's first address byte follows its SEP"
+        return pt.log_mass(q, k, h, aux["ihead_row"].repeat_interleave(PTR_NPOS),
+                           torch.stack([sep + j for j in range(PTR_NPOS)], 1).reshape(-1),
+                           lo.repeat_interleave(PTR_NPOS), hi.repeat_interleave(PTR_NPOS))
     return pt.log_mass(q, k, h, aux["ihead_row"], aux["ihead_pos"], lo, hi)
 
 
@@ -1022,8 +1049,8 @@ def ptr_mass_read(c, ag):
     if was:
         c.model.train()
     m = torch.cat(ms)
-    if PTR_POS == "both":                        # 0.1.79: interleaved (SEP, first address byte) per entry
-        return [float(v) for v in m.view(-1, 2).mean(0)]
+    if PTR_NPOS > 1:                             # 0.1.79: interleaved (SEP, first address byte) per entry; 0.1.103 (all): every position
+        return [float(v) for v in m.view(-1, PTR_NPOS).mean(0)]
     return float(m.mean())
 
 
@@ -1082,8 +1109,8 @@ def novelty(c) -> dict:
         pnov, pcos = pt.novelty(v1, v4)
         out["ptr"] = dict(novelty=pnov, cos=pcos, grad_norm=float(v4.norm()), term=float(pterm.detach()),
                           mass=float(lm.detach().exp().mean()))
-        if PTR_POS == "both":                    # 0.1.79: the mass at each position (SEP, first address byte)
-            out["ptr"]["mass_pos"] = [float(v) for v in lm.detach().exp().view(-1, 2).mean(0)]
+        if PTR_NPOS > 1:                         # 0.1.79: the mass at each position (SEP, first address byte); 0.1.103: every position
+            out["ptr"]["mass_pos"] = [float(v) for v in lm.detach().exp().view(-1, PTR_NPOS).mean(0)]
         c.ptr.clear()
     set_streams(c, None)
     return out
@@ -1200,6 +1227,9 @@ def ag_trace(c, step: int) -> dict:
     if c.ptr is not None:                        # 0.1.78: the supervised head's mean mass on the true frame (the trace rows)
         if PTR_POS == "both":                    # 0.1.79: and at the entries' first address bytes
             rec["ptr_mass"], rec["ptr_mass2"] = ptr_mass_read(c, ag)
+        elif PTR_POS == "all":                   # 0.1.103: and at each address position after the SEP
+            _m = ptr_mass_read(c, ag)
+            rec["ptr_mass"], rec["ptr_mass_addr"] = _m[0], _m[1:]
         else:
             rec["ptr_mass"] = ptr_mass_read(c, ag)
     if was:
@@ -1320,7 +1350,10 @@ for _c in crafts:
             _p = _c.novelty["ptr"]
             log(f"the pointer term's novelty at step 0: {_p['novelty']:.4f} (cos {_p['cos']:+.4f}; the term {_p['term']:.3f} nats, the "
                 f"head's mass on the record's frame {_p['mass']:.4f}"
-                + (f" (at the SEP {_p['mass_pos'][0]:.4f}, at the first address byte {_p['mass_pos'][1]:.4f})" if "mass_pos" in _p else "")
+                + (f" (at the SEP {_p['mass_pos'][0]:.4f}, at the first address byte {_p['mass_pos'][1]:.4f})"
+                   if "mass_pos" in _p and len(_p["mass_pos"]) == 2 else "")
+                + (f" (at the SEP {_p['mass_pos'][0]:.4f}, at the address positions after it "     # 0.1.103: --ptr_pos=all
+                   + " / ".join(f"{v:.4f}" for v in _p["mass_pos"][1:]) + ")" if "mass_pos" in _p and len(_p["mass_pos"]) > 2 else "")
                 + f"; its gradient {_p['grad_norm']:.3f} against the CE's {_c.novelty['grad_norm_ce']:.3f})")
         _refuse = [nm for nm, lam_, nov in (("the head term", HEAD_LAM, _c.novelty), ("the index entries' term", HEAD_LAM_I,
                                                                                      _c.novelty.get("index")),
@@ -1981,15 +2014,19 @@ def finish(c: Craft) -> tuple:
             grid_block["ptr"] = dict(form="frame_mass", lam=PTR_LAM, block=PTR_BLOCK, head=PTR_HEAD, novelty=(c.novelty or {}).get("ptr"),
                                      term_step1=p0, term_last50=plast, descended=(bool(plast < 0.1 * p0) if pc else None),
                                      curve=[[i + 1, pc[i]] for i in range(0, len(pc), LOG_EVERY)] + ([[len(pc), pc[-1]]] if pc else []),
-                                     mass_read=(_mr[0] if PTR_POS == "both" else _mr))
+                                     mass_read=(_mr[0] if PTR_NPOS > 1 else _mr))
             if PTR_FORM:                         # 0.1.79: the form (non-defaults) and the mass at the first address byte
                 grid_block["ptr"].update(PTR_FORM)
             if PTR_POS == "both":
                 grid_block["ptr"]["mass_read2"] = _mr[1]
+            if PTR_POS == "all":                 # 0.1.103: the mass at each address position after the SEP
+                grid_block["ptr"]["mass_read_addr"] = _mr[1:]
             _p = grid_block["ptr"]
             log(f"the pointer term (block {PTR_BLOCK} head {PTR_HEAD}, lambda {PTR_LAM:g}): descended {_p['descended']} "
                 + (f"({p0:.3f} -> {plast:.4f}); " if pc else "; ") + f"the head's mass on the true frame over the read rows {_p['mass_read']:.4f}"
-                + (f" at the SEP, {_p['mass_read2']:.4f} at the first address byte" if "mass_read2" in _p else ""))
+                + (f" at the SEP, {_p['mass_read2']:.4f} at the first address byte" if "mass_read2" in _p else "")
+                + (" at the SEP, " + " / ".join(f"{v:.4f}" for v in _p["mass_read_addr"]) + " at the address positions after it"
+                   if "mass_read_addr" in _p else ""))
         if IDX_DOSE > 0:                        # 0.1.101: the index entries' dose: its weight, the level it reads, its term's curve
             dc = c.dose_curve
             grid_block["idx_dose"] = dict(lam=IDX_DOSE, level=GR_LEVELS, term_step1=(dc[0] if dc else None),
@@ -2048,12 +2085,16 @@ def finish(c: Craft) -> tuple:
             if c.key_code is not None:           # 0.1.81: the key code's tables beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.key_code.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_code.safetensors"))
                 _sj["key_code"] = dict(form=KEY_CODE, k=kcm.K, vocab=kcm.VOCAB, d=c.cfg.d_model)
+                if KEY_ENTRY == "code":          # 0.1.103: the entry form at the code's radix and levels (absent: 0.1.102's file)
+                    _sj["key_code"].update(entry=True, radix=GR_RADIX, levels=GR_LEVELS)
             if c.key_rot is not None:            # 0.1.82: the key rotation's phases beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.key_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "key_rot.safetensors"))
                 _sj["key_rot"] = dict(pairs=KEY_PAIRS, k=KEY_K, vocab=kcm.VOCAB, block=PTR_BLOCK, head=PTR_HEAD,
                                       seed_tag=krm.seed_tag(KEY_K, KEY_PAIRS))
                 if KEY_NORM:                     # 0.1.87: the norm and its length (absent: no norm, 0.1.86's file); 0.1.88: 2 = the
                     _sj["key_rot"].update(norm=KEY_NORM, rho=c.key_rot.rho)       # records' SEPs only
+                if KEY_ENTRY == "rot":           # 0.1.103: the entry form (absent: 0.1.102's file)
+                    _sj["key_rot"]["entry"] = True
             if c.path_rot is not None:           # 0.1.92: the path rotation's phases beside the craft (rotary_scale.Core applies them)
                 save_file({"table": c.path_rot.table.detach().cpu().contiguous()}, os.path.join(wdir, "path_rot.safetensors"))
                 _sj["path_rot"] = prm.scale_field(c.path_rot)
