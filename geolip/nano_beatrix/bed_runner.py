@@ -60,7 +60,8 @@ GRID_KEYS = ("arms", "seeds", "ctx", "steps", "mb", "frames", "ask", "facts", "r
              "plain_doc",                                                       # 0.1.90: the plain rows opened by DOC
              "grid_code",                                                       # 0.1.91: the address code
              "path_bind", "path_form", "path_head", "path_k", "repeat_read",   # 0.1.92: the path in one head's rotation, the repeat read
-             "ninth_head")                                                     # 0.1.94: the ninth head (the path in it, or plain)
+             "ninth_head",                                                     # 0.1.94: the ninth head (the path in it, or plain)
+             "idx_dose")                                                       # 0.1.101: the index entries' dose
 STARTS = ("init", "pair_init")                                     # the starting crafts a run may need (a pair run: two)
 SINGULAR = {"arms": "arm", "seeds": "seed"}
 RUNNER_KEYS = ("out", "dry", "push", "python", "parallel", "init_repo")

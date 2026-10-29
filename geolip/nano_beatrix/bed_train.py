@@ -304,6 +304,10 @@ HEAD_LAM = float(ARGS.get("head_lam", "1.0"))
 # decoded address and its calibration in the same form. --head_at=question (the default): the 0.1.71 path bit for bit.
 HEAD_AT = ARGS.get("head_at", "question")
 HEAD_LAM_I = float(ARGS.get("head_lam_i", "1.0"))
+# 0.1.101: THE INDEX ENTRIES' DOSE. --idx_dose=lambda adds lambda x the mean cross-entropy, over the batch's index entries, at the input
+# position whose target is each entry's last address byte (the entry's SEP + levels - 1: the fourth digit at 4x4) to the loss, beside the
+# head and pointer terms; the term's curve goes to the record. 0 (the default) adds nothing: the 0.1.100 path bit for bit.
+IDX_DOSE = float(ARGS.get("idx_dose", "0"))
 TRACE_EVERY = int(ARGS.get("trace_every", "2000"))
 READ_BATCHES = int(ARGS.get("read_batches", "4" if SMOKE else "64"))       # the end read's batches of mb grid rows (held-out filler)
 CALIB_BATCHES = int(ARGS.get("calib_batches", "2" if SMOKE else "32"))     # the head's calibration batches (never the read's rows)
@@ -312,6 +316,7 @@ assert GRID in ("", "ag") and ROTARY in ("", "anchored") and HEAD_FORM in ("", "
 assert GRID or not (ROTARY or HEAD_FORM), "--rotary=anchored and --head=digit read the grid rows (--grid=ag)"
 assert HEAD_AT in ("question", "both") and (HEAD_AT == "question" or HEAD_FORM == "digit"), \
     f"--head_at={HEAD_AT!r}: question, or both (the index entries too) with --head=digit"
+assert IDX_DOSE >= 0 and (IDX_DOSE == 0 or GRID == "ag"), f"--idx_dose={IDX_DOSE:g}: >= 0, and above 0 on the grid rows' index entries (--grid=ag)"
 assert PTR_LAM == 0 or (GRID == "ag" and HEAD_FORM == "digit"), \
     "--ptr_lam supervises a head at the grid rows' index entries (--grid=ag) beside the address head (--head=digit: one novelty gate pass)"
 assert not KEY_CODE or GRID == "ag", "--key_code is a form of the grid cores' input (--grid=ag: its tables ship beside the core)"
@@ -868,6 +873,10 @@ class Craft:
                    + ("" if PATH_BLOCKS is None else f" in blocks {', '.join(map(str, PATH_BLOCKS))} only, the others on the block's "
                       "anchored rotation")
                    if NINTH_HEAD == "path" else "on the block's anchored rotation (the capacity control)"))
+        self.dose_curve = []                     # 0.1.101: the index entries' dose term (--idx_dose > 0)
+        if IDX_DOSE > 0:                         # no parameter, no draw from the generators: the craft and its forward are the dose-off craft's
+            log(f"the index entries' dose: lambda {IDX_DOSE:g} x the mean cross-entropy at each index entry's last address byte (the "
+                f"entry's SEP + {GR_LEVELS - 1}: digit {GR_LEVELS} of {GR_LEVELS})")
         self.ptr, self.ptr_curve = None, []      # 0.1.78: the pointer term's capture of one head's rotated q and k (--ptr_lam > 0)
         if PTR_LAM > 0:                          # no parameter, no draw from the generators: the craft and its forward are the term-off craft's
             assert 1 <= PTR_BLOCK <= len(self.model.blocks), f"--ptr_block={PTR_BLOCK}: 1 .. {len(self.model.blocks)}"
@@ -1348,6 +1357,13 @@ for step in range(STEPS):
         if _c.ptr is not None:                                   # 0.1.78: the pointer term on the forward's captured q and k
             _c.pterm = -ptr_log_mass(_c, aux).mean()
             _c.loss = _c.loss + PTR_LAM * _c.pterm
+        if IDX_DOSE > 0:                                         # 0.1.101: the index entries' dose at each entry's last address byte
+            _dr, _dp = aux["ihead_row"].to(DEV), aux["ihead_pos"].to(DEV) + (GR_LEVELS - 1)
+            if step == 0:                                        # their targets are address digit bytes ('0' .. '0' + radix - 1)
+                _dy = y[_dr, _dp]
+                assert bool(((_dy >= 48) & (_dy < 48 + GR_RADIX)).all()), "the dose's targets are the entries' last address bytes"
+            _c.dterm = _c.nll[_dr, _dp].mean()
+            _c.loss = _c.loss + IDX_DOSE * _c.dterm
     if PAIR and XC_W != 0 and step >= XC_FROM:                    # 0.1.24: the cross term (teacher, student) pairs of the step
         sel = (vm > 0).float() if XC_POS == "value" else None
         for t, s in [(crafts[0], crafts[1])] + ([(crafts[1], crafts[0])] if XC == "mutual" else []):
@@ -1378,6 +1394,9 @@ for step in range(STEPS):
             _c.ptr_curve.append(float(_c.pterm.detach()))
             _c.pterm = None
             _c.ptr.clear()
+        if IDX_DOSE > 0:                                         # 0.1.101: the dose term's curve (its record reads it)
+            _c.dose_curve.append(float(_c.dterm.detach()))
+            _c.dterm = None
         set_streams(_c, None)
         _c.logits = _c.nll = _c.loss = _c.ce = None
         if N_AG and (step + 1) % TRACE_EVERY == 0:              # 0.1.70: the formation trace (its own rows; the training stream untouched)
@@ -1417,6 +1436,8 @@ for step in range(STEPS):
         if a.ptr_curve:                                          # 0.1.78: the pointer term (and the mass it implies: exp of minus the mean)
             _pm = float(np.mean(a.ptr_curve[-LOG_EVERY:]))
             msg += f" | pointer term {_pm:.4f} (geometric mean mass {math.exp(-_pm):.3f})"
+        if a.dose_curve:                                         # 0.1.101: the index entries' dose term (nats at their last address byte)
+            msg += f" | index dose term {float(np.mean(a.dose_curve[-LOG_EVERY:])):.4f}"
         for _c, b, _ in said[1:]:
             msg += f" || {_c.arm} loss {_c.li:.3f} ema {_c.ema:.3f} ({_c.ema / LN2:.3f} bpb) gn {float(_c.gn):.2f} | value bits since the last line {b}"
         xs = [f"{_c.arm} {xw:.3f}" for _c, _, xw in said if xw is not None]
@@ -1957,6 +1978,13 @@ def finish(c: Craft) -> tuple:
             log(f"the pointer term (block {PTR_BLOCK} head {PTR_HEAD}, lambda {PTR_LAM:g}): descended {_p['descended']} "
                 + (f"({p0:.3f} -> {plast:.4f}); " if pc else "; ") + f"the head's mass on the true frame over the read rows {_p['mass_read']:.4f}"
                 + (f" at the SEP, {_p['mass_read2']:.4f} at the first address byte" if "mass_read2" in _p else ""))
+        if IDX_DOSE > 0:                        # 0.1.101: the index entries' dose: its weight, the level it reads, its term's curve
+            dc = c.dose_curve
+            grid_block["idx_dose"] = dict(lam=IDX_DOSE, level=GR_LEVELS, term_step1=(dc[0] if dc else None),
+                                          term_last50=(float(np.mean(dc[-50:])) if dc else None),
+                                          curve=[[i + 1, dc[i]] for i in range(0, len(dc), LOG_EVERY)] + ([[len(dc), dc[-1]]] if dc else []))
+            log(f"the index entries' dose (lambda {IDX_DOSE:g}, address byte {GR_LEVELS} of {GR_LEVELS}): the term "
+                + (f"{dc[0]:.4f} at step 1, {grid_block['idx_dose']['term_last50']:.4f} over the last 50 steps" if dc else "not read"))
         t = read["true"]
         log(f"grid read ({read['rows']} rows, {t['n_questions']} questions): index right {t['index_right']:.4f}, answers whole {t['whole']:.4f}"
             + (f", through its own index {read['own_index']['whole']:.4f} (the index's request right {read['own_index']['request_right']:.4f}),"
@@ -2032,6 +2060,8 @@ def finish(c: Craft) -> tuple:
              weights=os.path.relpath(os.path.join(wdir, "model.safetensors"), OUT))
     if LR_FLOOR != 0.1 or LR_FLAT:                           # 0.1.100: the schedule's floor and flat share, when not the stored schedule's
         R.update(lr_floor=LR_FLOOR, lr_flat=LR_FLAT)
+    if IDX_DOSE > 0:                                         # 0.1.101: the index entries' dose (its term's curve in the grid block)
+        R["idx_dose"] = IDX_DOSE
     if ARGS.get("stage"):
         R["stage"] = ARGS["stage"]           # 0.1.22: a curriculum block's stage name (its tag carries it in place of the starting craft's)
     if GAUGE_ASKS:

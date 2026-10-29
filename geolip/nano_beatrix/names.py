@@ -86,6 +86,7 @@ def run_tag(args: dict) -> str:
     # 0.1.94: the ninth head after it ("_nhpn16": the path in it, the byte-after form, sixteen pairs; "_nhps16" the same path;
     # "_nhpl": the head on the block's anchored rotation, the capacity control; the reach when not 16, "k12"; off names nothing)
     # 0.1.95: the path's blocks after the path head's piece when named ("_nhpn16b123": blocks 1, 2 and 3; every block names nothing)
+    # 0.1.101: the index entries' dose after the address head's piece, in hundredths ("_id100" for lambda 1, "_id10" for .1; off names nothing)
     scale =((f"_g{args['grid']}{int(round(float(args.get('grid_p', '0.5')) * 100))}" if args.get("grid") else "")
              + (f"_r{args['rotary'][:3]}" if args.get("rotary") else "")
              + (f"_cp{int(args['rotary_content'])}" if int(args.get("rotary_content", "2")) != 2 else "")
@@ -112,6 +113,7 @@ def run_tag(args: dict) -> str:
                 if args.get("ninth_head") else "")
              + (f"_ah{args['head']}{float(args.get('head_lam', '1.0')):g}" if args.get("head") else "")
              + (f"i{float(args.get('head_lam_i', '1.0')):g}" if args.get("head") and args.get("head_at", "question") == "both" else "")
+             + (f"_id{int(round(float(args['idx_dose']) * 100))}" if float(args.get("idx_dose", "0")) > 0 else "")
              + (f"_{args['series']}" if args.get("series") else ""))
     return (f"{arm}_s{seed}" + ("_smoke" if smoke else "") + (f"_L{steps}" if steps > 2500 and not smoke else "")   # the short grid keeps its bare names
             + (f"_dense{args.get('records')}" if int(args.get("records", "1")) > 1 else "")

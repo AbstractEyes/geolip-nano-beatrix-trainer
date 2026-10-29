@@ -594,6 +594,25 @@ runtimes, `colab/nano_a48long_lane{1,2,3}.ipynb` (no code change: 0.1.100):
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48long_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48long_lane3.ipynb)
 
+0.1.101: the index entries' dose (`--idx_dose=lambda`, grid rows only). A grid row's model writes an index, one entry a question (24 a
+row), each entry the address of the record that holds its key; with the address as n digits (`--grid_code`), an entry's last digit is
+the byte at its separator + n, the target of the input position at its separator + n - 1. `--idx_dose` adds the mean cross-entropy at
+those positions to the loss:
+
+    loss = (the run's loss as before) + lambda x (1/N) x sum over the batch's N index entries e of CE(the byte at e's separator + n)
+
+At the four-digit address those bytes are 24 of a row's 4,096 positions. Off by default (lambda = 0): a default run is 0.1.100's byte
+for byte (three-step models at the defaults equal 0.1.100's: the weights and every side file, and the record but for the clock and the
+version). When set, the run checks at its first step that every target is an address digit, the record carries `idx_dose` and the grid
+block's `idx_dose` (lambda, the digit, the term's first value and its curve), and the run's name carries `_id<100 x lambda>` after the
+address head's piece. Twelve models at 24,000 steps - the four-digit address at 48 records a row (`--grid_code=4x4 --grid_comps=48` on
+the plain-rows recipe) on its six stored seeds (1, 2, 3 and 5, then 4 and 6) under `--idx_dose=1` and under `--idx_dose=0.1` - on the
+same rows at the same steps as the stored 24,000-step models of those seeds, on up to three G4 runtimes, each model claimed on the Hub
+before it trains and read through its look as it lands, `colab/nano_a48dose_lane{1,2,3}.ipynb` (tests: `tests/test_idx_dose.py`):
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48dose_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48dose_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48dose_lane3.ipynb)
+
 Then:
 
 ```bash
