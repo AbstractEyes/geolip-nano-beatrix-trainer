@@ -671,6 +671,16 @@ each model claimed on the Hub before it trains and read through its look as it l
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_entry_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_entry_lane3.ipynb)
 
+The entry form at three digits of eight (0.1.103 as is). The address as three digits of eight at 48 records a row with the index
+entries' last digit weighted at 0.1 (0.1.102's recipe: `--grid_code=8x3 --grid_comps=48 --rotary_content=2 --idx_dose=0.1`), with the key
+rotation and the pointer term at the index entries' address positions added (`--key_entry=rot --ptr_pos=all`; at this code the two
+positions after an entry's SEP), seeds 1-6 at 24,000 steps - on the same rows at the same steps as the stored three-digit models of those
+seeds, on up to three G4 runtimes, each model claimed on the Hub before it trains, read through its look as it lands and set beside the
+three-digit and the four-digit models of its seed, `colab/nano_c83entry_lane{1,2,3}.ipynb`:
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_c83entry_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_c83entry_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_c83entry_lane3.ipynb)
+
 Then:
 
 ```bash
