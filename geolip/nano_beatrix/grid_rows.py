@@ -28,8 +28,8 @@ THE ADDRESS CODE (0.1.91): an address is L digits of radix R, the most significa
 streams (the null anchor R). "8x2" (R 8, L 2: 64 addresses) is every row above, byte for byte; "4x4" (R 4, L 4: 256 addresses) writes
 four digits '0'-'3'. The layout "AG96" (128 slots of 32 bytes: slot 0 the head, slots 1-96 96 compartments, slots 97-110 the index of
 the 24 asked records, slots 111-126 the questions) needs the 4x4 code (96 of its 256 addresses a row). A row at another code than 8x2
-names it in its meta ("code"); every reader of a row's digits takes its code from there. Self-test (pure numpy):
-python grid_rows.py --selftest"""
+names it in its meta ("code"); every reader of a row's digits takes its code from there. 0.1.102: "8x3" (R 8, L 3: 512 addresses)
+writes three digits '0'-'7' (AG48 and AG96 hold it in both key forms). Self-test (pure numpy): python grid_rows.py --selftest"""
 from __future__ import annotations
 
 import sys
@@ -63,8 +63,9 @@ SEGMENTS = ("head", "frame", "comp_text", "index_entry", "index_text", "q_answer
 LAYOUTS = {"AG": dict(slot=SLOT, comps=N_COMP, index=(25, 28), quest=(28, 32), ask=N_COMP),
            "AG48": dict(slot=64, comps=48, index=(49, 56), quest=(56, 64), ask=24),
            "AG96": dict(slot=32, comps=96, index=(97, 111), quest=(111, 127), ask=24)}       # 0.1.91 (the 4x4 code's 256 addresses)
-# 0.1.91: the address codes (radix, levels); the default is the module's constants above (RADIX 8, LEVELS 2, N_ADDR 64, NULL 8)
-CODES = {"8x2": (8, 2), "4x4": (4, 4)}
+# 0.1.91: the address codes (radix, levels); the default is the module's constants above (RADIX 8, LEVELS 2, N_ADDR 64, NULL 8);
+# 0.1.102: 8x3, three digits of eight (512 addresses)
+CODES = {"8x2": (8, 2), "4x4": (4, 4), "8x3": (8, 3)}
 CODE = "8x2"
 KEY_FORMS = ("std", "long")
 N_KEYS = {"std": 16 * 1000, "long": 16 * 1000 * 1000}       # bed_frames.key_name / key_long: the cue words x the numbers
@@ -92,7 +93,7 @@ def radix_levels(code: str = CODE) -> tuple:
 
 
 def n_addr(code: str = CODE) -> int:
-    """0.1.91: the code's address count (64 at 8x2, 256 at 4x4)."""
+    """0.1.91: the code's address count (64 at 8x2, 256 at 4x4; 0.1.102: 512 at 8x3)."""
     r, n = radix_levels(code)
     return r ** n
 
@@ -491,9 +492,67 @@ def selftest(n: int = 200) -> None:
                 assert (dq1[sp] == digits(m1["recs"][q["rec"]]["addr"])).all()
     larger = selftest_larger(src, n)
     code = selftest_code(src, n)
+    code83 = selftest_code83(src, n)
     print(f"grid_rows self-test: {n} rows x 2 address forms OK (frames, index, questions, streams, segments; the forms share every draw "
           f"and stream; 1 in 5 with a swapped index; 1 in 3 asking 18); {n // 4} key-hard rows x 2 forms OK (24 distinct keys, a one-part "
-          f"neighbour for every part; the row's other draws the standard row's); {larger}; {code}")
+          f"neighbour for every part; the row's other draws the standard row's); {larger}; {code}; {code83}")
+
+
+def selftest_code83(src: bytes, n: int = 200) -> str:
+    """0.1.102: the 8x3 code at AG48 and AG96 in both key forms: every address in [0, 512) written as three digit bytes '0'-'7' in the
+    frame and the index entry, decoded back to its digits; the streams three wide (the null anchor 8); the head targets three digits; the
+    index entries' address positions three, the last at the entry's SEP + 2; the answers, the index entries and the questions where the
+    meta says and inside their slots; the key-hard rows at the code; the digits of every address by hand."""
+    rows = 0
+    assert n_addr("8x3") == 512 and radix_levels("8x3") == (8, 3) and addr_nbytes(2, "8x3") == 3
+    assert [digits(a, "8x3") for a in (0, 7, 8, 63, 64, 83, 511)] == [(0, 0, 0), (0, 0, 7), (0, 1, 0), (0, 7, 7), (1, 0, 0), (1, 2, 3),
+                                                                       (7, 7, 7)]
+    assert all(digits(a, "8x3") == (a // 64, (a // 8) % 8, a % 8) for a in range(512)) and addr_bytes(83, 2, "8x3") == b"123"
+    assert all(tuple(decode_written(list(addr_bytes(a, 2, "8x3")), 2, "8x3")) == digits(a, "8x3") for a in range(512))
+    assert tuple(decode_written([48, 56, 47], 2, "8x3")) == (0, 8, 8)       # '8' and '/' lie outside '0'-'7': the null anchor
+    for layout in ("AG48", "AG96"):
+        for key_form in KEY_FORMS:
+            assert fits(layout, key_form, 2, "8x3"), (layout, key_form)
+    for layout, key_form in (("AG48", "std"), ("AG48", "long"), ("AG96", "std")):
+        L = lay(layout)
+        for t in range(n // 4):
+            r = np.random.default_rng([29, t])
+            kh = hard_keys(np.random.default_rng([31, t]), layout, key_form) if t % 4 == 3 else None
+            row, m = compose_ag(r, src, swap_index=t % 5 == 4, keys=kh, layout=layout, key_form=key_form, code="8x3")
+            rows += 1
+            assert m["code"] == "8x3" and abytes_of(m) == 3 and len(row) == CTX + 1 and row[:len(HEAD)] == HEAD
+            assert [rec["slot"] for rec in m["recs"]] == list(L["comp_slots"]) and m["addrs"] == sorted(m["addrs"])
+            assert len(set(m["addrs"])) == L["comps"] and all(0 <= a < 512 for a in m["addrs"])
+            for rec in m["recs"]:
+                ab = row[rec["lo"] + 1:rec["lo"] + 4]
+                assert row[rec["lo"]] == DATA and ab == addr_bytes(rec["addr"], 2, "8x3") and all(48 <= b <= 55 for b in ab)
+                assert tuple(int(d) for d in decode_written(list(ab), 3, "8x3")) == digits(rec["addr"], "8x3")
+                assert row[rec["lo"] + 4] == CUE and row[rec["v0"] - 1] == SEP and row[rec["v0"]:rec["v0"] + VLEN].decode() == rec["value"]
+                assert rec["frame_end"] <= rec["hi"] and rec["hi"] - rec["lo"] == L["slot"]
+            y = row[1:]
+            for qi, (q, e) in enumerate(zip(m["questions"], m["index"])):
+                rec, shown = m["recs"][q["rec"]], m["recs"][e["shown"]]
+                assert bytes(y[p] for p in answer_positions(m)[qi]) == rec["value"].encode() + bytes([END])
+                ps = index_positions(m)[qi]
+                assert ps == (e["a_pos"] - 1, e["a_pos"], e["a_pos"] + 1) and row[ps[0]] == SEP     # the last at the entry's SEP + 2
+                assert bytes(y[p] for p in ps) == addr_bytes(shown["addr"], 2, "8x3")
+            assert written_request(np.frombuffer(row[1:], dtype=np.uint8), m) == [digits(m["recs"][e["shown"]]["addr"], "8x3") for e in m["index"]]
+            assert m["index_end"] <= L["index_hi"] and m["quest_end"] <= L["quest_hi"]
+            dk, dq = streams(m)
+            assert dk.shape == (CTX, 3) and (dk[:L["slot"]] == 8).all() and (dk[L["index_lo"]:L["index_hi"]] == 8).all()
+            assert (dq[L["index_lo"]:L["index_hi"]] == 8).all()
+            for rec in m["recs"]:
+                assert (dk[rec["lo"]:rec["hi"]] == digits(rec["addr"], "8x3")).all()
+            for q in m["questions"]:
+                sp = slice(q["sep"], q["sep"] + VLEN + 1)
+                assert (dk[sp] == 8).all() and (dq[sp] == digits(m["recs"][q["rec"]]["addr"], "8x3")).all()
+            pos, dig = head_targets(m)
+            assert all(len(d) == 3 for d in dig) and pos == [q["sep"] for q in m["questions"]]
+            ipos, idig = index_head_targets(m)
+            assert ipos == [e["a_pos"] - 1 for e in m["index"]] and idig == [digits(m["recs"][e["rec"]]["addr"], "8x3") for e in m["index"]]
+            assert segments(m).shape == (CTX,)
+    return (f"0.1.102: {rows} rows at the 8x3 code (AG48 both key forms, AG96; 1 in 4 key-hard) OK; the 512 addresses' digits and bytes "
+            f"by hand")
 
 
 def selftest_code(src: bytes, n: int = 200) -> str:

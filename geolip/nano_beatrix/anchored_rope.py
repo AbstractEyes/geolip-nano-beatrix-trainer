@@ -23,7 +23,12 @@ ALHENA-W, C = 4: pairs 0-3 relative (wavelengths 6.3 / 100 / 1,583 / 25,100 posi
 w_k = 2 pi k / (R + 1), k = 1 .. R / 2, turned by (digit - R) w_k: over a level's pairs sum_k cos(w_k d) is R / 2 at d = 0 and -1/2 at
 every other difference, so the R + 1 symbols (the digits and the null anchor R) form a simplex at every code. "8x2" is the form above
 bit for bit (two levels of four pairs at 2 pi k / 9); "4x4" four levels of two pairs at 2 pi k / 5 (the split before the anchors
-unchanged)."""
+unchanged).
+
+0.1.102: THE SHARED PAIRS AT THE CODE. A code's anchor levels take L R / 2 of the sixteen pairs; the pairs before them, which the relative
+band and the content share, are the rest: shared(code) = 16 - L R / 2 (SHARED = 8 at 8x2 and 4x4, every angle and field as 0.1.101's).
+"8x3" (R 8, L 3: 512 addresses) turns three levels of four pairs at 2 pi k / 9 on pairs 4-15 and shares four: at C = 2 content pairs the
+relative band keeps two (the NTK rule over their 4 dims: wavelengths 6.3 and 2,513 positions), pairs 2-3 the content."""
 from __future__ import annotations
 
 import math
@@ -39,30 +44,38 @@ SHARED = REL_PAIRS + CONTENT_PAIRS                      # the pairs the relative
 PAIRS = SHARED + LEVELS * ANCHOR_FREQS
 NTK_SCALE, BASE = 4.0, 10000.0
 NULL = 8
-CODES = {"8x2": (8, 2), "4x4": (4, 4)}                  # 0.1.91: the address codes (radix, levels), grid_rows.CODES
+CODES = {"8x2": (8, 2), "4x4": (4, 4), "8x3": (8, 3)}  # 0.1.91: the address codes (radix, levels), grid_rows.CODES; 0.1.102: 8x3
 CODE = "8x2"                                            # the default: LEVELS levels of ANCHOR_FREQS pairs, the null anchor NULL
 
 
 def code_shape(code: str = CODE) -> tuple:
-    """0.1.91: a code's (radix, levels, pairs a level); its anchor pairs fill the eight after the shared ones at every code."""
+    """0.1.91: a code's (radix, levels, pairs a level); its anchor pairs fill the pairs after the shared ones (0.1.102: shared(code) of
+    them - eight at 8x2 and 4x4, four at 8x3)."""
     assert code in CODES, f"the address code {code!r}: one of {sorted(CODES)}"
     r, n = CODES[code]
-    assert r % 2 == 0 and n * (r // 2) == PAIRS - SHARED, (code, r, n)
+    assert r % 2 == 0 and PAIRS - n * (r // 2) >= 3, (code, r, n)
     return r, n, r // 2
 
 
-def _check(content_pairs: int) -> int:
+def shared(code: str = CODE) -> int:
+    """0.1.102: the pairs before a code's anchor levels, which the relative band and the content share: 16 - levels x radix / 2."""
+    r, n, f = code_shape(code)
+    return PAIRS - n * f
+
+
+def _check(content_pairs: int, code: str = CODE) -> int:
     c = int(content_pairs)
-    assert 1 <= c <= SHARED - 2, f"content_pairs {content_pairs!r}: 1 .. {SHARED - 2} (the relative band keeps at least two pairs)"
+    s = shared(code)
+    assert 1 <= c <= s - 2, f"content_pairs {content_pairs!r}: 1 .. {s - 2} at the {code} code (the relative band keeps at least two pairs)"
     return c
 
 
 def frequencies(content_pairs: int = CONTENT_PAIRS, code: str = CODE) -> tuple:
     """-> (w (16,) float64, kind (16,) long): kind 0 = the sequence index, 1 = content (w 0), 2 + l = anchor level l. 0.1.91: the anchor
-    levels at the code (level l's R / 2 pairs at 2 pi k / (R + 1))."""
-    c = _check(content_pairs)
+    levels at the code (level l's R / 2 pairs at 2 pi k / (R + 1)); 0.1.102: the relative band and the content in the code's shared pairs."""
+    c = _check(content_pairs, code)
     r, n, f = code_shape(code)
-    rel = SHARED - c
+    rel = shared(code) - c
     dim = 2 * rel
     base = BASE * NTK_SCALE ** (dim / (dim - 2))
     w = [base ** (-j / rel) for j in range(rel)] + [0.0] * c
@@ -79,7 +92,7 @@ class AnchorStreams:
     split (0.1.73; default 2 = ALHENA)."""
 
     def __init__(self, content_pairs: int = CONTENT_PAIRS, code: str = CODE) -> None:
-        self.content_pairs = _check(content_pairs)
+        self.content_pairs = _check(content_pairs, code)
         self.code = code                                  # 0.1.91: the address code (its radix is the null anchor, its levels the streams)
         self.radix, self.levels, _ = code_shape(code)
         w, kind = frequencies(self.content_pairs, code)
@@ -141,11 +154,12 @@ def patch(model: torch.nn.Module, streams: AnchorStreams) -> int:
 
 def spec(content_pairs: int = CONTENT_PAIRS, code: str = CODE) -> dict:
     """The rotation as a record field (the weights folder's scale.json and the run's record). The default split's field is 0.1.72's, key
-    for key. 0.1.91: a code other than 8x2 names itself (the field's levels, anchor_freqs and null are the code's)."""
-    c = _check(content_pairs)
+    for key. 0.1.91: a code other than 8x2 names itself (the field's levels, anchor_freqs and null are the code's; 0.1.102: its rel_pairs
+    the code's shared pairs less the content)."""
+    c = _check(content_pairs, code)
     r, n, f = code_shape(code)
     w, kind = frequencies(c, code)
-    out = dict(form="anchored", pairs=PAIRS, rel_pairs=SHARED - c, content_pairs=c, anchor_freqs=f, levels=n,
+    out = dict(form="anchored", pairs=PAIRS, rel_pairs=shared(code) - c, content_pairs=c, anchor_freqs=f, levels=n,
                ntk_scale=NTK_SCALE, base=BASE, null=r, w=[float(x) for x in w], kind=[int(x) for x in kind])
     if code != CODE:
         out["code"] = code
@@ -174,7 +188,7 @@ class ValueAddress(torch.nn.Module):
     record's compartment returns the address in its value too. On the grid rows the key stream carries an address only inside the
     compartments (the index entries, the questions' answer spans and the plain rows are null there), so the tables never see an answer.
     Born zero, the patched forward equals the unpatched one until the first step moves them. 0.1.91: at the streams' code (levels x
-    radix rows: 2 x 8 at 8x2, 4 x 4 at 4x4)."""
+    radix rows: 2 x 8 at 8x2, 4 x 4 at 4x4; 0.1.102: 3 x 8 at 8x3)."""
 
     def __init__(self, d_model: int, streams: AnchorStreams) -> None:
         super().__init__()

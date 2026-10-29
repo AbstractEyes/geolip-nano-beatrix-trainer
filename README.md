@@ -613,6 +613,27 @@ before it trains and read through its look as it lands, `colab/nano_a48dose_lane
 [![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48dose_lane2.ipynb)
 [![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48dose_lane3.ipynb)
 
+0.1.102: three digits of eight (`--grid_code=8x3`, grid rows). A record's address is three digits '0'-'7', the most significant first
+(512 addresses), written as three bytes in the record's frame and in its index entry and carried as three address streams. Under the
+anchored rotation the address then takes twelve of a head's sixteen rotary pairs, three levels of four, and the four pairs before them
+are shared by the position band and the content (`--rotary_content=2`: two of each):
+
+    pairs 0-1    rotated by the position at w_j = 160,000^(-j / 2), j = 0, 1 (wavelengths 6.3 and 2,513 positions)
+    pairs 2-3    not rotated
+    pairs 4-15   level l = 0, 1, 2, its four pairs rotated by (d_l - 8) x 2 pi k / 9, k = 1 .. 4 (d_l the level's digit; 8 = no address)
+
+so over a level's four pairs the score depends only on the two digits' difference d: sum_k cos(2 pi k d / 9) = 4 at d = 0 and -1/2 at
+every other difference. The address head reads 3 x 8 = 24 logits, the value-path tables hold 3 x 8 rows, the key rotation binds all
+sixteen pairs (`--key_pairs=16`, required at this code) and the index entries' dose reads the third digit. The 8x2 and 4x4 codes are
+0.1.101's byte for byte (three-step models at both codes equal 0.1.101's: the weights and every side file, and the record but for the
+clock and the version); the run's name carries `_ac83`. Six models at 24,000 steps - the plain-rows recipe at 48 records a row with the
+address as three digits of eight and the index entries' dose at 0.1 (`--grid_code=8x3 --grid_comps=48 --rotary_content=2
+--idx_dose=0.1`) on seeds 1-6 - on up to three G4 runtimes, each model claimed on the Hub before it trains, read through its look as it
+lands and set beside the four-digit models of its seed, `colab/nano_a48c83_lane{1,2,3}.ipynb` (tests: `tests/test_code83.py`):
+[![G4 lane 1](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48c83_lane1.ipynb)
+[![G4 lane 2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48c83_lane2.ipynb)
+[![G4 lane 3](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbstractEyes/geolip-nano-beatrix-trainer/blob/main/colab/nano_a48c83_lane3.ipynb)
+
 Then:
 
 ```bash

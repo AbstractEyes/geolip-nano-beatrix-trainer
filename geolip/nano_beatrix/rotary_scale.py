@@ -531,6 +531,7 @@ class Core:
             pf = self.scale["path_rot"]                           # before the look's capture (the unit rule's table: path_rotary.table_file)
             prm.check_field(pf)
             assert self.anchor is not None, "the path rotation turns pairs of the anchored rotation"
+            assert ar.shared(self.code) == ar.SHARED, "the path rotation turns the eight anchor pairs of the 8x2 and 4x4 codes (0.1.102)"
             self.path_rot = prm.PathRotary(prm.Units(), pf["form"], head=int(pf["head"]), k=int(pf["k"])).to(self.dev)
             t = load_file(pp)["table"]
             assert tuple(t.shape) == tuple(self.path_rot.table.shape), (tuple(t.shape), tuple(self.path_rot.table.shape))

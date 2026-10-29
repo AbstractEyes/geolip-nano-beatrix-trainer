@@ -63,8 +63,8 @@ def records(idx: torch.Tensor, off: torch.Tensor, code: str = ar.CODE) -> torch.
     and x[c - 2], x[c - 1] address digits, or the one-byte form x[c - 2] = DATA and x[c - 1] in 0x80-0xBF. Any other row: the CUE inside
     an open frame - the DATA and THINK bytes before c outnumber the END bytes before c. The row's kind is read at position 4, so a SEP
     before it is never held (every row's head is six bytes; no row codes a SEP there). 0.1.91: at the address code (anchored_rope.CODES)
-    a grid record is x[c - L - 1] = DATA and x[c - L] .. x[c - 1] digit bytes '0' .. '0' + R - 1 (4x4: DATA and four digits '0'-'3');
-    the one-byte form is the 8x2 code's only."""
+    a grid record is x[c - L - 1] = DATA and x[c - L] .. x[c - 1] digit bytes '0' .. '0' + R - 1 (4x4: DATA and four digits '0'-'3';
+    0.1.102, 8x3: DATA and three digits '0'-'7'); the one-byte form is the 8x2 code's only."""
     B, n = idx.shape
     x = idx.long()
     pos = torch.arange(n, device=idx.device)
@@ -117,7 +117,8 @@ class KeyRotary(torch.nn.Module):
     k + 1 positions before it (9: 0.1.82's; 12: the long keys of the larger grid row). pairs (0.1.87): the bound pairs, 8 or 16; norm
     (0.1.87): the key's bound pairs held at length rho at the coded SEPs; 0.1.88: norm 0 (none), 1 (every coded SEP, 0.1.87's True), 2 (the
     records' coded SEPs only; records()). hold: the current forward's held positions (None without a norm). code (0.1.91): the grid rows'
-    address code, which the records' rule reads (the hold at norm 2)."""
+    address code, which the records' rule reads (the hold at norm 2). 0.1.102: at a code whose shared pairs are not eight (8x3: four) the
+    eight-pair form would turn anchor pairs, so the rotation binds all sixteen there."""
 
     def __init__(self, block: int, head: int, k: int = kcm.K, pairs: int = J, norm: int = 0, rho: float = RHO,
                  code: str = ar.CODE) -> None:
@@ -125,6 +126,8 @@ class KeyRotary(torch.nn.Module):
         assert int(pairs) in PAIR_FORMS, f"pairs {pairs!r}: one of {PAIR_FORMS}"
         assert int(norm) in NORMS and int(norm) == norm, f"norm {norm!r}: one of {NORMS}"
         ar.code_shape(code)
+        assert int(pairs) == ar.PAIRS or ar.shared(code) == J, \
+            f"the {code} code shares {ar.shared(code)} pairs: the key rotation binds all {ar.PAIRS} there (pairs {ar.PAIRS})"
         self.block, self.head, self.k, self.pairs, self.code = int(block), int(head), int(k), int(pairs), code
         self.norm, self.rho = int(norm), float(rho)
         assert self.rho > 0, rho

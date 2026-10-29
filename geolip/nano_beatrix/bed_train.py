@@ -292,6 +292,16 @@ assert GRID_CODE == gr.CODE or GRID_ABYTES == 2, "--grid_abytes=1 is the 8x2 cod
 assert gr.n_addr(GRID_CODE) >= gr.lay(GRID_LAYOUT)["comps"], f"--grid_comps={GRID_COMPS} needs more than the {GRID_CODE} code's addresses (--grid_code=4x4)"
 GR_RADIX, GR_LEVELS = gr.radix_levels(GRID_CODE)                # the address head's and the streams' shape (8 x 2 at the default)
 assert gr.fits(GRID_LAYOUT, GRID_KEYS, GRID_ABYTES, GRID_CODE), f"the {GRID_LAYOUT} layout does not hold {GRID_KEYS} keys (the long keys need 48)"
+# 0.1.102: --grid_code=8x3 writes and streams every grid row's address as three digits of eight (512 addresses) and turns twelve anchor pairs
+# (pairs 4-15) as three levels of four pairs at 2 pi k / 9; the pairs before them fall to four (anchored_rope.shared), so --rotary_content=2
+# leaves the relative band two pairs (wavelengths 6.3 and 2,513 positions); the address head reads three levels of eight digits, the
+# value-path tables are 3 x 8 x d, the hold's record rule reads DATA and three digits, the index entries' dose the third digit. The key
+# rotation binds all sixteen pairs there (--key_pairs=16) and the path rotation stays off. The 8x2 and 4x4 codes = 0.1.101 bit for bit;
+# the run's name carries _ac83.
+assert ROTARY != "anchored" or ROT_CONTENT <= ar.shared(GRID_CODE) - 2, \
+    f"--rotary_content={ROT_CONTENT}: the {GRID_CODE} code shares {ar.shared(GRID_CODE)} pairs (content 1 .. {ar.shared(GRID_CODE) - 2})"
+assert not KEY_ROT or KEY_PAIRS == ar.PAIRS or ar.shared(GRID_CODE) == krm.J, \
+    f"--key_pairs={KEY_PAIRS}: the {GRID_CODE} code shares {ar.shared(GRID_CODE)} pairs, the key rotation binds all {ar.PAIRS} there"
 KEY_K = gr.KEY_MAX[GRID_KEYS]                                   # the key's reach: 9 (0.1.81's K) or 12
 assert not KEY_CODE or KEY_K == kcm.K, "--key_code's tables reach 9 bytes: the long keys are built for the key rotation"
 HEAD_FORM = ARGS.get("head", "")
@@ -366,6 +376,7 @@ assert PATH_BIND or NINTH_HEAD == "path" or "path_k" not in ARGS, "--path_k is t
 assert not PATH_BIND or (GRID == "ag" and ROTARY == "anchored" and not PTR_STOP), \
     "--path_bind turns pairs of the anchored rotation (--grid=ag) in every block (not with the pointer's stopped capture, which forms one head)"
 assert not PATH_BIND or not KEY_ROT or PATH_HEAD != PTR_HEAD, "the told head keeps the key rotation: the path takes another head"
+assert not PATH_BIND or ar.shared(GRID_CODE) == ar.SHARED, "--path_bind turns the eight anchor pairs of the 8x2 and 4x4 codes (0.1.102)"
 assert 1 <= PATH_K <= 64, f"--path_k={PATH_K}: 1 .. 64"
 assert not PATH_TABLE or PATH_BIND or REPEAT_READ or NINTH_HEAD, "--path_table is the unit rule's table (--path_bind, --repeat_read or --ninth_head)"
 N_AG = int(round(MB * GRID_P)) if GRID else 0
@@ -787,9 +798,10 @@ class Craft:
         self.ihead_curve = []                    # 0.1.72: the index entries' term (--head_at=both)
         if ROTARY == "anchored":                 # no parameter: the state dict stays the house body's
             self.anchor = ar.AnchorStreams(ROT_CONTENT, GRID_CODE)
-            _rel = ar.SHARED - ROT_CONTENT
+            _sh = ar.shared(GRID_CODE)           # 0.1.102: the pairs before the anchor levels at the code (8 at 8x2 and 4x4, 4 at 8x3)
+            _rel = _sh - ROT_CONTENT
             log(f"the anchored rotation on {ar.patch(self.model, self.anchor)} softmax blocks (pairs 0-{_rel - 1} relative, NTK x{ar.NTK_SCALE:g}; "
-                f"{_rel}-{ar.SHARED - 1} content; 8-15 "
+                f"{_rel}-{_sh - 1} content; {_sh}-15 "
                 + ("two anchor levels at 2 pi k / 9)" if GRID_CODE == gr.CODE else
                    f"{GR_LEVELS} anchor levels of {GR_RADIX // 2} pairs at 2 pi k / {GR_RADIX + 1}: the {GRID_CODE} address code)"))
         if GRID_ABYTES == 1:                     # 0.1.74
